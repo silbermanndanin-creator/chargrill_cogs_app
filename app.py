@@ -1,3 +1,4 @@
+# rebuild marker 2026-05-28b — forces a clean Streamlit Cloud rebuild (clears stale module cache)
 import os
 import datetime as dt
 import pandas as pd
