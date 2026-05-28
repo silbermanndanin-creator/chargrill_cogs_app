@@ -17,10 +17,13 @@ TOTAL_COGS_RED = 0.42
 # (packaging, cleaning). Order matters: canonicalize() returns the first matching category.
 SUPPLIERS = {
     "Packaging": {"aliases": ["gleam", "horizon", "a-z packaging", "a z packaging",
-                              "az packaging", "acr", "cleaning rag"], "cogs": False},
-    "Meat":      {"aliases": ["artisian", "artisan butcher", "field to fork"]},
+                              "az packaging", "a-z paper", "az paper", "paper product",
+                              "acr", "cleaning rag"], "cogs": False},
+    "Meat":      {"aliases": ["artisian", "artisan butcher", "field to fork",
+                              "coogee village butcher", "village butcher"]},
     "Chicken":   {"aliases": ["bpl", "baida", "baiada"], "green_pct": 0.129, "red_pct": 0.135},
-    "Potatoes":  {"aliases": ["potato group", "the potato"]},
+    "Potatoes":  {"aliases": ["potato group", "the potato",
+                              "south pacific", "south pacific fresh"]},
     "Veggies":   {"aliases": ["st george", "st. george", "saint george", "george food",
                               "veggie", "veggies"], "green_pct": 0.078, "red_pct": 0.082},
     "Luxe":      {"aliases": ["luxe"]},
