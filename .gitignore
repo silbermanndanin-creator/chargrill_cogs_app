@@ -1,5 +1,9 @@
 # secrets & local data — never commit
 .streamlit/secrets.toml
+.streamlit/secrets.toml.*
+!.streamlit/secrets.toml.example
+*.toml.txt
+*secret*.txt
 data/
 *.bak
 
