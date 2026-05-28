@@ -26,6 +26,8 @@ SUPPLIERS = {
     "Luxe":      {"aliases": ["luxe"]},
     "Spices":    {"aliases": ["m&j", "m & j", "m and j", "mj ingredient", "win kwong", "kwong"]},
     "Yalla":     {"aliases": ["yalla"]},
+    "Blueseas (Broadline)": {"aliases": ["blueseas", "blue seas"],
+                             "green_pct": 0.098, "red_pct": 0.102},
     "Other":     {"aliases": []},
 }
 
