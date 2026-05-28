@@ -1,0 +1,7 @@
+streamlit>=1.40
+anthropic>=0.69
+pandas>=2.0
+requests>=2.31
+pydantic>=2.0
+plotly>=5.20
+supabase>=2.0   # only used in cloud mode (SUPABASE_URL + SUPABASE_KEY set); local uses CSV
