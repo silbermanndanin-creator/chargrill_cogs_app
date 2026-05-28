@@ -2,8 +2,12 @@
 .streamlit/secrets.toml
 .streamlit/secrets.toml.*
 !.streamlit/secrets.toml.example
+.streamlit/*.txt
 *.toml.txt
 *secret*.txt
+sk-ant-*
+*.key
+*.pem
 data/
 *.bak
 
