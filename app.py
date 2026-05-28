@@ -1,5 +1,6 @@
 # rebuild marker 2026-05-28b — forces a clean Streamlit Cloud rebuild (clears stale module cache)
 import os
+import json
 import datetime as dt
 import pandas as pd
 import streamlit as st
@@ -146,8 +147,8 @@ with st.sidebar:
 df = storage.load_invoices()
 lines = metrics.explode_lines(df)
 
-tab_dash, tab_inv, tab_pos, tab_veg = st.tabs(
-    ["📊 Dashboard", "📸 Add invoice", "💰 Daily takings", "🥬 Veggie prices"])
+tab_dash, tab_inv, tab_pos, tab_veg, tab_list = st.tabs(
+    ["📊 Dashboard", "📸 Add invoice", "💰 Daily takings", "🥬 Veggie prices", "📋 Invoices"])
 
 # ============ Add-invoice tab ============
 with tab_inv:
@@ -388,3 +389,32 @@ with tab_veg:
             fig.update_yaxes(title="$ / unit")
             fig.update_xaxes(title="")
             st.plotly_chart(dark(fig), width="stretch", config={"displayModeBar": False})
+
+# ============ Invoices list tab ============
+with tab_list:
+    st.markdown("#### 📋 Submitted invoices")
+    if df.empty:
+        st.info("No invoices submitted yet — add one in **📸 Add invoice**.")
+    else:
+        cats = ["All categories"] + list(config.SUPPLIERS.keys())
+        pick = st.selectbox("Filter by category", cats, key="invlist_cat")
+        view = df if pick == "All categories" else df[df["supplier"] == pick]
+        view = view.sort_values("invoice_date", ascending=False)
+        total = pd.to_numeric(view["total_ex_gst"], errors="coerce").sum()
+        st.caption(f"{len(view)} invoice(s) · ${total:,.0f} ex-GST")
+        show = view[["invoice_date", "supplier_raw", "supplier", "total_ex_gst"]].rename(
+            columns={"invoice_date": "Date", "supplier_raw": "Supplier (as invoiced)",
+                     "supplier": "Category", "total_ex_gst": "Total ex-GST $"})
+        st.dataframe(show, hide_index=True, width="stretch")
+        with st.expander("🔍 View line items"):
+            for _, r in view.iterrows():
+                st.markdown(f"**{r['invoice_date']} · {r['supplier_raw']}** → "
+                            f"{r['supplier']} · ${float(r['total_ex_gst']):,.2f} ex-GST")
+                raw = r.get("line_items")
+                if isinstance(raw, str) and raw.strip():
+                    try:
+                        items = json.loads(raw)
+                        if items:
+                            st.table(pd.DataFrame(items))
+                    except Exception:
+                        pass
