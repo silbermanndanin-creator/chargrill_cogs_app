@@ -145,7 +145,8 @@ with st.sidebar:
 df = storage.load_invoices()
 lines = metrics.explode_lines(df)
 
-tab_dash, tab_inv, tab_pos = st.tabs(["📊 Dashboard", "📸 Add invoice", "💰 Daily takings"])
+tab_dash, tab_inv, tab_pos, tab_veg = st.tabs(
+    ["📊 Dashboard", "📸 Add invoice", "💰 Daily takings", "🥬 Veggie prices"])
 
 # ============ Add-invoice tab ============
 with tab_inv:
@@ -249,11 +250,12 @@ with tab_dash:
     spend_by, deliveries = (metrics.spend_and_deliveries(df, p_col, period_key)
                             if not df.empty else (pd.Series(dtype=float), pd.Series(dtype=int)))
     qty = metrics.qty_by_supplier_unit(lines, p_col, period_key)
-    total_cogs = float(spend_by.sum()) if len(spend_by) else 0.0
+    # Food-COGS total excludes non-COGS categories (packaging, cleaning)
+    total_cogs = float(sum(v for s, v in spend_by.items() if config.is_cogs(s))) if len(spend_by) else 0.0
     prev_key = prev_period_key(mode, ref)
     prev_spend, _ = (metrics.spend_and_deliveries(df, p_col, prev_key)
                      if not df.empty else (pd.Series(dtype=float), None))
-    prev_total = float(prev_spend.sum()) if len(prev_spend) else 0.0
+    prev_total = float(sum(v for s, v in prev_spend.items() if config.is_cogs(s))) if len(prev_spend) else 0.0
     gp, rp = config.TOTAL_COGS_GREEN, config.TOTAL_COGS_RED
     cogs_pct = (total_cogs / revenue) if revenue > 0 else None
     tstat = config.total_status(cogs_pct) if cogs_pct is not None else "amber"
@@ -319,28 +321,30 @@ with tab_dash:
             else:
                 st.caption("Log revenue across a few periods to see the % trend.")
 
-    # ---- Supplier scorecards ----
-    st.markdown("**Spend vs target by supplier**")
+    # ---- Category scorecards ----
+    st.markdown("**Spend by category**")
     cols = st.columns(2)
     reds = []
     for i, (sup, cfg) in enumerate(config.SUPPLIERS.items()):
         spend = float(spend_by.get(sup, 0.0))
         prev = float(prev_spend.get(sup, 0.0)) if len(prev_spend) else 0.0
         pct = (spend / revenue) if revenue > 0 else None
-        stat = config.status_for(pct, sup) if pct is not None else "amber"
-        if pct is not None and stat == "red":
+        stat = config.status_for(pct, sup) if pct is not None else None
+        if stat == "red":
             reds.append(sup)
+        tgt = cfg.get("green_pct")
         nd = int(deliveries.get(sup, 0)) if len(deliveries) else 0
         with cols[i % 2].container(border=True):
             top = st.columns([3, 1])
-            top[0].markdown(f"**{sup}**")
+            note = "" if config.is_cogs(sup) else " · not in COGS"
+            top[0].markdown(f"**{sup}**{note}")
             top[1].markdown(f"<div style='text-align:right;font-size:1.2em'>"
-                            f"{LIGHT[stat] if pct is not None else '⚪'}</div>", unsafe_allow_html=True)
+                            f"{LIGHT.get(stat, '⚪')}</div>", unsafe_allow_html=True)
             m = st.columns(2)
             m[0].metric("Spend", f"${spend:,.0f}",
                         delta=f"{spend-prev:+,.0f}" if prev else None, delta_color="inverse")
             m[1].metric("% of rev", f"{pct*100:.1f}%" if pct is not None else "—",
-                        delta=f"≤{cfg['green_pct']*100:.1f}%", delta_color="off")
+                        delta=(f"≤{tgt*100:.1f}% target" if tgt else None), delta_color="off")
             st.caption(f"📦 {nd} deliver{'y' if nd == 1 else 'ies'} · ⚖️ {fmt_qty(qty.get(sup, {}))}")
     if reds:
         st.error("🔴 High Variance Alert — over target this period: " + ", ".join(reds))
@@ -361,3 +365,25 @@ with tab_dash:
         if pw:
             with st.expander("💲 Price watch — $/unit vs last period"):
                 st.dataframe(pd.DataFrame(pw), hide_index=True, width="stretch")
+
+# ============ Veggie prices tab ============
+with tab_veg:
+    st.markdown("#### 🥬 Veggie price tracker — St George Food")
+    st.caption(f"Tracking {len(config.TRACKED_VEGGIE_ITEMS)} key produce lines. "
+               "Unit price = $ ÷ quantity per line; updates automatically as veggie "
+               "invoices are uploaded.")
+    vprices = metrics.veggie_prices(lines)
+    flux = metrics.veggie_flux_table(lines)
+    st.dataframe(flux, hide_index=True, width="stretch")
+    if vprices.empty:
+        st.info("No St George Food (Veggies) invoices logged yet — add one in **📸 Add invoice** "
+                "and the latest prices, daily change and weekly change will fill in here.")
+    else:
+        items = sorted(vprices["item"].unique())
+        pick = st.multiselect("Plot price history for:", items, default=items[:5])
+        plot = vprices[vprices["item"].isin(pick)].assign(date=lambda d: pd.to_datetime(d["date"]))
+        if not plot.empty:
+            fig = px.line(plot, x="date", y="unit_price", color="item", markers=True)
+            fig.update_yaxes(title="$ / unit")
+            fig.update_xaxes(title="")
+            st.plotly_chart(dark(fig), width="stretch", config={"displayModeBar": False})
