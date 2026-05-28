@@ -90,6 +90,17 @@ def load_invoices() -> pd.DataFrame:
     return df
 
 
+def delete_invoice(saved_at):
+    """Permanently delete the invoice(s) with this saved_at timestamp."""
+    if _use_supabase():
+        _client().table("invoices").delete().eq("saved_at", str(saved_at)).execute()
+    else:
+        _ensure_csv(CSV_PATH, COLUMNS)
+        df = pd.read_csv(CSV_PATH)
+        df = df[df["saved_at"].astype(str) != str(saved_at)]
+        df.to_csv(CSV_PATH, index=False)
+
+
 # ---------- revenue (so COGS% can trend across periods) ----------
 def set_revenue(period_type: str, period_key: str, revenue: float):
     row = {"period_type": period_type, "period_key": period_key,

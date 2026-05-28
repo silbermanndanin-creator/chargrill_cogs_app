@@ -393,6 +393,9 @@ with tab_veg:
 # ============ Invoices list tab ============
 with tab_list:
     st.markdown("#### 📋 Submitted invoices")
+    deleted = st.session_state.pop("del_flash", None)
+    if deleted:
+        st.success(f"Deleted: {deleted}")
     if df.empty:
         st.info("No invoices submitted yet — add one in **📸 Add invoice**.")
     else:
@@ -418,3 +421,19 @@ with tab_list:
                             st.table(pd.DataFrame(items))
                     except Exception:
                         pass
+
+        # ---- Delete an invoice ----
+        st.divider()
+        st.markdown("**🗑️ Delete an invoice** (permanent)")
+        vs = view.sort_values("invoice_date", ascending=False)
+        sa_list = vs["saved_at"].astype(str).tolist()
+        labels = {str(r["saved_at"]): f"{r['invoice_date']} · {r['supplier_raw']} · "
+                                      f"${float(r['total_ex_gst']):,.2f}"
+                  for _, r in vs.iterrows()}
+        chosen = st.selectbox("Invoice to delete", sa_list,
+                              format_func=lambda s: labels.get(s, s), key="del_sel")
+        confirm = st.checkbox("Yes, permanently delete this invoice", key="del_confirm")
+        if st.button("Delete invoice", key="del_btn", disabled=not confirm):
+            storage.delete_invoice(chosen)
+            st.session_state["del_flash"] = labels.get(chosen, "invoice")
+            st.rerun()
