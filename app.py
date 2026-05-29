@@ -362,6 +362,38 @@ with tab_pos:
             st.session_state.pop("pos", None)
             st.rerun()
 
+    # ---- This week's takings, day by day ----
+    st.divider()
+    monday = ref - dt.timedelta(days=ref.weekday())
+    week_iso = storage.iso_week_of(ref)
+    st.markdown(f"#### 📅 Takings — week of {monday:%d %b %Y}")
+    wk = pos_df[pos_df["iso_week"] == week_iso] if not pos_df.empty else pos_df
+    rows = []
+    for i in range(7):
+        dday = monday + dt.timedelta(days=i)
+        match = wk[wk["date"].astype(str) == dday.isoformat()] if (wk is not None and not wk.empty) \
+            else None
+        if match is not None and not match.empty:
+            r = match.iloc[0]
+            num = lambda c: float(pd.to_numeric(r[c], errors="coerce") or 0)
+            incl, deliv, net = num("total_incl_gst"), num("doordash") + num("ubereats"), num("adjusted_ex_gst")
+        else:
+            incl = deliv = net = 0.0
+        rows.append({"Day": dday.strftime("%a %d %b"), "Takings (incl GST)": round(incl, 2),
+                     "Delivery (incl GST)": round(deliv, 2), "Net (ex-GST)": round(net, 2)})
+    wkdf = pd.DataFrame(rows)
+    if wkdf["Net (ex-GST)"].sum() > 0:
+        fig = px.bar(wkdf, x="Day", y="Net (ex-GST)", text_auto=".0f")
+        fig.update_traces(marker_color="#2ec4b6", textposition="outside")
+        fig.update_yaxes(title="Net $ ex-GST")
+        fig.update_xaxes(title="")
+        st.plotly_chart(dark(fig, h=270), width="stretch", config={"displayModeBar": False})
+        st.dataframe(wkdf, hide_index=True, width="stretch")
+        n_days = int((wkdf["Net (ex-GST)"] > 0).sum())
+        st.caption(f"Week net ex-GST: **${wkdf['Net (ex-GST)'].sum():,.0f}** · {n_days} day(s) logged")
+    else:
+        st.caption(f"No takings logged for the week of {monday:%d %b} yet — add a day above.")
+
 # ============ Labour tab ============
 with tab_lab:
     st.markdown("#### 🧮 Weekly labour — Tanda shift CSV → award pay")
@@ -613,6 +645,19 @@ with tab_dash:
         st.error(f"🔴 Prime cost {prime_pct*100:.1f}% is over the {config.PRIME_RED*100:.0f}% ceiling "
                  f"(target ≤{config.PRIME_GREEN*100:.0f}%).")
     st.write("")
+
+    # ---- Veggie price alerts ----
+    if not lines.empty:
+        d_ups, w_ups = metrics.veggie_increases(lines)
+        if w_ups or d_ups:
+            st.markdown("**🥬 Veggie price alerts** — St George produce going up")
+            if w_ups:
+                st.warning("🔺 Up this week: "
+                           + "  ·  ".join(f"**{n}** +{p:.0f}%" for n, p in w_ups))
+            if d_ups:
+                st.info("🔺 Up since last delivery: "
+                        + "  ·  ".join(f"**{n}** +{p:.0f}%" for n, p in d_ups))
+            st.write("")
 
     # ---- Charts ----
     if not df.empty:

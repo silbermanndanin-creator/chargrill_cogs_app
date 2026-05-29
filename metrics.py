@@ -195,6 +195,33 @@ def veggie_flux_table(lines):
     return pd.DataFrame(rows)
 
 
+def veggie_increases(lines, min_pct=0.5):
+    """Tracked veggies whose latest unit price ROSE. Returns (daily_ups, weekly_ups),
+    each a list of (item, pct) sorted biggest-first. daily = latest vs previous
+    purchase date; weekly = this ISO week's avg vs the prior week's avg."""
+    daily_ups, weekly_ups = [], []
+    g = veggie_prices(lines)
+    if g.empty:
+        return daily_ups, weekly_ups
+    for item in config.TRACKED_VEGGIE_ITEMS:
+        sub = g[g["item"] == item].sort_values("date")
+        if sub.empty:
+            continue
+        price = float(sub.iloc[-1]["unit_price"])
+        if len(sub) >= 2:
+            prev = float(sub.iloc[-2]["unit_price"])
+            if prev and (price - prev) / prev * 100 >= min_pct:
+                daily_ups.append((item, (price - prev) / prev * 100))
+        wk = sub.assign(week=pd.to_datetime(sub["date"]).dt.strftime("%G-W%V"))
+        wkavg = wk.groupby("week")["unit_price"].mean().sort_index()
+        if len(wkavg) >= 2 and wkavg.iloc[-2] and \
+                (wkavg.iloc[-1] - wkavg.iloc[-2]) / wkavg.iloc[-2] * 100 >= min_pct:
+            weekly_ups.append((item, (wkavg.iloc[-1] - wkavg.iloc[-2]) / wkavg.iloc[-2] * 100))
+    daily_ups.sort(key=lambda x: -x[1])
+    weekly_ups.sort(key=lambda x: -x[1])
+    return daily_ups, weekly_ups
+
+
 def baida_tubs(lines, period_col, period_key):
     """Tub + chicken counts for Baida in one period. Quantity = individual chickens,
     so tubs = chickens / per_tub. Also returns the invoice 'TUB DEPOSIT' count as a check.
