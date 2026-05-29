@@ -301,7 +301,14 @@ with tab_inv:
         else:
             st.dataframe(li_df, hide_index=True, width="stretch")
             save_lines = inv.get("line_items", [])
-        if st.button("✅ Save invoice", key="invsave"):
+        dup = storage.find_duplicate(config.canonicalize(supplier_raw), inv_date, float(total))
+        dup_ok = True
+        if dup is not None:
+            st.warning(f"⚠️ Possible duplicate — already saved **{dup['invoice_date']} · "
+                       f"{dup['supplier_raw']} · ${float(dup['total_ex_gst']):,.2f}** "
+                       f"(saved {str(dup.get('saved_at',''))[:16]}).")
+            dup_ok = st.checkbox("Save anyway — this is a different invoice", key="dupok")
+        if st.button("✅ Save invoice", key="invsave", disabled=not dup_ok):
             cleaned = []
             for r in save_lines:
                 r = {k: (None if isinstance(v, float) and pd.isna(v) else v) for k, v in dict(r).items()}
@@ -725,6 +732,26 @@ with tab_list:
                             st.table(pd.DataFrame(items))
                     except Exception:
                         pass
+
+        # ---- Duplicate check ----
+        st.divider()
+        with st.expander("🔍 Duplicate check — same supplier, date & total"):
+            groups = storage.duplicate_groups(df)
+            if not groups:
+                st.success("No duplicates detected.")
+            else:
+                st.warning(f"{len(groups)} possible duplicate group(s) found.")
+                for i, grp in enumerate(groups):
+                    r0 = grp.iloc[0]
+                    st.markdown(f"**{r0['supplier']}** · {r0['invoice_date']} · "
+                                f"${float(r0['total_ex_gst']):,.2f} — {len(grp)} copies")
+                    st.dataframe(grp[["invoice_date", "supplier_raw", "total_ex_gst", "saved_at"]],
+                                 hide_index=True, width="stretch")
+                    if st.button(f"Remove {len(grp)-1} duplicate(s), keep earliest", key=f"dedup{i}"):
+                        for sa in grp["saved_at"].astype(str).tolist()[1:]:
+                            storage.delete_invoice(sa)
+                        st.session_state["del_flash"] = f"Removed {len(grp) - 1} duplicate(s)"
+                        st.rerun()
 
         # ---- Delete an invoice ----
         st.divider()

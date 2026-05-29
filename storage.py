@@ -60,15 +60,17 @@ def _ensure_csv(path, columns):
 # ---------- invoices ----------
 def save_invoice(supplier_raw, invoice_date, total_ex_gst, line_items):
     d = pd.to_datetime(invoice_date).date()
-    iso_year, iso_week, _ = d.isocalendar()
+    supplier = canonicalize(supplier_raw)
+    ed = config.effective_date(d, supplier)  # bucket by delivery date (BPL Sat -> Mon)
+    iso_year, iso_week, _ = ed.isocalendar()
     row = {
         "saved_at": dt.datetime.now().isoformat(timespec="seconds"),
         "supplier_raw": supplier_raw,
-        "supplier": canonicalize(supplier_raw),
+        "supplier": supplier,
         "invoice_date": d.isoformat(),
         "total_ex_gst": round(float(total_ex_gst), 2),
         "iso_week": f"{iso_year}-W{iso_week:02d}",
-        "month": d.strftime("%Y-%m"),
+        "month": ed.strftime("%Y-%m"),
         "line_items": json.dumps([li if isinstance(li, dict) else li.model_dump()
                                   for li in line_items]),
     }
@@ -92,7 +94,49 @@ def load_invoices() -> pd.DataFrame:
     # Re-derive canonical supplier from the raw name so config/label changes
     # (e.g. renaming a category) apply to already-saved rows without migration.
     df["supplier"] = df["supplier_raw"].map(canonicalize)
+    # Re-derive the period from the DELIVERY date (BPL Sat order -> Mon delivery),
+    # also on load so it corrects already-saved invoices without a migration.
+    def _period(row):
+        try:
+            d = pd.to_datetime(row["invoice_date"]).date()
+        except Exception:
+            return pd.Series({"iso_week": row.get("iso_week"), "month": row.get("month")})
+        ed = config.effective_date(d, row["supplier"])
+        y, w, _ = ed.isocalendar()
+        return pd.Series({"iso_week": f"{y}-W{w:02d}", "month": ed.strftime("%Y-%m")})
+    df[["iso_week", "month"]] = df.apply(_period, axis=1)
     return df
+
+
+def find_duplicate(supplier, invoice_date, total_ex_gst):
+    """First already-saved invoice matching canonical supplier + invoice_date +
+    total (to the cent), else None. Used to warn before saving a re-upload."""
+    df = load_invoices()
+    if df.empty:
+        return None
+    try:
+        d = pd.to_datetime(invoice_date).date().isoformat()
+    except Exception:
+        return None
+    tot = round(float(total_ex_gst), 2)
+    m = df[(df["supplier"] == supplier)
+           & (df["invoice_date"].astype(str) == d)
+           & (pd.to_numeric(df["total_ex_gst"], errors="coerce").round(2) == tot)]
+    return m.iloc[0].to_dict() if not m.empty else None
+
+
+def duplicate_groups(df):
+    """Groups of invoices sharing supplier + invoice_date + total (>1 copy),
+    each sorted oldest-first, for the duplicate-cleanup tool."""
+    if df.empty:
+        return []
+    g = df.copy()
+    g["_tot"] = pd.to_numeric(g["total_ex_gst"], errors="coerce").round(2)
+    out = []
+    for _, sub in g.groupby(["supplier", "invoice_date", "_tot"]):
+        if len(sub) > 1:
+            out.append(sub.sort_values("saved_at"))
+    return out
 
 
 def delete_invoice(saved_at):

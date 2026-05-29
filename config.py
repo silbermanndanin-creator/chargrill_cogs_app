@@ -5,6 +5,8 @@ actuals) scaled to the total-COGS band: green = 40% of revenue, red = 42%.
 Alerts: spend% <= green -> GREEN, <= red -> AMBER, > red -> RED.
 """
 
+import datetime as dt
+
 GST_RATE = 0.10  # Australian GST
 
 # Total-COGS guardrail band (% of net ex-GST revenue)
@@ -59,6 +61,26 @@ def canonicalize(raw_name: str) -> str:
 def is_cogs(supplier: str) -> bool:
     """Does this category count toward the food-COGS %? (Packaging/cleaning don't.)"""
     return SUPPLIERS.get(supplier, {}).get("cogs", True)
+
+
+# ---- Delivery-date bucketing ----
+# Some suppliers' invoice is the ORDER, placed ahead of delivery. BPL (Chicken) is
+# ordered on Saturday for Monday delivery, so a weekend order should count in the
+# DELIVERY week/month, not the order week. Spend, tubs and trends bucket by this date.
+DELIVERY_SHIFT_SUPPLIERS = {"Chicken"}
+
+
+def effective_date(d, supplier):
+    """Date used for week/month bucketing. For order-ahead suppliers, a weekend
+    order (Sat/Sun) is shifted forward to the Monday it is delivered. Weekday
+    invoices are left on their own date."""
+    if supplier in DELIVERY_SHIFT_SUPPLIERS:
+        wd = d.weekday()  # Mon=0 … Fri=4, Sat=5, Sun=6
+        if wd == 5:       # Saturday -> Monday (+2)
+            return d + dt.timedelta(days=2)
+        if wd == 6:       # Sunday -> Monday (+1)
+            return d + dt.timedelta(days=1)
+    return d
 
 
 def status_for(spend_pct, supplier):
