@@ -20,15 +20,80 @@ COLORS = {"green": "#2faa5e", "amber": "#d9a300", "red": "#e0533d"}
 LIGHT = {"green": "🟢", "amber": "🟠", "red": "🔴"}
 
 st.markdown("""<style>
-.block-container{padding-top:4rem;}
-.kpi{background:#161d2e;border:1px solid #243049;border-radius:14px;padding:14px 16px;height:100%;}
-.kpi .t{color:#8b95a7;font-size:.70rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;}
-.kpi .v{font-size:1.65rem;font-weight:800;color:#fff;line-height:1.15;margin-top:6px;}
-.kpi .s{font-size:.76rem;margin-top:4px;}
-.hdr{font-size:1.5rem;font-weight:800;color:#fff;margin-bottom:.3rem;}
-.tub{background:#161d2e;border:1px solid #243049;border-radius:14px;padding:12px 6px;text-align:center;}
-.tub .v{font-size:1.8rem;font-weight:800;color:#fff;}
-.tub .t{color:#8b95a7;font-size:.70rem;font-weight:700;text-transform:uppercase;}
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap');
+
+:root{
+  --bg:#0e1320; --surface:#161d2e; --surface2:#1c2742; --border:#28324d;
+  --text:#e8ecf3; --muted:#8b95a7; --accent:#2ec4b6; --accent2:#5eead4;
+  --radius:16px; --shadow:0 1px 2px rgba(0,0,0,.35),0 12px 30px rgba(0,0,0,.22);
+}
+
+/* typography */
+html, body, .stApp, [data-testid="stAppViewContainer"],
+button, input, select, textarea, .stMarkdown, p, span, label, div{
+  font-family:'Inter',-apple-system,'Segoe UI',Roboto,sans-serif;
+}
+h1,h2,h3,h4,.hdr,.brand-name,.kpi .v,.tub .v{
+  font-family:'Space Grotesk','Inter',sans-serif; letter-spacing:-.01em;
+}
+.stApp{ background:var(--bg); color:var(--text); }
+
+/* blend Streamlit's top toolbar, keep room for it */
+[data-testid="stHeader"]{ background:transparent; }
+.block-container{ padding-top:3.5rem; max-width:1280px; }
+
+/* branded app header bar */
+.appbar{ display:flex; align-items:center; justify-content:space-between;
+  padding:8px 2px 14px; border-bottom:1px solid var(--border); margin-bottom:14px; }
+.brand{ display:flex; align-items:center; gap:12px; }
+.brand-name{ font-size:1.18rem; font-weight:700; color:#fff; line-height:1.05; }
+.brand-sub{ font-size:.72rem; color:var(--muted); font-weight:500; margin-top:2px; }
+.appbar-period{ font-size:.78rem; color:var(--text); font-weight:600; background:var(--surface);
+  border:1px solid var(--border); padding:7px 14px; border-radius:999px; white-space:nowrap; }
+
+/* KPI cards */
+.kpi{ background:linear-gradient(180deg,var(--surface2),var(--surface));
+  border:1px solid var(--border); border-radius:var(--radius); padding:16px 18px;
+  height:100%; box-shadow:var(--shadow); }
+.kpi .t{ color:var(--muted); font-size:.67rem; font-weight:700; letter-spacing:.08em; text-transform:uppercase; }
+.kpi .v{ font-size:1.72rem; font-weight:700; color:#fff; line-height:1.15; margin-top:8px; }
+.kpi .s{ font-size:.77rem; margin-top:6px; font-weight:600; }
+
+.hdr{ font-size:1.6rem; font-weight:700; color:#fff; margin-bottom:.3rem; }
+
+/* tub cards */
+.tub{ background:linear-gradient(180deg,var(--surface2),var(--surface)); border:1px solid var(--border);
+  border-radius:var(--radius); padding:14px 6px; text-align:center; box-shadow:var(--shadow); }
+.tub .v{ font-size:1.85rem; font-weight:700; color:#fff; }
+.tub .t{ color:var(--muted); font-size:.67rem; font-weight:700; text-transform:uppercase; letter-spacing:.06em; }
+
+/* tabs -> pill style with accent underline */
+.stTabs [data-baseweb="tab-list"]{ gap:4px; border-bottom:1px solid var(--border); }
+.stTabs [data-baseweb="tab"]{ height:auto; padding:9px 14px; background:transparent;
+  border-radius:10px 10px 0 0; color:var(--muted); font-weight:600; font-size:.9rem; }
+.stTabs [aria-selected="true"]{ color:#fff; background:var(--surface); }
+.stTabs [data-baseweb="tab-highlight"]{ background:var(--accent); height:3px; }
+.stTabs [data-baseweb="tab-border"]{ background:transparent; }
+
+/* buttons */
+.stButton>button, .stDownloadButton>button{ border-radius:10px; font-weight:600;
+  border:1px solid var(--border); transition:all .12s ease; }
+.stButton>button:hover, .stDownloadButton>button:hover{ border-color:var(--accent); color:var(--accent2); }
+.stButton>button[kind="primary"]{ background:var(--accent); border-color:var(--accent); color:#06231f; }
+.stButton>button[kind="primary"]:hover{ filter:brightness(1.08); color:#06231f; }
+
+/* st.metric cards */
+[data-testid="stMetric"]{ background:var(--surface); border:1px solid var(--border);
+  border-radius:14px; padding:12px 16px; box-shadow:var(--shadow); }
+[data-testid="stMetricValue"]{ font-family:'Space Grotesk',sans-serif; }
+
+/* bordered containers, expanders, sidebar */
+[data-testid="stExpander"]{ border:1px solid var(--border); border-radius:12px; background:var(--surface); }
+[data-testid="stSidebar"]{ background:#0b101b; border-right:1px solid var(--border); }
+section[data-testid="stSidebar"] h3{ color:#fff; }
+
+hr{ border-color:var(--border); }
+[data-testid="stAlert"]{ border-radius:12px; }
 </style>""", unsafe_allow_html=True)
 
 
@@ -71,7 +136,7 @@ def cogs_gauge(pct, gp, rp, axis_max=55):
     v = pct * 100
     fig = go.Figure(go.Indicator(
         mode="gauge+number", value=v,
-        number={"suffix": "%", "font": {"size": 38, "color": "#fff"}},
+        number={"suffix": "%", "font": {"size": 38, "color": "#fff", "family": "Space Grotesk"}},
         gauge={"axis": {"range": [0, axis_max], "tickcolor": "#8b95a7"},
                "bar": {"color": "rgba(0,0,0,0)"}, "borderwidth": 0,
                "steps": [{"range": [0, gp * 100], "color": "#1f7a4d"},
@@ -87,6 +152,7 @@ def dark(fig, h=320):
     fig.update_layout(template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)",
                       plot_bgcolor="rgba(0,0,0,0)", height=h,
                       margin=dict(l=10, r=10, t=10, b=10),
+                      font=dict(family="Inter, sans-serif", color="#E8ECF3"),
                       legend=dict(orientation="h", y=-0.2))
     return fig
 
@@ -173,6 +239,22 @@ with st.sidebar:
 
 df = storage.load_invoices()
 lines = metrics.explode_lines(df)
+
+st.markdown(f"""<div class="appbar">
+  <div class="brand">
+    <svg width="36" height="36" viewBox="0 0 34 34" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <rect width="34" height="34" rx="9" fill="url(#brandg)"/>
+      <rect x="9" y="18" width="3.6" height="7" rx="1.5" fill="#0b1f1b"/>
+      <rect x="15.2" y="13" width="3.6" height="12" rx="1.5" fill="#0b1f1b"/>
+      <rect x="21.4" y="9" width="3.6" height="16" rx="1.5" fill="#0b1f1b"/>
+      <defs><linearGradient id="brandg" x1="0" y1="0" x2="34" y2="34" gradientUnits="userSpaceOnUse">
+        <stop stop-color="#2EC4B6"/><stop offset="1" stop-color="#5eead4"/></linearGradient></defs>
+    </svg>
+    <div><div class="brand-name">Chargrill COGS</div>
+    <div class="brand-sub">Cost &amp; labour intelligence</div></div>
+  </div>
+  <div class="appbar-period">{period_label}</div>
+</div>""", unsafe_allow_html=True)
 
 tab_dash, tab_inv, tab_pos, tab_lab, tab_veg, tab_list = st.tabs(
     ["📊 Dashboard", "📸 Add invoice", "💰 Daily takings", "🧮 Labour",
