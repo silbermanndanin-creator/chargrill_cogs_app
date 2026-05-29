@@ -12,7 +12,7 @@ import storage
 import metrics
 from extract import extract_invoice, extract_pos_slip
 from lightspeed import get_revenue
-from tanda import get_labour_cost
+import payroll
 
 st.set_page_config(page_title="Chargrill COGS", page_icon="🍗", layout="wide")
 
@@ -146,43 +146,37 @@ with st.sidebar:
     trend_rev_map = {**manual_map, **pos_map}
 
     # ---- Labour (gross wages) ----
+    # Labour is logged per week from the Tanda CSV in the 🧮 Labour tab. Month mode
+    # sums the weeks that fall in the month. A manual override is available per week.
     st.divider()
     st.markdown("**Labour (gross wages)**")
-    lab_mode = st.radio("Labour source", ["Manual entry", "Tanda (API)"],
-                        label_visibility="collapsed", key="labsrc")
-    lab_map = storage.labour_map(p_type)
-    stored_lab = lab_map.get(period_key, {})
-    labour_cost = 0.0
-    labour_hours = float(stored_lab.get("hours", 0.0) or 0.0)
-    if lab_mode == "Manual entry":
-        labour_cost = st.number_input(f"{mode} gross wages $", min_value=0.0, step=100.0,
-                                      value=float(stored_lab.get("cost", 0.0) or 0.0), key="lab_cost")
-        labour_hours = st.number_input("Hours worked (optional)", min_value=0.0, step=10.0,
-                                       value=labour_hours, key="lab_hours",
-                                       help="Lets the dashboard show sales per labour hour.")
-        if labour_cost > 0 and (labour_cost != stored_lab.get("cost")
-                                or labour_hours != stored_lab.get("hours")):
-            storage.set_labour(p_type, period_key, labour_cost, labour_hours)
-            lab_map[period_key] = {"cost": labour_cost, "hours": labour_hours}
-    else:
-        try:
-            ttoken = st.secrets.get("TANDA_TOKEN")
-            tbiz = st.secrets.get("TANDA_BUSINESS_ID")
-        except Exception:
-            ttoken = tbiz = None
-        lc = get_labour_cost(p_start, p_end, ttoken, tbiz)
-        labour_cost = float(lc) if lc else 0.0
-        if lc:
-            st.caption(f"Tanda: **${labour_cost:,.0f}** gross wages")
+    labour_cost, labour_hours = storage.labour_for_period(mode, period_key)
+    if mode == "Week":
+        if labour_cost:
+            st.caption(f"**${labour_cost:,.0f}** gross · {labour_hours:g} hrs — from 🧮 Labour")
         else:
-            st.caption("Tanda not connected — enter labour manually.")
-    labour_cost_map = {k: v["cost"] for k, v in lab_map.items()}
+            st.caption("No labour yet — upload this week's Tanda CSV in **🧮 Labour**.")
+        with st.expander("✏️ Override this week manually"):
+            mc = st.number_input("Gross wages $", min_value=0.0, step=100.0,
+                                 value=float(labour_cost), key="lab_cost")
+            mh = st.number_input("Hours", min_value=0.0, step=10.0,
+                                 value=float(labour_hours), key="lab_hours")
+            if mc > 0 and (mc != labour_cost or mh != labour_hours):
+                storage.set_labour("week", period_key, mc, mh)
+                labour_cost, labour_hours = mc, mh
+    else:
+        if labour_cost:
+            st.caption(f"**${labour_cost:,.0f}** gross (sum of weeks in {period_label})")
+        else:
+            st.caption("No labour logged this month — add weeks in **🧮 Labour**.")
+    labour_cost_map = storage.labour_cost_map_for(mode)
 
 df = storage.load_invoices()
 lines = metrics.explode_lines(df)
 
-tab_dash, tab_inv, tab_pos, tab_veg, tab_list = st.tabs(
-    ["📊 Dashboard", "📸 Add invoice", "💰 Daily takings", "🥬 Veggie prices", "📋 Invoices"])
+tab_dash, tab_inv, tab_pos, tab_lab, tab_veg, tab_list = st.tabs(
+    ["📊 Dashboard", "📸 Add invoice", "💰 Daily takings", "🧮 Labour",
+     "🥬 Veggie prices", "📋 Invoices"])
 
 # ============ Add-invoice tab ============
 with tab_inv:
@@ -278,6 +272,128 @@ with tab_pos:
             st.session_state["pflash_msg"] = f"Saved {pdate}: ${adj_ex:,.0f} ex-GST"
             st.session_state.pop("pos", None)
             st.rerun()
+
+# ============ Labour tab ============
+with tab_lab:
+    st.markdown("#### 🧮 Weekly labour — Tanda shift CSV → award pay")
+    st.caption("Computes Fast Food Industry Award 2020 pay (flat-vs-award top-ups for FT/PT, "
+               "full penalty rates for casuals) and feeds the week's gross wages into "
+               "Labour % / Prime cost % on the dashboard.")
+
+    setup = storage.load_payroll_setup()
+    with st.expander("⚙️ Payroll setup file" + ("" if setup else "  — REQUIRED"),
+                     expanded=not setup):
+        if setup:
+            st.caption(f"Loaded **{setup[0]}** · uploaded {setup[2]}")
+        else:
+            st.warning("Upload **Payroll Setup.xlsx** (staff, award rates, public holidays) "
+                       "to enable labour processing. Stored privately in Supabase — never in git.")
+        su = st.file_uploader("Upload / replace Payroll Setup.xlsx", type=["xlsx"], key="setupup")
+        if su is not None and st.button("Save setup", key="setupsave"):
+            try:
+                payroll.load_setup_from_bytes(su.getvalue())  # validate it parses first
+                storage.save_payroll_setup(su.name, su.getvalue())
+                st.success("Setup saved.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Couldn't read that setup file: {e}")
+
+    if not setup:
+        st.info("Add the setup file above, then upload a weekly shift CSV here.")
+    else:
+        st.markdown("##### Upload this week's Tanda shift CSV")
+        csvf = st.file_uploader("Tanda shift report (CSV)", type=["csv"], key="shiftcsv")
+        if csvf is not None and st.button("Calculate award pay", type="primary", key="calcpay"):
+            with st.spinner("Crunching the award…"):
+                try:
+                    st.session_state["pay"] = payroll.process_shift_csv(csvf.getvalue(), setup[1])
+                except Exception as e:
+                    st.error(f"Processing failed: {e}")
+                    st.session_state.pop("pay", None)
+
+        out = st.session_state.get("pay")
+        if out:
+            wk_end = pd.Timestamp(out["week_ending"])
+            iso = storage.iso_week_of(wk_end.date())
+            st.divider()
+            mc = st.columns(4)
+            mc[0].metric("Week ending", wk_end.strftime("%d %b %Y"))
+            mc[1].metric("Total gross wages", f"${out['total_gross']:,.0f}")
+            mc[2].metric("Total hours", f"{out['total_hours']:,.1f}")
+            mc[3].metric("Top-ups", f"${out['total_topup']:,.0f}")
+            if out["unmatched"]:
+                st.warning("Not found in setup (paid on defaults — add them to the setup sheet): "
+                           + ", ".join(out["unmatched"]))
+
+            results = out["results"]
+            summary_df = pd.DataFrame([{
+                "Employee": r["name"], "Type": r["emp_type"], "Section": r["section"],
+                "Total Hrs": round(r["hrs"]["total"], 2), "Flat Pay": round(r["flat_pay"], 2),
+                "Award Pay": round(r["award_pay"], 2), "Top Up": round(r["topup"], 2),
+                "Gross Pay": round(r["gross"], 2)} for r in results])
+            cas = [r for r in results if r["emp_type"] == "Casual"]
+            casual_df = pd.DataFrame([{
+                "Employee": r["name"], "WD": r["hrs"]["wd"], "Sat": r["hrs"]["sat"],
+                "Sun": r["hrs"]["sun"], "Sun OT": r["hrs"]["sun_ot"], "PH": r["hrs"]["ph"],
+                "Daily OT": round(r["hrs"]["daily_ot1"] + r["hrs"]["daily_ot2"], 2),
+                "Weekly OT": round(r["hrs"]["weekly_ot1"] + r["hrs"]["weekly_ot2"], 2),
+                "Late Night": round(r["hrs"]["late_night"], 2),
+                "Total Hrs": round(r["hrs"]["total"], 2),
+                "Total Pay": round(r["pay"]["total"], 2)} for r in cas])
+            secs = {}
+            for r in results:
+                sec = r.get("section") or "Unknown"
+                d = secs.setdefault(sec, {"FT/PT Hrs": 0.0, "FT/PT Cost": 0.0,
+                                          "Casual Hrs": 0.0, "Casual Cost": 0.0})
+                if r["emp_type"] == "Casual":
+                    d["Casual Hrs"] += r["hrs"]["total"]; d["Casual Cost"] += r["award_pay"]
+                else:
+                    d["FT/PT Hrs"] += r["hrs"]["total"]; d["FT/PT Cost"] += r["gross"]
+            section_df = pd.DataFrame([{
+                "Section": s, "FT/PT Hrs": round(d["FT/PT Hrs"], 2),
+                "FT/PT Cost": round(d["FT/PT Cost"], 2), "Casual Hrs": round(d["Casual Hrs"], 2),
+                "Casual Cost": round(d["Casual Cost"], 2),
+                "Total Hrs": round(d["FT/PT Hrs"] + d["Casual Hrs"], 2),
+                "Total Cost": round(d["FT/PT Cost"] + d["Casual Cost"], 2)}
+                for s, d in sorted(secs.items())])
+            daily_df = pd.DataFrame([{
+                "Employee": r["name"], "Date": pd.Timestamp(day["date"]).strftime("%d/%m"),
+                "Day": day["day_name"], "Type": day["day_type"], "Shifts": day["shifts"],
+                "Total Hrs": round(day["total_hrs"], 2), "Ordinary": round(day["ordinary_hrs"], 2),
+                "Daily OT": round(day.get("daily_ot1", 0) + day.get("daily_ot2", 0), 2),
+                "Late Night": round(day["late_night"], 2), "Section": r["section"]}
+                for r in results for day in r["day_rows"]])
+
+            bd = st.tabs(["Summary", "Casual detail", "By section", "Daily"])
+            with bd[0]:
+                st.dataframe(summary_df, hide_index=True, width="stretch")
+            with bd[1]:
+                if casual_df.empty:
+                    st.caption("No casual employees this week.")
+                else:
+                    st.dataframe(casual_df, hide_index=True, width="stretch")
+            with bd[2]:
+                st.dataframe(section_df, hide_index=True, width="stretch")
+            with bd[3]:
+                st.dataframe(daily_df, hide_index=True, width="stretch")
+
+            st.download_button(
+                "⬇️ Download full Excel report",
+                payroll.build_workbook(results, out["week_ending"]),
+                file_name=f"Payroll_WeekEnding_{wk_end.strftime('%Y-%m-%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+            st.divider()
+            st.caption(f"Save sets labour for **{iso}** — gross **${out['total_gross']:,.0f}**, "
+                       f"{out['total_hours']:g} hrs → feeds Labour % / Prime cost %.")
+            if st.button(f"✅ Save labour to {iso}", key="savelab"):
+                storage.set_labour("week", iso, out["total_gross"], out["total_hours"])
+                st.session_state.pop("pay", None)
+                st.session_state["lab_flash"] = iso
+                st.rerun()
+        if st.session_state.pop("lab_flash", None):
+            st.success("Labour saved — check the Dashboard's Prime Cost section.")
+
 
 # ============ Dashboard tab ============
 with tab_dash:

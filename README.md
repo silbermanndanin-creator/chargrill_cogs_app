@@ -3,19 +3,20 @@
 Mobile-friendly Streamlit app: photograph a supplier invoice → Claude Vision extracts
 supplier / date / line items / total (ex-GST) → compares spend against live revenue and
 flashes a **High Variance Alert** when COGS drifts past the 40% green / 42% red band.
-It also tracks **labour** (gross wages) and the combined **prime cost %** (COGS + labour)
-against a 68% green / 72% red band.
+It also tracks **labour**: upload the weekly **Tanda shift CSV** and the app computes
+award-compliant gross wages (Fast Food Industry Award 2020) and the combined **prime
+cost %** (COGS + labour) against a 68% green / 72% red band.
 
 Targets are pre-loaded from the Jun 2025–Apr 2026 P&L actuals (see `config.py`).
 
 ## Files
-- `app.py` — Streamlit dashboard (KPI cards, per-supplier scorecards, labour & prime cost, trends) + add-invoice tab
+- `app.py` — Streamlit dashboard + add-invoice / daily-takings / labour tabs
 - `extract.py` — Claude Vision extraction (model `claude-sonnet-4-6`); images + PDFs
 - `config.py` — supplier targets, alias mapping, alert thresholds (COGS / labour / prime cost)
 - `metrics.py` — dashboard aggregations (spend, deliveries, qty-by-unit, $/unit, labour/prime trends)
-- `storage.py` — invoices + weekly revenue + labour; CSV locally, Supabase when configured
+- `storage.py` — invoices + revenue + weekly labour + payroll setup; CSV locally, Supabase when configured
+- `payroll.py` — Fast Food Award 2020 engine: weekly Tanda shift CSV → award gross wages + Excel report
 - `lightspeed.py` — Lightspeed K-Series revenue pull (scaffold; manual entry works today)
-- `tanda.py` — Tanda labour-cost pull (scaffold; manual gross-wage entry works today)
 - `supabase_schema.sql` — table definitions to paste into the Supabase SQL editor
 
 ## Run locally

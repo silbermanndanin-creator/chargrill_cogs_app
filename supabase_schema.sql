@@ -24,10 +24,20 @@ create table if not exists revenue (
 create table if not exists labour (
     period_type  text,
     period_key   text,
-    labour_cost  numeric,                       -- gross wages for the period
+    labour_cost  numeric,                       -- gross wages for the period (week grain)
     hours        numeric,                        -- optional; enables sales-per-labour-hour
     updated_at   text,
     primary key (period_type, period_key)        -- enables upsert on (period_type, period_key)
+);
+
+-- Holds the latest Payroll Setup.xlsx (staff, award rates, public holidays) as base64,
+-- so the cloud app can run the weekly Tanda-CSV labour calc. PRIVATE data — never commit
+-- this to git; it lives only in Supabase. Single row (id = 1), replaced on re-upload.
+create table if not exists payroll_setup (
+    id           integer primary key,            -- always 1; upsert replaces the latest
+    filename     text,
+    file_b64     text,                            -- base64 of the .xlsx
+    uploaded_at  text
 );
 
 create table if not exists pos_days (

@@ -9,6 +9,7 @@ The backend is chosen per call from env vars, so nothing else in the app changes
 """
 import os
 import json
+import base64
 import datetime as dt
 import pandas as pd
 import config
@@ -19,6 +20,7 @@ CSV_PATH = os.path.join(DATA_DIR, "invoices.csv")
 REV_PATH = os.path.join(DATA_DIR, "revenue.csv")
 POS_PATH = os.path.join(DATA_DIR, "pos_days.csv")
 LABOUR_PATH = os.path.join(DATA_DIR, "labour.csv")
+PAYROLL_SETUP_PATH = os.path.join(DATA_DIR, "payroll_setup.xlsx")
 COLUMNS = ["saved_at", "supplier_raw", "supplier", "invoice_date",
            "total_ex_gst", "iso_week", "month", "line_items"]
 REV_COLUMNS = ["period_type", "period_key", "revenue", "updated_at"]
@@ -175,6 +177,82 @@ def labour_map(period_type: str) -> dict:
             hrs = 0.0
         out[r["period_key"]] = {"cost": cost, "hours": hrs}
     return out
+
+
+# Labour is stored at WEEK grain (period_type='week', key='YYYY-Www'), populated by
+# the weekly Tanda-CSV payroll run (or a manual override). Month figures are derived
+# by summing the weeks that fall in the month.
+def _iso_week_month(iso_week: str):
+    """Map 'YYYY-Www' to the 'YYYY-MM' of that ISO week's Thursday (ISO convention)."""
+    try:
+        y, w = iso_week.split("-W")
+        return dt.date.fromisocalendar(int(y), int(w), 4).strftime("%Y-%m")
+    except Exception:
+        return None
+
+
+def labour_for_period(mode: str, period_key: str):
+    """(cost, hours) for the selected period. Week = direct lookup;
+    Month = sum of the weekly rows whose ISO week falls in that month."""
+    wk = labour_map("week")
+    if mode == "Week":
+        v = wk.get(period_key, {})
+        return float(v.get("cost", 0.0)), float(v.get("hours", 0.0))
+    cost = hours = 0.0
+    for iso_week, v in wk.items():
+        if _iso_week_month(iso_week) == period_key:
+            cost += v["cost"]
+            hours += v["hours"]
+    return cost, hours
+
+
+def labour_cost_map_for(mode: str) -> dict:
+    """{period_key: cost} across periods, for the COGS%/prime trend in the current mode."""
+    wk = labour_map("week")
+    if mode == "Week":
+        return {k: v["cost"] for k, v in wk.items()}
+    out = {}
+    for iso_week, v in wk.items():
+        m = _iso_week_month(iso_week)
+        if m:
+            out[m] = out.get(m, 0.0) + v["cost"]
+    return out
+
+
+# ---------- payroll setup (Payroll Setup.xlsx, stored privately for the labour calc) ----------
+def save_payroll_setup(filename: str, file_bytes: bytes):
+    if _use_supabase():
+        row = {"id": 1, "filename": filename,
+               "file_b64": base64.b64encode(file_bytes).decode("ascii"),
+               "uploaded_at": dt.datetime.now().isoformat(timespec="seconds")}
+        _client().table("payroll_setup").upsert(row, on_conflict="id").execute()
+    else:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        with open(PAYROLL_SETUP_PATH, "wb") as f:
+            f.write(file_bytes)
+
+
+def load_payroll_setup():
+    """Return (filename, file_bytes, uploaded_at) or None if no setup uploaded yet."""
+    if _use_supabase():
+        try:
+            data = _client().table("payroll_setup").select("*").eq("id", 1).execute().data
+        except Exception:
+            return None  # payroll_setup table not created yet -> degrade
+        if not data:
+            return None
+        r = data[0]
+        try:
+            b = base64.b64decode(r["file_b64"])
+        except Exception:
+            return None
+        return (r.get("filename") or "Payroll Setup.xlsx", b, r.get("uploaded_at"))
+    if not os.path.exists(PAYROLL_SETUP_PATH):
+        return None
+    with open(PAYROLL_SETUP_PATH, "rb") as f:
+        b = f.read()
+    ts = dt.datetime.fromtimestamp(os.path.getmtime(PAYROLL_SETUP_PATH)).isoformat(timespec="seconds")
+    return ("payroll_setup.xlsx", b, ts)
 
 
 # ---------- POS daily takings (one finalised end-of-day slip per date) ----------
