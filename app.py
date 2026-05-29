@@ -595,6 +595,25 @@ with tab_dash:
         st.caption(f"{int(tubs['total_chickens'])} chickens "
                    f"(RSPCA {int(tubs['RSPCA']['chickens'])}÷8 · Split {int(tubs['Split']['chickens'])}÷12)"
                    + (f" · TUB DEPOSIT {dep:g}" if dep else ""))
+        # Order-vs-turnover guide (weekly): is the Baida order high for the week's sales?
+        if mode == "Week" and not pos_df.empty:
+            gross_wk = float(pd.to_numeric(
+                pos_df[pos_df["iso_week"] == period_key]["total_incl_gst"],
+                errors="coerce").fillna(0).sum())
+            rec = config.baida_recommended(gross_wk)
+            if rec and gross_wk > 0:
+                rec_bird, rec_split = rec
+                act_bird, act_split = tubs["RSPCA"]["chickens"], tubs["Split"]["chickens"]
+                over = []
+                if rec_bird and act_bird > rec_bird * (1 + config.BAIDA_OVER_PCT):
+                    over.append(f"whole **{act_bird:.0f}** vs ~{rec_bird:.0f} guide")
+                if rec_split and act_split > rec_split * (1 + config.BAIDA_OVER_PCT):
+                    over.append(f"split **{act_split:.0f}** vs ~{rec_split:.0f} guide")
+                if over:
+                    st.warning(f"🐔 Baida order high for ${gross_wk:,.0f} sales — " + " · ".join(over))
+                else:
+                    st.caption(f"✅ Order in line with ${gross_wk:,.0f} sales "
+                               f"(guide ~{rec_bird:.0f} whole · {rec_split:.0f} split).")
     st.write("")
 
     # ---- Labour & Prime Cost ----

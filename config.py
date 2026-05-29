@@ -142,6 +142,34 @@ def tub_type(description) -> str | None:
     return None
 
 
+# ---- Baida order-vs-turnover guide (DANIN/baida order.xlsx — winter weekly) ----
+# For a week's gross sales ($ incl GST), the recommended number of whole/charcoal
+# birds ('RSPCA' tubs) and split chickens. Used to flag when an order runs high.
+# (sales, whole_birds, split_chickens)
+BAIDA_ORDER_GUIDE = [
+    (65000, 520, 192), (70000, 560, 204), (75000, 600, 216),
+    (80000, 664, 228), (85000, 720, 240), (90000, 736, 252),
+]
+BAIDA_OVER_PCT = 0.10  # flag when actual chickens exceed the guide by >10%
+
+
+def baida_recommended(weekly_sales):
+    """(whole_birds, split_chickens) recommended for a week's gross sales, linearly
+    interpolated within the guide and clamped to its range. None if no/zero sales."""
+    g = BAIDA_ORDER_GUIDE
+    if not g or not weekly_sales or weekly_sales <= 0:
+        return None
+    if weekly_sales <= g[0][0]:
+        return (float(g[0][1]), float(g[0][2]))
+    if weekly_sales >= g[-1][0]:
+        return (float(g[-1][1]), float(g[-1][2]))
+    for (s0, b0, sp0), (s1, b1, sp1) in zip(g, g[1:]):
+        if s0 <= weekly_sales <= s1:
+            t = (weekly_sales - s0) / (s1 - s0)
+            return (b0 + t * (b1 - b0), sp0 + t * (sp1 - sp0))
+    return (float(g[-1][1]), float(g[-1][2]))
+
+
 # ---- POS end-of-day takings ----
 # DoorDash & UberEats (both via Deliverect) are recorded at full order value, but the
 # platform takes a commission, so the venue nets only (1 - commission). Group avg = 40%.
