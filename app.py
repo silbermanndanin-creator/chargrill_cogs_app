@@ -216,7 +216,7 @@ with st.sidebar:
     # sums the weeks that fall in the month. A manual override is available per week.
     st.divider()
     st.markdown("**Labour (gross wages)**")
-    labour_cost, labour_hours = storage.labour_for_period(mode, period_key)
+    labour_cost, labour_hours, labour_foh, labour_boh = storage.labour_for_period(mode, period_key)
     if mode == "Week":
         if labour_cost:
             st.caption(f"**${labour_cost:,.0f}** gross · {labour_hours:g} hrs — from 🧮 Labour")
@@ -228,7 +228,7 @@ with st.sidebar:
             mh = st.number_input("Hours", min_value=0.0, step=10.0,
                                  value=float(labour_hours), key="lab_hours")
             if mc > 0 and (mc != labour_cost or mh != labour_hours):
-                storage.set_labour("week", period_key, mc, mh)
+                storage.set_labour("week", period_key, mc, mh, labour_foh, labour_boh)
                 labour_cost, labour_hours = mc, mh
     else:
         if labour_cost:
@@ -468,8 +468,13 @@ with tab_lab:
             st.divider()
             st.caption(f"Save sets labour for **{iso}** — gross **${out['total_gross']:,.0f}**, "
                        f"{out['total_hours']:g} hrs → feeds Labour % / Prime cost %.")
+            foh_hours = round(sum(r["hrs"]["total"] for r in results
+                                  if str(r["section"]).upper() == "FOH"), 2)
+            boh_hours = round(sum(r["hrs"]["total"] for r in results
+                                  if str(r["section"]).upper() == "BOH"), 2)
             if st.button(f"✅ Save labour to {iso}", key="savelab"):
-                storage.set_labour("week", iso, out["total_gross"], out["total_hours"])
+                storage.set_labour("week", iso, out["total_gross"], out["total_hours"],
+                                   foh_hours, boh_hours)
                 st.session_state.pop("pay", None)
                 st.session_state["lab_flash"] = iso
                 st.rerun()
@@ -503,7 +508,17 @@ with tab_dash:
     prime_cost = total_cogs + labour_cost
     prime_pct = (prime_cost / revenue) if revenue > 0 else None
     pstat = config.prime_status(prime_pct) if prime_pct is not None else "amber"
-    splh = (revenue / labour_hours) if (labour_hours and labour_hours > 0 and revenue > 0) else None
+    # Week-over-week & month-over-month labour change (independent of the view mode)
+    _wkmap = storage.labour_map("week")
+    def _wk_cost(d):
+        return _wkmap.get(storage.iso_week_of(d), {}).get("cost", 0.0)
+    def _mo_cost(d):
+        m = d.strftime("%Y-%m")
+        return sum(v["cost"] for kk, v in _wkmap.items() if storage._iso_week_month(kk) == m)
+    _lw_prev = _wk_cost(ref - dt.timedelta(days=7))
+    _lm_prev = _mo_cost(ref.replace(day=1) - dt.timedelta(days=1))
+    wow = ((_wk_cost(ref) - _lw_prev) / _lw_prev * 100) if _lw_prev else None
+    mom = ((_mo_cost(ref) - _lm_prev) / _lm_prev * 100) if _lm_prev else None
 
     # ---- KPI cards ----
     k = st.columns(5)
@@ -545,9 +560,15 @@ with tab_dash:
 
     # ---- Labour & Prime Cost ----
     st.markdown("**💼 Labour & Prime Cost**")
-    lc_cols = st.columns(4)
+
+    def _chg(p):
+        if p is None:
+            return "—"
+        return ("▲ " if p > 0 else "▼ ") + f"{abs(p):.0f}%"
+
+    lc_cols = st.columns(5)
     kpi(lc_cols[0], "Labour (gross wages)", f"${labour_cost:,.0f}" if labour_cost > 0 else "—",
-        "this period")
+        (f"wk {_chg(wow)} · mth {_chg(mom)}" if (wow is not None or mom is not None) else "this period"))
     kpi(lc_cols[1], "Labour %", f"{labour_pct*100:.1f}%" if labour_pct is not None else "—",
         ((("▼ " if lstat == "green" else "▲ ") + f"{(labour_pct-config.LABOUR_GREEN)*100:+.1f} pts vs {config.LABOUR_GREEN*100:.0f}%")
          if labour_pct is not None else f"target ≤{config.LABOUR_GREEN*100:.0f}%"),
@@ -556,8 +577,8 @@ with tab_dash:
         ((("▼ " if pstat == "green" else "▲ ") + f"{(prime_pct-config.PRIME_GREEN)*100:+.1f} pts vs {config.PRIME_GREEN*100:.0f}%")
          if prime_pct is not None else f"target ≤{config.PRIME_GREEN*100:.0f}%"),
         COLORS[pstat] if prime_pct is not None else "#8b95a7")
-    kpi(lc_cols[3], "Sales / labour hr", f"${splh:,.0f}" if splh else "—",
-        f"{labour_hours:g} hrs worked" if labour_hours else "add hours in sidebar")
+    kpi(lc_cols[3], "FOH hours", f"{labour_foh:g}" if labour_foh else "—", "front of house")
+    kpi(lc_cols[4], "BOH hours", f"{labour_boh:g}" if labour_boh else "—", "kitchen")
     st.write("")
 
     pg1, pg2 = st.columns([1, 1.3])

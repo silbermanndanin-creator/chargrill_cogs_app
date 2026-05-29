@@ -24,7 +24,8 @@ PAYROLL_SETUP_PATH = os.path.join(DATA_DIR, "payroll_setup.xlsx")
 COLUMNS = ["saved_at", "supplier_raw", "supplier", "invoice_date",
            "total_ex_gst", "iso_week", "month", "line_items"]
 REV_COLUMNS = ["period_type", "period_key", "revenue", "updated_at"]
-LABOUR_COLUMNS = ["period_type", "period_key", "labour_cost", "hours", "updated_at"]
+LABOUR_COLUMNS = ["period_type", "period_key", "labour_cost", "hours",
+                  "foh_hours", "boh_hours", "updated_at"]
 POS_COLUMNS = ["date", "iso_week", "month", "total_incl_gst", "doordash", "ubereats",
                "adjusted_incl_gst", "adjusted_ex_gst", "saved_at"]
 
@@ -134,10 +135,13 @@ def revenue_map(period_type: str) -> dict:
 
 
 # ---------- labour (gross wages per period, for labour % + prime cost %) ----------
-def set_labour(period_type: str, period_key: str, labour_cost: float, hours: float = 0.0):
+def set_labour(period_type: str, period_key: str, labour_cost: float, hours: float = 0.0,
+               foh_hours: float = 0.0, boh_hours: float = 0.0):
     row = {"period_type": period_type, "period_key": period_key,
            "labour_cost": round(float(labour_cost), 2),
            "hours": round(float(hours or 0), 2),
+           "foh_hours": round(float(foh_hours or 0), 2),
+           "boh_hours": round(float(boh_hours or 0), 2),
            "updated_at": dt.datetime.now().isoformat(timespec="seconds")}
     if _use_supabase():
         _client().table("labour").upsert(row, on_conflict="period_type,period_key").execute()
@@ -151,10 +155,11 @@ def set_labour(period_type: str, period_key: str, labour_cost: float, hours: flo
 
 
 def labour_map(period_type: str) -> dict:
-    """{period_key: {'cost': float, 'hours': float}} for the given period type."""
+    """{period_key: {'cost','hours','foh','boh'}} for the given period type.
+    Selects '*' so it works whether or not the foh/boh columns exist yet."""
     if _use_supabase():
         try:
-            data = (_client().table("labour").select("period_key,labour_cost,hours")
+            data = (_client().table("labour").select("*")
                     .eq("period_type", period_type).execute().data)
             rows = data or []
         except Exception:
@@ -165,17 +170,16 @@ def labour_map(period_type: str) -> dict:
         if df.empty:
             return {}
         rows = df[df["period_type"] == period_type].to_dict("records")
+
+    def _f(v):
+        try:
+            return float(v or 0)
+        except (TypeError, ValueError):
+            return 0.0
     out = {}
     for r in rows:
-        try:
-            cost = float(r.get("labour_cost") or 0)
-        except (TypeError, ValueError):
-            cost = 0.0
-        try:
-            hrs = float(r.get("hours") or 0)
-        except (TypeError, ValueError):
-            hrs = 0.0
-        out[r["period_key"]] = {"cost": cost, "hours": hrs}
+        out[r["period_key"]] = {"cost": _f(r.get("labour_cost")), "hours": _f(r.get("hours")),
+                                "foh": _f(r.get("foh_hours")), "boh": _f(r.get("boh_hours"))}
     return out
 
 
@@ -192,18 +196,17 @@ def _iso_week_month(iso_week: str):
 
 
 def labour_for_period(mode: str, period_key: str):
-    """(cost, hours) for the selected period. Week = direct lookup;
-    Month = sum of the weekly rows whose ISO week falls in that month."""
+    """(cost, hours, foh_hours, boh_hours) for the selected period. Week = direct
+    lookup; Month = sum of the weekly rows whose ISO week falls in that month."""
     wk = labour_map("week")
     if mode == "Week":
         v = wk.get(period_key, {})
-        return float(v.get("cost", 0.0)), float(v.get("hours", 0.0))
-    cost = hours = 0.0
+        return (v.get("cost", 0.0), v.get("hours", 0.0), v.get("foh", 0.0), v.get("boh", 0.0))
+    cost = hours = foh = boh = 0.0
     for iso_week, v in wk.items():
         if _iso_week_month(iso_week) == period_key:
-            cost += v["cost"]
-            hours += v["hours"]
-    return cost, hours
+            cost += v["cost"]; hours += v["hours"]; foh += v["foh"]; boh += v["boh"]
+    return (cost, hours, foh, boh)
 
 
 def labour_cost_map_for(mode: str) -> dict:

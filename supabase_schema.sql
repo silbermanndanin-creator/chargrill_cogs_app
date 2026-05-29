@@ -25,10 +25,15 @@ create table if not exists labour (
     period_type  text,
     period_key   text,
     labour_cost  numeric,                       -- gross wages for the period (week grain)
-    hours        numeric,                        -- optional; enables sales-per-labour-hour
+    hours        numeric,                        -- total hours
+    foh_hours    numeric,                        -- front-of-house hours
+    boh_hours    numeric,                        -- back-of-house (kitchen) hours
     updated_at   text,
     primary key (period_type, period_key)        -- enables upsert on (period_type, period_key)
 );
+-- If the labour table already exists from before, add the new columns:
+--   alter table labour add column if not exists foh_hours numeric;
+--   alter table labour add column if not exists boh_hours numeric;
 
 -- Holds the latest Payroll Setup.xlsx (staff, award rates, public holidays) as base64,
 -- so the cloud app can run the weekly Tanda-CSV labour calc. PRIVATE data — never commit
