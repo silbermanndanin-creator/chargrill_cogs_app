@@ -627,17 +627,24 @@ with tab_dash:
             rec = config.baida_recommended(gross_wk)
             if rec and gross_wk > 0:
                 rec_bird, rec_split = rec
+                wpt = config.TUB_TYPES["RSPCA"]["per_tub"]   # birds per whole tub (8)
+                spt = config.TUB_TYPES["Split"]["per_tub"]   # birds per split tub (12)
                 act_bird, act_split = tubs["RSPCA"]["chickens"], tubs["Split"]["chickens"]
+                act_wt, act_st = tubs["RSPCA"]["tubs"], tubs["Split"]["tubs"]
+                rec_wt, rec_st = rec_bird / wpt, rec_split / spt
                 over = []
                 if rec_bird and act_bird > rec_bird * (1 + config.BAIDA_OVER_PCT):
-                    over.append(f"whole **{act_bird:.0f}** vs ~{rec_bird:.0f} guide")
+                    over.append(f"whole **{act_bird:.0f} birds = {act_wt:.0f} tubs** "
+                                f"vs guide ~{rec_bird:.0f} ({rec_wt:.0f} tubs)")
                 if rec_split and act_split > rec_split * (1 + config.BAIDA_OVER_PCT):
-                    over.append(f"split **{act_split:.0f}** vs ~{rec_split:.0f} guide")
+                    over.append(f"split **{act_split:.0f} = {act_st:.0f} tubs** "
+                                f"vs guide ~{rec_split:.0f} ({rec_st:.0f} tubs)")
                 if over:
                     st.warning(f"🐔 Baida order high for ${gross_wk:,.0f} sales — " + " · ".join(over))
                 else:
-                    st.caption(f"✅ Order in line with ${gross_wk:,.0f} sales "
-                               f"(guide ~{rec_bird:.0f} whole · {rec_split:.0f} split).")
+                    st.caption(f"✅ Order in line with ${gross_wk:,.0f} sales — guide "
+                               f"~{rec_bird:.0f} whole ({rec_wt:.0f} tubs) · "
+                               f"{rec_split:.0f} split ({rec_st:.0f} tubs).")
     st.write("")
 
     # ---- Labour & Prime Cost ----
