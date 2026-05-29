@@ -20,7 +20,7 @@ COLORS = {"green": "#2faa5e", "amber": "#d9a300", "red": "#e0533d"}
 LIGHT = {"green": "🟢", "amber": "🟠", "red": "🔴"}
 
 st.markdown("""<style>
-.block-container{padding-top:1.3rem;}
+.block-container{padding-top:4rem;}
 .kpi{background:#161d2e;border:1px solid #243049;border-radius:14px;padding:14px 16px;height:100%;}
 .kpi .t{color:#8b95a7;font-size:.70rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;}
 .kpi .v{font-size:1.65rem;font-weight:800;color:#fff;line-height:1.15;margin-top:6px;}
