@@ -245,14 +245,11 @@ def process_employee(emp_shifts, public_holidays, emp_type, min_weekly_hrs=38):
                  for _, r in day_df.iterrows())
         hrs['late_night'] += ln
 
-        # Sunday: first 2 ordinary hours at Sunday rate; beyond 2 at OT rate.
+        # All ordinary hours are paid at the day's penalty rate, Sundays included.
+        # Overtime is handled above via the daily (>11h) / weekly (>38h) thresholds —
+        # there is no separate "only the first 2 Sunday hours are ordinary" rule.
         sun_ot_hrs = 0.0
-        if dtype == 'sun' and day_ord > 2.0:
-            hrs['sun'] += 2.0
-            sun_ot_hrs = day_ord - 2.0
-            hrs['sun_ot'] += sun_ot_hrs
-        else:
-            hrs[dtype] += day_ord
+        hrs[dtype] += day_ord
 
         day_rows.append({
             'date': dt_val,
