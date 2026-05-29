@@ -436,12 +436,34 @@ with tab_lab:
         if out:
             wk_end = pd.Timestamp(out["week_ending"])
             iso = storage.iso_week_of(wk_end.date())
+
+            # ---- Annual / sick leave (paid at flat rate, FT/PT only) ----
+            with st.expander("➕ Annual / sick leave (FT/PT, paid at flat rate)"):
+                st.caption("Enter AL/SL hours — added to each person's gross at their flat "
+                           "rate and carried into the report's SL/AL columns.")
+                perm = [r for r in out["results"] if r["emp_type"] != "Casual"]
+                leave_in = pd.DataFrame([{"Employee": r["name"],
+                                          "AL hrs": float(r.get("al_hrs", 0.0)),
+                                          "SL hrs": float(r.get("sl_hrs", 0.0))} for r in perm])
+                edited = st.data_editor(
+                    leave_in, hide_index=True, width="stretch", key="leave_ed",
+                    column_config={
+                        "Employee": st.column_config.TextColumn(disabled=True),
+                        "AL hrs": st.column_config.NumberColumn(min_value=0.0, step=1.0, format="%.1f"),
+                        "SL hrs": st.column_config.NumberColumn(min_value=0.0, step=1.0, format="%.1f")})
+                leave = {row["Employee"]: {"al": row["AL hrs"], "sl": row["SL hrs"]}
+                         for _, row in edited.iterrows()}
+            out = payroll.apply_leave(out, leave)
+            st.session_state["pay"] = out
+
             st.divider()
             mc = st.columns(4)
             mc[0].metric("Week ending", wk_end.strftime("%d %b %Y"))
             mc[1].metric("Total gross wages", f"${out['total_gross']:,.0f}")
             mc[2].metric("Total hours", f"{out['total_hours']:,.1f}")
             mc[3].metric("Top-ups", f"${out['total_topup']:,.0f}")
+            if out.get("total_leave"):
+                st.caption(f"Gross includes **${out['total_leave']:,.0f}** annual/sick leave.")
             if out["unmatched"]:
                 st.warning("Not found in setup (paid on defaults — add them to the setup sheet): "
                            + ", ".join(out["unmatched"]))
@@ -449,8 +471,10 @@ with tab_lab:
             results = out["results"]
             summary_df = pd.DataFrame([{
                 "Employee": r["name"], "Type": r["emp_type"], "Section": r["section"],
-                "Total Hrs": round(r["hrs"]["total"], 2), "Flat Pay": round(r["flat_pay"], 2),
-                "Award Pay": round(r["award_pay"], 2), "Top Up": round(r["topup"], 2),
+                "Worked Hrs": round(r["hrs"]["total"], 2),
+                "AL hrs": round(r.get("al_hrs", 0), 2), "SL hrs": round(r.get("sl_hrs", 0), 2),
+                "Flat Pay": round(r["flat_pay"], 2), "Award Pay": round(r["award_pay"], 2),
+                "Top Up": round(r["topup"], 2), "Leave Pay": round(r.get("leave_pay", 0), 2),
                 "Gross Pay": round(r["gross"], 2)} for r in results])
             cas = [r for r in results if r["emp_type"] == "Casual"]
             casual_df = pd.DataFrame([{

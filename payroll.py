@@ -425,6 +425,26 @@ def process_shift_csv(csv_bytes, setup_bytes):
     return process_shifts(shift_df, emp_df, rates, public_holidays)
 
 
+def apply_leave(out, leave):
+    """Add annual/sick leave (paid at the flat rate) to FT/PT employees and refresh
+    the totals. `leave` = {employee_name: {'al': hours, 'sl': hours}}. Idempotent —
+    each call recomputes gross from base (flat pay + top-up), so it can run on every
+    rerun. Casuals accrue no paid leave and are left unchanged."""
+    for r in out["results"]:
+        if r["emp_type"] == "Casual":
+            r["al_hrs"] = r["sl_hrs"] = r["leave_pay"] = 0.0
+            continue
+        lv = leave.get(r["name"], {}) or {}
+        al = float(lv.get("al", 0) or 0)
+        sl = float(lv.get("sl", 0) or 0)
+        r["al_hrs"], r["sl_hrs"] = al, sl
+        r["leave_pay"] = round((al + sl) * r["flat_rate"], 2)
+        r["gross"] = round(r["flat_pay"] + r["topup"] + r["leave_pay"], 2)
+    out["total_gross"] = round(sum(r["gross"] for r in out["results"]), 2)
+    out["total_leave"] = round(sum(r.get("leave_pay", 0) for r in out["results"]), 2)
+    return out
+
+
 # ── EXCEL REPORT (built in memory) ───────────────────────────────────────────
 
 def build_workbook(all_results, week_ending) -> bytes:
@@ -489,8 +509,8 @@ def _payroll_summary(ws, results, week_str):
         sc(ws[f'C{row}'], r_data['section'], size=9, halign='center')
         sc(ws[f'D{row}'], r_data['flat_rate'], size=9, bg=bg, fmt=CUR_FMT, halign='center', fg=BLUE_FG)
         sc(ws[f'E{row}'], r_data['hrs']['total'], size=9, bg=bg, fmt=HRS_FMT, halign='center')
-        sc(ws[f'F{row}'], 0, size=9, bg=INPUT_BG, fmt=HRS_FMT, halign='center')
-        sc(ws[f'G{row}'], 0, size=9, bg=INPUT_BG, fmt=HRS_FMT, halign='center')
+        sc(ws[f'F{row}'], r_data.get('sl_hrs', 0) or 0, size=9, bg=INPUT_BG, fmt=HRS_FMT, halign='center')
+        sc(ws[f'G{row}'], r_data.get('al_hrs', 0) or 0, size=9, bg=INPUT_BG, fmt=HRS_FMT, halign='center')
         sc(ws[f'H{row}'], f'=E{row}+F{row}+G{row}', size=9, bg=bg, fmt=HRS_FMT, halign='center')
         sc(ws[f'I{row}'], r_data['flat_pay'], size=9, bg=bg, fmt=CUR_FMT, halign='center')
         sc(ws[f'J{row}'], f'=D{row}*F{row}', size=9, bg=bg, fmt=CUR_FMT, halign='center')
