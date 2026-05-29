@@ -98,6 +98,32 @@ def cogs_pct_trend(df, rev_map, period_col, periods):
     return pd.DataFrame(rows)
 
 
+def food_cogs_for_period(df, period_col, period_key):
+    """Food-COGS spend (is_cogs categories only) for one period — matches the
+    dashboard's headline Total COGS, so prime cost is consistent with it."""
+    if df.empty:
+        return 0.0
+    sub = df[df[period_col] == period_key]
+    spend = sub.groupby("supplier")["total_ex_gst"].sum()
+    return float(sum(v for s, v in spend.items() if config.is_cogs(s)))
+
+
+def labour_prime_trend(df, rev_map, labour_cost_map, period_col, periods):
+    """Per-period Labour % and Prime cost % ((food COGS + labour) / revenue),
+    for periods that have BOTH a revenue and a labour figure logged."""
+    rows = []
+    for p in periods:
+        rev = rev_map.get(p)
+        lab = labour_cost_map.get(p)
+        if not rev or not lab:
+            continue
+        cogs = food_cogs_for_period(df, period_col, p)
+        rows.append({"Period": p,
+                     "Labour %": round(lab / rev * 100, 1),
+                     "Prime %": round((cogs + lab) / rev * 100, 1)})
+    return pd.DataFrame(rows)
+
+
 def pos_revenue_map(pos_df, period_col):
     """{period_key: net ex-GST revenue} summed from daily POS slips."""
     if pos_df.empty:

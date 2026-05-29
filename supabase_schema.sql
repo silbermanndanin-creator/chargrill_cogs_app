@@ -21,6 +21,15 @@ create table if not exists revenue (
     primary key (period_type, period_key)   -- enables upsert on (period_type, period_key)
 );
 
+create table if not exists labour (
+    period_type  text,
+    period_key   text,
+    labour_cost  numeric,                       -- gross wages for the period
+    hours        numeric,                        -- optional; enables sales-per-labour-hour
+    updated_at   text,
+    primary key (period_type, period_key)        -- enables upsert on (period_type, period_key)
+);
+
 create table if not exists pos_days (
     date              text primary key,      -- one finalised end-of-day slip per date; enables upsert on date
     iso_week          text,

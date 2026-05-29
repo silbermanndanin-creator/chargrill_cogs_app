@@ -1,4 +1,4 @@
-# rebuild marker 2026-05-28b — forces a clean Streamlit Cloud rebuild (clears stale module cache)
+# rebuild marker 2026-05-29a — labour & prime cost (clears stale Streamlit Cloud module cache)
 import os
 import json
 import datetime as dt
@@ -12,6 +12,7 @@ import storage
 import metrics
 from extract import extract_invoice, extract_pos_slip
 from lightspeed import get_revenue
+from tanda import get_labour_cost
 
 st.set_page_config(page_title="Chargrill COGS", page_icon="🍗", layout="wide")
 
@@ -66,16 +67,16 @@ def kpi(col, title, value, sub="", color="#8b95a7"):
                  f"<div class='s' style='color:{color}'>{sub}</div></div>", unsafe_allow_html=True)
 
 
-def cogs_gauge(pct, gp, rp):
+def cogs_gauge(pct, gp, rp, axis_max=55):
     v = pct * 100
     fig = go.Figure(go.Indicator(
         mode="gauge+number", value=v,
         number={"suffix": "%", "font": {"size": 38, "color": "#fff"}},
-        gauge={"axis": {"range": [0, 55], "tickcolor": "#8b95a7"},
+        gauge={"axis": {"range": [0, axis_max], "tickcolor": "#8b95a7"},
                "bar": {"color": "rgba(0,0,0,0)"}, "borderwidth": 0,
                "steps": [{"range": [0, gp * 100], "color": "#1f7a4d"},
                          {"range": [gp * 100, rp * 100], "color": "#b8860b"},
-                         {"range": [rp * 100, 55], "color": "#9c3a28"}],
+                         {"range": [rp * 100, axis_max], "color": "#9c3a28"}],
                "threshold": {"line": {"color": "#fff", "width": 4}, "thickness": 0.8, "value": v}}))
     fig.update_layout(height=230, margin=dict(l=24, r=24, t=16, b=8),
                       paper_bgcolor="rgba(0,0,0,0)", font_color="#E8ECF3")
@@ -143,6 +144,39 @@ with st.sidebar:
         if not r:
             st.caption("Lightspeed not connected.")
     trend_rev_map = {**manual_map, **pos_map}
+
+    # ---- Labour (gross wages) ----
+    st.divider()
+    st.markdown("**Labour (gross wages)**")
+    lab_mode = st.radio("Labour source", ["Manual entry", "Tanda (API)"],
+                        label_visibility="collapsed", key="labsrc")
+    lab_map = storage.labour_map(p_type)
+    stored_lab = lab_map.get(period_key, {})
+    labour_cost = 0.0
+    labour_hours = float(stored_lab.get("hours", 0.0) or 0.0)
+    if lab_mode == "Manual entry":
+        labour_cost = st.number_input(f"{mode} gross wages $", min_value=0.0, step=100.0,
+                                      value=float(stored_lab.get("cost", 0.0) or 0.0), key="lab_cost")
+        labour_hours = st.number_input("Hours worked (optional)", min_value=0.0, step=10.0,
+                                       value=labour_hours, key="lab_hours",
+                                       help="Lets the dashboard show sales per labour hour.")
+        if labour_cost > 0 and (labour_cost != stored_lab.get("cost")
+                                or labour_hours != stored_lab.get("hours")):
+            storage.set_labour(p_type, period_key, labour_cost, labour_hours)
+            lab_map[period_key] = {"cost": labour_cost, "hours": labour_hours}
+    else:
+        try:
+            ttoken = st.secrets.get("TANDA_TOKEN")
+            tbiz = st.secrets.get("TANDA_BUSINESS_ID")
+        except Exception:
+            ttoken = tbiz = None
+        lc = get_labour_cost(p_start, p_end, ttoken, tbiz)
+        labour_cost = float(lc) if lc else 0.0
+        if lc:
+            st.caption(f"Tanda: **${labour_cost:,.0f}** gross wages")
+        else:
+            st.caption("Tanda not connected — enter labour manually.")
+    labour_cost_map = {k: v["cost"] for k, v in lab_map.items()}
 
 df = storage.load_invoices()
 lines = metrics.explode_lines(df)
@@ -265,6 +299,14 @@ with tab_dash:
     var = total_cogs - target_cogs
     n_del = int(deliveries.sum()) if len(deliveries) else 0
 
+    # Labour + prime cost (labour_cost / labour_hours come from the sidebar input)
+    labour_pct = (labour_cost / revenue) if revenue > 0 else None
+    lstat = config.labour_status(labour_pct) if labour_pct is not None else "amber"
+    prime_cost = total_cogs + labour_cost
+    prime_pct = (prime_cost / revenue) if revenue > 0 else None
+    pstat = config.prime_status(prime_pct) if prime_pct is not None else "amber"
+    splh = (revenue / labour_hours) if (labour_hours and labour_hours > 0 and revenue > 0) else None
+
     # ---- KPI cards ----
     k = st.columns(5)
     kpi(k[0], "Revenue (ex-GST)", f"${revenue:,.0f}" if revenue > 0 else "—", "net of delivery cut")
@@ -301,6 +343,49 @@ with tab_dash:
         st.caption(f"{int(tubs['total_chickens'])} chickens "
                    f"(RSPCA {int(tubs['RSPCA']['chickens'])}÷8 · Split {int(tubs['Split']['chickens'])}÷12)"
                    + (f" · TUB DEPOSIT {dep:g}" if dep else ""))
+    st.write("")
+
+    # ---- Labour & Prime Cost ----
+    st.markdown("**💼 Labour & Prime Cost**")
+    lc_cols = st.columns(4)
+    kpi(lc_cols[0], "Labour (gross wages)", f"${labour_cost:,.0f}" if labour_cost > 0 else "—",
+        "this period")
+    kpi(lc_cols[1], "Labour %", f"{labour_pct*100:.1f}%" if labour_pct is not None else "—",
+        ((("▼ " if lstat == "green" else "▲ ") + f"{(labour_pct-config.LABOUR_GREEN)*100:+.1f} pts vs {config.LABOUR_GREEN*100:.0f}%")
+         if labour_pct is not None else f"target ≤{config.LABOUR_GREEN*100:.0f}%"),
+        COLORS[lstat] if labour_pct is not None else "#8b95a7")
+    kpi(lc_cols[2], "Prime cost %", f"{prime_pct*100:.1f}%" if prime_pct is not None else "—",
+        ((("▼ " if pstat == "green" else "▲ ") + f"{(prime_pct-config.PRIME_GREEN)*100:+.1f} pts vs {config.PRIME_GREEN*100:.0f}%")
+         if prime_pct is not None else f"target ≤{config.PRIME_GREEN*100:.0f}%"),
+        COLORS[pstat] if prime_pct is not None else "#8b95a7")
+    kpi(lc_cols[3], "Sales / labour hr", f"${splh:,.0f}" if splh else "—",
+        f"{labour_hours:g} hrs worked" if labour_hours else "add hours in sidebar")
+    st.write("")
+
+    pg1, pg2 = st.columns([1, 1.3])
+    with pg1:
+        st.markdown("**Prime cost vs target** (COGS + labour)")
+        if prime_pct is not None:
+            st.plotly_chart(cogs_gauge(prime_pct, config.PRIME_GREEN, config.PRIME_RED, axis_max=90),
+                            use_container_width=True, config={"displayModeBar": False})
+        else:
+            st.caption("Add revenue + labour (sidebar) to see prime cost %.")
+        st.caption(f"🟢 ≤{config.PRIME_GREEN*100:.0f}% · 🟠 {config.PRIME_GREEN*100:.0f}–{config.PRIME_RED*100:.0f}% · "
+                   f"🔴 >{config.PRIME_RED*100:.0f}%  ·  ${total_cogs:,.0f} COGS + ${labour_cost:,.0f} labour")
+    with pg2:
+        st.markdown("**Labour % / Prime % trend**")
+        ltrend = (metrics.labour_prime_trend(df, trend_rev_map, labour_cost_map, p_col,
+                                             metrics.recent_periods(df, p_col, n=8))
+                  if not df.empty else pd.DataFrame())
+        if not ltrend.empty:
+            fig = px.line(ltrend, x="Period", y=["Labour %", "Prime %"], markers=True)
+            fig.update_yaxes(title="%")
+            st.plotly_chart(dark(fig), width="stretch", config={"displayModeBar": False})
+        else:
+            st.caption("Log labour across a few periods to see the trend.")
+    if prime_pct is not None and pstat == "red":
+        st.error(f"🔴 Prime cost {prime_pct*100:.1f}% is over the {config.PRIME_RED*100:.0f}% ceiling "
+                 f"(target ≤{config.PRIME_GREEN*100:.0f}%).")
     st.write("")
 
     # ---- Charts ----

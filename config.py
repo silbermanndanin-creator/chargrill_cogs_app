@@ -11,6 +11,16 @@ GST_RATE = 0.10  # Australian GST
 TOTAL_COGS_GREEN = 0.40
 TOTAL_COGS_RED = 0.42
 
+# Labour guardrail band (% of net ex-GST revenue). Tracks GROSS WAGES (Tanda).
+LABOUR_GREEN = 0.28
+LABOUR_RED = 0.30   # 2-pt amber band mirroring the COGS 40/42 band; widen if needed
+
+# Prime cost = food COGS + labour. Because both are shares of the same revenue,
+# the prime-cost target is exactly the sum of the COGS and labour targets
+# (green 68%, red 72%) — it auto-follows if you change either band above.
+PRIME_GREEN = TOTAL_COGS_GREEN + LABOUR_GREEN
+PRIME_RED = TOTAL_COGS_RED + LABOUR_RED
+
 # Categories keyed by the real supplier names that appear on invoices.
 # green_pct/red_pct = optional per-category COGS target (fraction of net ex-GST revenue);
 # omit when not yet calibrated. cogs=False = tracked but NOT counted toward food-COGS %
@@ -67,6 +77,22 @@ def total_status(cogs_pct: float) -> str:
     if cogs_pct <= TOTAL_COGS_GREEN:
         return "green"
     if cogs_pct <= TOTAL_COGS_RED:
+        return "amber"
+    return "red"
+
+
+def labour_status(labour_pct: float) -> str:
+    if labour_pct <= LABOUR_GREEN:
+        return "green"
+    if labour_pct <= LABOUR_RED:
+        return "amber"
+    return "red"
+
+
+def prime_status(prime_pct: float) -> str:
+    if prime_pct <= PRIME_GREEN:
+        return "green"
+    if prime_pct <= PRIME_RED:
         return "amber"
     return "red"
 

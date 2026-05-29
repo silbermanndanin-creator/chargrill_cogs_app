@@ -18,9 +18,11 @@ DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 CSV_PATH = os.path.join(DATA_DIR, "invoices.csv")
 REV_PATH = os.path.join(DATA_DIR, "revenue.csv")
 POS_PATH = os.path.join(DATA_DIR, "pos_days.csv")
+LABOUR_PATH = os.path.join(DATA_DIR, "labour.csv")
 COLUMNS = ["saved_at", "supplier_raw", "supplier", "invoice_date",
            "total_ex_gst", "iso_week", "month", "line_items"]
 REV_COLUMNS = ["period_type", "period_key", "revenue", "updated_at"]
+LABOUR_COLUMNS = ["period_type", "period_key", "labour_cost", "hours", "updated_at"]
 POS_COLUMNS = ["date", "iso_week", "month", "total_incl_gst", "doordash", "ubereats",
                "adjusted_incl_gst", "adjusted_ex_gst", "saved_at"]
 
@@ -127,6 +129,52 @@ def revenue_map(period_type: str) -> dict:
         return {}
     df = df[df["period_type"] == period_type]
     return dict(zip(df["period_key"], df["revenue"]))
+
+
+# ---------- labour (gross wages per period, for labour % + prime cost %) ----------
+def set_labour(period_type: str, period_key: str, labour_cost: float, hours: float = 0.0):
+    row = {"period_type": period_type, "period_key": period_key,
+           "labour_cost": round(float(labour_cost), 2),
+           "hours": round(float(hours or 0), 2),
+           "updated_at": dt.datetime.now().isoformat(timespec="seconds")}
+    if _use_supabase():
+        _client().table("labour").upsert(row, on_conflict="period_type,period_key").execute()
+    else:
+        _ensure_csv(LABOUR_PATH, LABOUR_COLUMNS)
+        df = pd.read_csv(LABOUR_PATH)
+        df = df[~((df["period_type"] == period_type) & (df["period_key"] == period_key))]
+        df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+        df.to_csv(LABOUR_PATH, index=False)
+    return row
+
+
+def labour_map(period_type: str) -> dict:
+    """{period_key: {'cost': float, 'hours': float}} for the given period type."""
+    if _use_supabase():
+        try:
+            data = (_client().table("labour").select("period_key,labour_cost,hours")
+                    .eq("period_type", period_type).execute().data)
+            rows = data or []
+        except Exception:
+            return {}  # labour table not created in Supabase yet -> degrade, don't crash
+    else:
+        _ensure_csv(LABOUR_PATH, LABOUR_COLUMNS)
+        df = pd.read_csv(LABOUR_PATH)
+        if df.empty:
+            return {}
+        rows = df[df["period_type"] == period_type].to_dict("records")
+    out = {}
+    for r in rows:
+        try:
+            cost = float(r.get("labour_cost") or 0)
+        except (TypeError, ValueError):
+            cost = 0.0
+        try:
+            hrs = float(r.get("hours") or 0)
+        except (TypeError, ValueError):
+            hrs = 0.0
+        out[r["period_key"]] = {"cost": cost, "hours": hrs}
+    return out
 
 
 # ---------- POS daily takings (one finalised end-of-day slip per date) ----------
