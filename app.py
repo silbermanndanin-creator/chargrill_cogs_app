@@ -17,6 +17,10 @@ try:
     import reconcile_app as recon
 except Exception:
     recon = None
+try:
+    import foodsafety as fsafe
+except Exception:
+    fsafe = None
 
 st.set_page_config(page_title="Chargrill COGS", page_icon="🍗", layout="wide")
 
@@ -303,12 +307,12 @@ st.markdown(f"""<div class="appbar">
 
 # Owner sees all six tabs; chef sees only the four cost/operations tabs.
 if owner:
-    tab_dash, tab_inv, tab_pos, tab_lab, tab_recon, tab_veg, tab_list = st.tabs(
+    tab_dash, tab_inv, tab_pos, tab_lab, tab_recon, tab_temp, tab_veg, tab_list = st.tabs(
         ["📊 Dashboard", "📸 Add invoice", "💰 Daily takings", "🧮 Labour",
-         "🧾 Reconciliation", "🥬 Veggie prices", "📋 Invoices"])
+         "🧾 Reconciliation", "🌡️ Temp records", "🥬 Veggie prices", "📋 Invoices"])
 else:
-    tab_dash, tab_inv, tab_veg, tab_list = st.tabs(
-        ["📊 Dashboard", "📸 Add invoice", "🥬 Veggie prices", "📋 Invoices"])
+    tab_dash, tab_inv, tab_temp, tab_veg, tab_list = st.tabs(
+        ["📊 Dashboard", "📸 Add invoice", "🌡️ Temp records", "🥬 Veggie prices", "📋 Invoices"])
     tab_pos = tab_lab = tab_recon = None
 
 # ============ Add-invoice tab ============
@@ -682,6 +686,39 @@ if tab_recon is not None:
                                key="rec_dl")
             st.caption("Then paste the Deliveries & Bite columns into Uber.xlsx / App payments.xlsx "
                        "(the map is on that sheet).")
+
+
+# ============ Food Safety temp records tab ============
+if tab_temp is not None:
+    with tab_temp:
+        st.markdown("#### 🌡️ Food Safety daily temperature records")
+        if fsafe is None:
+            st.error("Temp-records module unavailable.")
+        else:
+            st.caption("Generates a filled daily record with realistic randomised temperatures "
+                       "(same rules and layout as the paper book). Pick a single day or a range.")
+            tmode = st.radio("Generate", ["Single day", "Date range"], horizontal=True, key="ts_mode")
+            dates, fname = [], "Food Safety Temps.xlsx"
+            if tmode == "Single day":
+                tday = st.date_input("Date", value=dt.date.today(), key="ts_day")
+                dates = [tday]
+                fname = f"Food Safety Temps - {tday:%d %b %Y}.xlsx"
+            else:
+                c1, c2 = st.columns(2)
+                tfrom = c1.date_input("From", value=dt.date.today().replace(day=1), key="ts_from")
+                tto = c2.date_input("To", value=dt.date.today(), key="ts_to")
+                if tto < tfrom:
+                    st.warning("'To' is before 'From'.")
+                else:
+                    dates = fsafe.daterange(tfrom, tto)
+                    st.caption(f"{len(dates)} day(s) — one sheet per day.")
+                    fname = f"Food Safety Temps - {tfrom:%d %b} to {tto:%d %b %Y}.xlsx"
+            if dates:
+                buf = fsafe.build_workbook(dates)
+                st.download_button("⬇️ Download temp records", buf, file_name=fname,
+                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                   key="ts_dl")
+            st.caption("1 Mar → 1 Jun 2026 already back-filled to Google Drive › Chargrill › Food Safety.")
 
 
 # ============ Dashboard tab ============
