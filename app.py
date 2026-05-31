@@ -13,6 +13,10 @@ import metrics
 from extract import extract_invoice, extract_pos_slip
 from lightspeed import get_revenue
 import payroll
+try:
+    import reconcile_app as recon
+except Exception:
+    recon = None
 
 st.set_page_config(page_title="Chargrill COGS", page_icon="🍗", layout="wide")
 
@@ -115,6 +119,23 @@ for _k in ("SUPABASE_URL", "SUPABASE_KEY"):
         os.environ[_k] = _v
 
 
+# ============ Roles: chef (default) vs owner ============
+# The app opens in the restricted "chef" view. The owner taps the 🔒 box at the
+# bottom of the sidebar and enters the PIN to unlock revenue + wages + full tabs.
+# PIN comes from the OWNER_PIN secret/env; falls back to 4321 if unset.
+def _owner_pin():
+    try:
+        p = st.secrets.get("OWNER_PIN")
+    except Exception:
+        p = None
+    return str(p or os.environ.get("OWNER_PIN") or "4321")
+
+
+if "is_owner" not in st.session_state:
+    st.session_state["is_owner"] = False
+owner = st.session_state["is_owner"]
+
+
 def prev_period_key(mode, ref):
     if mode == "Week":
         return storage.iso_week_of(ref - dt.timedelta(days=7))
@@ -179,63 +200,87 @@ with st.sidebar:
     pos_map = metrics.pos_revenue_map(pos_df, p_col)
     manual_map = storage.revenue_map(p_type)
 
-    st.divider()
-    st.markdown("**Revenue (ex-GST)**")
-    rev_mode = st.radio("Source", ["POS slips (daily)", "Manual entry", "Lightspeed (K-Series)"],
-                        label_visibility="collapsed")
-    revenue = 0.0
-    if rev_mode == "POS slips (daily)":
-        revenue = float(pos_map.get(period_key, 0.0))
-        bd = metrics.pos_breakdown(pos_df, p_col, period_key)
-        if bd["days"]:
-            st.caption(f"{bd['days']} day(s) · **${revenue:,.0f}** ex-GST — "
-                       f"net after −{config.DELIVERY_COMMISSION*100:.0f}% on "
-                       f"${bd['delivery_gross']:,.0f} delivery")
+    # Revenue: owner picks the source and sees the figure. Chef never sees revenue,
+    # but we still compute it silently so COGS % / Labour % can be shown.
+    if owner:
+        st.divider()
+        st.markdown("**Revenue (ex-GST)**")
+        rev_mode = st.radio("Source", ["POS slips (daily)", "Manual entry", "Lightspeed (K-Series)"],
+                            label_visibility="collapsed")
+        revenue = 0.0
+        if rev_mode == "POS slips (daily)":
+            revenue = float(pos_map.get(period_key, 0.0))
+            bd = metrics.pos_breakdown(pos_df, p_col, period_key)
+            if bd["days"]:
+                st.caption(f"{bd['days']} day(s) · **${revenue:,.0f}** ex-GST — "
+                           f"net after −{config.DELIVERY_COMMISSION*100:.0f}% on "
+                           f"${bd['delivery_gross']:,.0f} delivery")
+            else:
+                st.caption("No POS slips this period — add one in **💰 Daily takings**.")
+        elif rev_mode == "Manual entry":
+            stored = float(manual_map.get(period_key, 0.0))
+            revenue = st.number_input(f"{mode} net sales $", min_value=0.0, step=1000.0, value=stored)
+            if revenue > 0 and revenue != stored:
+                storage.set_revenue(p_type, period_key, revenue)
+                manual_map[period_key] = revenue
         else:
-            st.caption("No POS slips this period — add one in **💰 Daily takings**.")
-    elif rev_mode == "Manual entry":
-        stored = float(manual_map.get(period_key, 0.0))
-        revenue = st.number_input(f"{mode} net sales $", min_value=0.0, step=1000.0, value=stored)
-        if revenue > 0 and revenue != stored:
-            storage.set_revenue(p_type, period_key, revenue)
-            manual_map[period_key] = revenue
+            try:
+                token = st.secrets.get("LIGHTSPEED_TOKEN")
+                biz = st.secrets.get("LIGHTSPEED_BUSINESS_ID")
+            except Exception:
+                token = biz = None
+            r = get_revenue(p_start, p_end, token, biz)
+            revenue = float(r) if r else 0.0
+            if not r:
+                st.caption("Lightspeed not connected.")
     else:
-        try:
-            token = st.secrets.get("LIGHTSPEED_TOKEN")
-            biz = st.secrets.get("LIGHTSPEED_BUSINESS_ID")
-        except Exception:
-            token = biz = None
-        r = get_revenue(p_start, p_end, token, biz)
-        revenue = float(r) if r else 0.0
-        if not r:
-            st.caption("Lightspeed not connected.")
+        # Chef view: use POS revenue, fall back to manual entry — never displayed.
+        revenue = float(pos_map.get(period_key, 0.0)) or float(manual_map.get(period_key, 0.0))
     trend_rev_map = {**manual_map, **pos_map}
 
-    # ---- Labour (gross wages) ----
-    # Labour is logged per week from the Tanda CSV in the 🧮 Labour tab. Month mode
-    # sums the weeks that fall in the month. A manual override is available per week.
-    st.divider()
-    st.markdown("**Labour (gross wages)**")
+    # ---- Labour ----
+    # Hours feed the dashboard's BOH-hours card (visible to everyone). Gross wages
+    # are owner-only and shown/edited here only in the owner view.
     labour_cost, labour_hours, labour_foh, labour_boh = storage.labour_for_period(mode, period_key)
-    if mode == "Week":
-        if labour_cost:
-            st.caption(f"**${labour_cost:,.0f}** gross · {labour_hours:g} hrs — from 🧮 Labour")
+    if owner:
+        st.divider()
+        st.markdown("**Labour (gross wages)**")
+        if mode == "Week":
+            if labour_cost:
+                st.caption(f"**${labour_cost:,.0f}** gross · {labour_hours:g} hrs — from 🧮 Labour")
+            else:
+                st.caption("No labour yet — upload this week's Tanda CSV in **🧮 Labour**.")
+            with st.expander("✏️ Override this week manually"):
+                mc = st.number_input("Gross wages $", min_value=0.0, step=100.0,
+                                     value=float(labour_cost), key="lab_cost")
+                mh = st.number_input("Hours", min_value=0.0, step=10.0,
+                                     value=float(labour_hours), key="lab_hours")
+                if mc > 0 and (mc != labour_cost or mh != labour_hours):
+                    storage.set_labour("week", period_key, mc, mh, labour_foh, labour_boh)
+                    labour_cost, labour_hours = mc, mh
         else:
-            st.caption("No labour yet — upload this week's Tanda CSV in **🧮 Labour**.")
-        with st.expander("✏️ Override this week manually"):
-            mc = st.number_input("Gross wages $", min_value=0.0, step=100.0,
-                                 value=float(labour_cost), key="lab_cost")
-            mh = st.number_input("Hours", min_value=0.0, step=10.0,
-                                 value=float(labour_hours), key="lab_hours")
-            if mc > 0 and (mc != labour_cost or mh != labour_hours):
-                storage.set_labour("week", period_key, mc, mh, labour_foh, labour_boh)
-                labour_cost, labour_hours = mc, mh
-    else:
-        if labour_cost:
-            st.caption(f"**${labour_cost:,.0f}** gross (sum of weeks in {period_label})")
-        else:
-            st.caption("No labour logged this month — add weeks in **🧮 Labour**.")
+            if labour_cost:
+                st.caption(f"**${labour_cost:,.0f}** gross (sum of weeks in {period_label})")
+            else:
+                st.caption("No labour logged this month — add weeks in **🧮 Labour**.")
     labour_cost_map = storage.labour_cost_map_for(mode)
+
+    # ---- Owner unlock / lock ----
+    st.divider()
+    if owner:
+        st.caption("👑 Owner view — full access")
+        if st.button("🔒 Lock to chef view", width="stretch"):
+            st.session_state["is_owner"] = False
+            st.rerun()
+    else:
+        with st.expander("🔒 Owner access"):
+            pin = st.text_input("Owner PIN", type="password", key="ownerpin")
+            if st.button("Unlock", key="ownerunlock"):
+                if pin == _owner_pin():
+                    st.session_state["is_owner"] = True
+                    st.rerun()
+                else:
+                    st.error("Incorrect PIN.")
 
 df = storage.load_invoices()
 lines = metrics.explode_lines(df)
@@ -256,9 +301,15 @@ st.markdown(f"""<div class="appbar">
   <div class="appbar-period">{period_label}</div>
 </div>""", unsafe_allow_html=True)
 
-tab_dash, tab_inv, tab_pos, tab_lab, tab_veg, tab_list = st.tabs(
-    ["📊 Dashboard", "📸 Add invoice", "💰 Daily takings", "🧮 Labour",
-     "🥬 Veggie prices", "📋 Invoices"])
+# Owner sees all six tabs; chef sees only the four cost/operations tabs.
+if owner:
+    tab_dash, tab_inv, tab_pos, tab_lab, tab_recon, tab_veg, tab_list = st.tabs(
+        ["📊 Dashboard", "📸 Add invoice", "💰 Daily takings", "🧮 Labour",
+         "🧾 Reconciliation", "🥬 Veggie prices", "📋 Invoices"])
+else:
+    tab_dash, tab_inv, tab_veg, tab_list = st.tabs(
+        ["📊 Dashboard", "📸 Add invoice", "🥬 Veggie prices", "📋 Invoices"])
+    tab_pos = tab_lab = tab_recon = None
 
 # ============ Add-invoice tab ============
 with tab_inv:
@@ -321,228 +372,316 @@ with tab_inv:
             st.session_state.pop("inv", None)
             st.rerun()
 
-# ============ Daily takings tab ============
-with tab_pos:
-    if st.session_state.pop("pflash", None):
-        st.success(st.session_state.pop("pflash_msg", "Saved."))
-    st.markdown("#### Add a finalised POS day (end-of-day slip)")
-    psrc = st.radio("Source", ["Take photo", "Upload file"], horizontal=True, key="possrc")
-    pup = st.camera_input("Photograph the POS slip") if psrc == "Take photo" \
-        else st.file_uploader("Upload POS slip (photo or PDF)",
-                              type=["jpg", "jpeg", "png", "webp", "pdf"], key="posup")
-    if pup is not None:
-        if not get_api_key():
-            st.error("No ANTHROPIC_API_KEY set.")
-        elif st.button("Read takings", type="primary", key="posbtn"):
-            with st.spinner("Reading slip…"):
-                media = getattr(pup, "type", "image/jpeg")
-                try:
-                    st.session_state["pos"] = extract_pos_slip(pup.getvalue(), media).model_dump()
-                except Exception as e:
-                    st.error(f"Extraction failed: {e}")
+# ============ Daily takings tab (owner only) ============
+if tab_pos is not None:
+    with tab_pos:
+        if st.session_state.pop("pflash", None):
+            st.success(st.session_state.pop("pflash_msg", "Saved."))
+        st.markdown("#### Add a finalised POS day (end-of-day slip)")
+        psrc = st.radio("Source", ["Take photo", "Upload file"], horizontal=True, key="possrc")
+        pup = st.camera_input("Photograph the POS slip") if psrc == "Take photo" \
+            else st.file_uploader("Upload POS slip (photo or PDF)",
+                                  type=["jpg", "jpeg", "png", "webp", "pdf"], key="posup")
+        if pup is not None:
+            if not get_api_key():
+                st.error("No ANTHROPIC_API_KEY set.")
+            elif st.button("Read takings", type="primary", key="posbtn"):
+                with st.spinner("Reading slip…"):
+                    media = getattr(pup, "type", "image/jpeg")
+                    try:
+                        st.session_state["pos"] = extract_pos_slip(pup.getvalue(), media).model_dump()
+                    except Exception as e:
+                        st.error(f"Extraction failed: {e}")
 
-    pos = st.session_state.get("pos")
-    if pos:
+        pos = st.session_state.get("pos")
+        if pos:
+            st.divider()
+            st.caption(f"Confidence **{pos.get('confidence','?')}** · all figures incl GST")
+            c1, c2 = st.columns(2)
+            pdate = c1.text_input("Date", pos["business_date"])
+            ptot = c2.number_input("Total takings (incl GST) $", value=float(pos["total_incl_gst"]), step=0.01)
+            c3, c4 = st.columns(2)
+            pdd = c3.number_input("DoorDash (incl GST) $", value=float(pos.get("doordash_incl_gst", 0)), step=0.01)
+            pue = c4.number_input("UberEats (incl GST) $", value=float(pos.get("ubereats_incl_gst", 0)), step=0.01)
+            adj_incl, adj_ex = config.delivery_adjust(ptot, pdd, pue)
+            cut = config.DELIVERY_COMMISSION * (pdd + pue)
+            st.info(f"Delivery −{config.DELIVERY_COMMISSION*100:.0f}% on ${pdd+pue:,.2f} = −${cut:,.2f}  →  "
+                    f"**${adj_incl:,.2f} incl GST**  =  **${adj_ex:,.2f} ex-GST** for the day.")
+            if st.button("✅ Save day's takings", key="possave"):
+                storage.save_pos_day(pdate, ptot, pdd, pue)
+                st.session_state["pflash"] = True
+                st.session_state["pflash_msg"] = f"Saved {pdate}: ${adj_ex:,.0f} ex-GST"
+                st.session_state.pop("pos", None)
+                st.rerun()
+
+        # ---- This week's takings, day by day ----
         st.divider()
-        st.caption(f"Confidence **{pos.get('confidence','?')}** · all figures incl GST")
-        c1, c2 = st.columns(2)
-        pdate = c1.text_input("Date", pos["business_date"])
-        ptot = c2.number_input("Total takings (incl GST) $", value=float(pos["total_incl_gst"]), step=0.01)
-        c3, c4 = st.columns(2)
-        pdd = c3.number_input("DoorDash (incl GST) $", value=float(pos.get("doordash_incl_gst", 0)), step=0.01)
-        pue = c4.number_input("UberEats (incl GST) $", value=float(pos.get("ubereats_incl_gst", 0)), step=0.01)
-        adj_incl, adj_ex = config.delivery_adjust(ptot, pdd, pue)
-        cut = config.DELIVERY_COMMISSION * (pdd + pue)
-        st.info(f"Delivery −{config.DELIVERY_COMMISSION*100:.0f}% on ${pdd+pue:,.2f} = −${cut:,.2f}  →  "
-                f"**${adj_incl:,.2f} incl GST**  =  **${adj_ex:,.2f} ex-GST** for the day.")
-        if st.button("✅ Save day's takings", key="possave"):
-            storage.save_pos_day(pdate, ptot, pdd, pue)
-            st.session_state["pflash"] = True
-            st.session_state["pflash_msg"] = f"Saved {pdate}: ${adj_ex:,.0f} ex-GST"
-            st.session_state.pop("pos", None)
-            st.rerun()
-
-    # ---- This week's takings, day by day ----
-    st.divider()
-    monday = ref - dt.timedelta(days=ref.weekday())
-    week_iso = storage.iso_week_of(ref)
-    st.markdown(f"#### 📅 Takings — week of {monday:%d %b %Y}")
-    wk = pos_df[pos_df["iso_week"] == week_iso] if not pos_df.empty else pos_df
-    rows = []
-    for i in range(7):
-        dday = monday + dt.timedelta(days=i)
-        match = wk[wk["date"].astype(str) == dday.isoformat()] if (wk is not None and not wk.empty) \
-            else None
-        if match is not None and not match.empty:
-            r = match.iloc[0]
-            num = lambda c: float(pd.to_numeric(r[c], errors="coerce") or 0)
-            incl, deliv, net = num("total_incl_gst"), num("doordash") + num("ubereats"), num("adjusted_ex_gst")
+        monday = ref - dt.timedelta(days=ref.weekday())
+        week_iso = storage.iso_week_of(ref)
+        st.markdown(f"#### 📅 Takings — week of {monday:%d %b %Y}")
+        wk = pos_df[pos_df["iso_week"] == week_iso] if not pos_df.empty else pos_df
+        rows = []
+        for i in range(7):
+            dday = monday + dt.timedelta(days=i)
+            match = wk[wk["date"].astype(str) == dday.isoformat()] if (wk is not None and not wk.empty) \
+                else None
+            if match is not None and not match.empty:
+                r = match.iloc[0]
+                num = lambda c: float(pd.to_numeric(r[c], errors="coerce") or 0)
+                incl, deliv, net = num("total_incl_gst"), num("doordash") + num("ubereats"), num("adjusted_ex_gst")
+            else:
+                incl = deliv = net = 0.0
+            rows.append({"Day": dday.strftime("%a %d %b"), "Takings (incl GST)": round(incl, 2),
+                         "Delivery (incl GST)": round(deliv, 2), "Net (ex-GST)": round(net, 2)})
+        wkdf = pd.DataFrame(rows)
+        if wkdf["Net (ex-GST)"].sum() > 0:
+            fig = px.bar(wkdf, x="Day", y="Net (ex-GST)", text_auto=".0f")
+            fig.update_traces(marker_color="#2ec4b6", textposition="outside")
+            fig.update_yaxes(title="Net $ ex-GST")
+            fig.update_xaxes(title="")
+            st.plotly_chart(dark(fig, h=270), width="stretch", config={"displayModeBar": False})
+            st.dataframe(wkdf, hide_index=True, width="stretch")
+            n_days = int((wkdf["Net (ex-GST)"] > 0).sum())
+            st.caption(f"Week net ex-GST: **${wkdf['Net (ex-GST)'].sum():,.0f}** · {n_days} day(s) logged")
         else:
-            incl = deliv = net = 0.0
-        rows.append({"Day": dday.strftime("%a %d %b"), "Takings (incl GST)": round(incl, 2),
-                     "Delivery (incl GST)": round(deliv, 2), "Net (ex-GST)": round(net, 2)})
-    wkdf = pd.DataFrame(rows)
-    if wkdf["Net (ex-GST)"].sum() > 0:
-        fig = px.bar(wkdf, x="Day", y="Net (ex-GST)", text_auto=".0f")
-        fig.update_traces(marker_color="#2ec4b6", textposition="outside")
-        fig.update_yaxes(title="Net $ ex-GST")
-        fig.update_xaxes(title="")
-        st.plotly_chart(dark(fig, h=270), width="stretch", config={"displayModeBar": False})
-        st.dataframe(wkdf, hide_index=True, width="stretch")
-        n_days = int((wkdf["Net (ex-GST)"] > 0).sum())
-        st.caption(f"Week net ex-GST: **${wkdf['Net (ex-GST)'].sum():,.0f}** · {n_days} day(s) logged")
-    else:
-        st.caption(f"No takings logged for the week of {monday:%d %b} yet — add a day above.")
+            st.caption(f"No takings logged for the week of {monday:%d %b} yet — add a day above.")
 
-# ============ Labour tab ============
-with tab_lab:
-    st.markdown("#### 🧮 Weekly labour — Tanda shift CSV → award pay")
-    st.caption("Computes Fast Food Industry Award 2020 pay (flat-vs-award top-ups for FT/PT, "
-               "full penalty rates for casuals) and feeds the week's gross wages into "
-               "Labour % / Prime cost % on the dashboard.")
+# ============ Labour tab (owner only) ============
+if tab_lab is not None:
+    with tab_lab:
+        st.markdown("#### 🧮 Weekly labour — Tanda shift CSV → award pay")
+        st.caption("Computes Fast Food Industry Award 2020 pay (flat-vs-award top-ups for FT/PT, "
+                   "full penalty rates for casuals) and feeds the week's gross wages into "
+                   "Labour % / Prime cost % on the dashboard.")
 
-    setup = storage.load_payroll_setup()
-    with st.expander("⚙️ Payroll setup file" + ("" if setup else "  — REQUIRED"),
-                     expanded=not setup):
-        if setup:
-            st.caption(f"Loaded **{setup[0]}** · uploaded {setup[2]}")
-        else:
-            st.warning("Upload **Payroll Setup.xlsx** (staff, award rates, public holidays) "
-                       "to enable labour processing. Stored privately in Supabase — never in git.")
-        su = st.file_uploader("Upload / replace Payroll Setup.xlsx", type=["xlsx"], key="setupup")
-        if su is not None and st.button("Save setup", key="setupsave"):
-            try:
-                payroll.load_setup_from_bytes(su.getvalue())  # validate it parses first
-                storage.save_payroll_setup(su.name, su.getvalue())
-                st.success("Setup saved.")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Couldn't read that setup file: {e}")
-
-    if not setup:
-        st.info("Add the setup file above, then upload a weekly shift CSV here.")
-    else:
-        st.markdown("##### Upload this week's Tanda shift CSV")
-        csvf = st.file_uploader("Tanda shift report (CSV)", type=["csv"], key="shiftcsv")
-        if csvf is not None and st.button("Calculate award pay", type="primary", key="calcpay"):
-            with st.spinner("Crunching the award…"):
+        setup = storage.load_payroll_setup()
+        with st.expander("⚙️ Payroll setup file" + ("" if setup else "  — REQUIRED"),
+                         expanded=not setup):
+            if setup:
+                st.caption(f"Loaded **{setup[0]}** · uploaded {setup[2]}")
+            else:
+                st.warning("Upload **Payroll Setup.xlsx** (staff, award rates, public holidays) "
+                           "to enable labour processing. Stored privately in Supabase — never in git.")
+            su = st.file_uploader("Upload / replace Payroll Setup.xlsx", type=["xlsx"], key="setupup")
+            if su is not None and st.button("Save setup", key="setupsave"):
                 try:
-                    st.session_state["pay"] = payroll.process_shift_csv(csvf.getvalue(), setup[1])
+                    payroll.load_setup_from_bytes(su.getvalue())  # validate it parses first
+                    storage.save_payroll_setup(su.name, su.getvalue())
+                    st.success("Setup saved.")
+                    st.rerun()
                 except Exception as e:
-                    st.error(f"Processing failed: {e}")
+                    st.error(f"Couldn't read that setup file: {e}")
+
+        if not setup:
+            st.info("Add the setup file above, then upload a weekly shift CSV here.")
+        else:
+            st.markdown("##### Upload this week's Tanda shift CSV")
+            csvf = st.file_uploader("Tanda shift report (CSV)", type=["csv"], key="shiftcsv")
+            if csvf is not None and st.button("Calculate award pay", type="primary", key="calcpay"):
+                with st.spinner("Crunching the award…"):
+                    try:
+                        st.session_state["pay"] = payroll.process_shift_csv(csvf.getvalue(), setup[1])
+                    except Exception as e:
+                        st.error(f"Processing failed: {e}")
+                        st.session_state.pop("pay", None)
+
+            out = st.session_state.get("pay")
+            if out:
+                wk_end = pd.Timestamp(out["week_ending"])
+                iso = storage.iso_week_of(wk_end.date())
+
+                # ---- Annual / sick leave (paid at flat rate, FT/PT only) ----
+                with st.expander("➕ Annual / sick leave (FT/PT, paid at flat rate)"):
+                    st.caption("Enter AL/SL hours — added to each person's gross at their flat "
+                               "rate and carried into the report's SL/AL columns.")
+                    perm = [r for r in out["results"] if r["emp_type"] != "Casual"]
+                    leave_in = pd.DataFrame([{"Employee": r["name"],
+                                              "AL hrs": float(r.get("al_hrs", 0.0)),
+                                              "SL hrs": float(r.get("sl_hrs", 0.0))} for r in perm])
+                    edited = st.data_editor(
+                        leave_in, hide_index=True, width="stretch", key="leave_ed",
+                        column_config={
+                            "Employee": st.column_config.TextColumn(disabled=True),
+                            "AL hrs": st.column_config.NumberColumn(min_value=0.0, step=1.0, format="%.1f"),
+                            "SL hrs": st.column_config.NumberColumn(min_value=0.0, step=1.0, format="%.1f")})
+                    leave = {row["Employee"]: {"al": row["AL hrs"], "sl": row["SL hrs"]}
+                             for _, row in edited.iterrows()}
+                out = payroll.apply_leave(out, leave)
+                st.session_state["pay"] = out
+
+                st.divider()
+                mc = st.columns(4)
+                mc[0].metric("Week ending", wk_end.strftime("%d %b %Y"))
+                mc[1].metric("Total gross wages", f"${out['total_gross']:,.0f}")
+                mc[2].metric("Total hours", f"{out['total_hours']:,.1f}")
+                mc[3].metric("Top-ups", f"${out['total_topup']:,.0f}")
+                if out.get("total_leave"):
+                    st.caption(f"Gross includes **${out['total_leave']:,.0f}** annual/sick leave.")
+                if out["unmatched"]:
+                    st.warning("Not found in setup (paid on defaults — add them to the setup sheet): "
+                               + ", ".join(out["unmatched"]))
+
+                results = out["results"]
+                summary_df = pd.DataFrame([{
+                    "Employee": r["name"], "Type": r["emp_type"], "Section": r["section"],
+                    "Worked Hrs": round(r["hrs"]["total"], 2),
+                    "AL hrs": round(r.get("al_hrs", 0), 2), "SL hrs": round(r.get("sl_hrs", 0), 2),
+                    "Flat Pay": round(r["flat_pay"], 2), "Award Pay": round(r["award_pay"], 2),
+                    "Top Up": round(r["topup"], 2), "Leave Pay": round(r.get("leave_pay", 0), 2),
+                    "Gross Pay": round(r["gross"], 2)} for r in results])
+                cas = [r for r in results if r["emp_type"] == "Casual"]
+                casual_df = pd.DataFrame([{
+                    "Employee": r["name"], "WD": r["hrs"]["wd"], "Sat": r["hrs"]["sat"],
+                    "Sun": r["hrs"]["sun"], "Sun OT": r["hrs"]["sun_ot"], "PH": r["hrs"]["ph"],
+                    "Daily OT": round(r["hrs"]["daily_ot1"] + r["hrs"]["daily_ot2"], 2),
+                    "Weekly OT": round(r["hrs"]["weekly_ot1"] + r["hrs"]["weekly_ot2"], 2),
+                    "Late Night": round(r["hrs"]["late_night"], 2),
+                    "Total Hrs": round(r["hrs"]["total"], 2),
+                    "Total Pay": round(r["pay"]["total"], 2)} for r in cas])
+                secs = {}
+                for r in results:
+                    sec = r.get("section") or "Unknown"
+                    d = secs.setdefault(sec, {"FT/PT Hrs": 0.0, "FT/PT Cost": 0.0,
+                                              "Casual Hrs": 0.0, "Casual Cost": 0.0})
+                    if r["emp_type"] == "Casual":
+                        d["Casual Hrs"] += r["hrs"]["total"]; d["Casual Cost"] += r["award_pay"]
+                    else:
+                        d["FT/PT Hrs"] += r["hrs"]["total"]; d["FT/PT Cost"] += r["gross"]
+                section_df = pd.DataFrame([{
+                    "Section": s, "FT/PT Hrs": round(d["FT/PT Hrs"], 2),
+                    "FT/PT Cost": round(d["FT/PT Cost"], 2), "Casual Hrs": round(d["Casual Hrs"], 2),
+                    "Casual Cost": round(d["Casual Cost"], 2),
+                    "Total Hrs": round(d["FT/PT Hrs"] + d["Casual Hrs"], 2),
+                    "Total Cost": round(d["FT/PT Cost"] + d["Casual Cost"], 2)}
+                    for s, d in sorted(secs.items())])
+                daily_df = pd.DataFrame([{
+                    "Employee": r["name"], "Date": pd.Timestamp(day["date"]).strftime("%d/%m"),
+                    "Day": day["day_name"], "Type": day["day_type"], "Shifts": day["shifts"],
+                    "Total Hrs": round(day["total_hrs"], 2), "Ordinary": round(day["ordinary_hrs"], 2),
+                    "Daily OT": round(day.get("daily_ot1", 0) + day.get("daily_ot2", 0), 2),
+                    "Late Night": round(day["late_night"], 2), "Section": r["section"]}
+                    for r in results for day in r["day_rows"]])
+
+                bd = st.tabs(["Summary", "Casual detail", "By section", "Daily"])
+                with bd[0]:
+                    st.dataframe(summary_df, hide_index=True, width="stretch")
+                with bd[1]:
+                    if casual_df.empty:
+                        st.caption("No casual employees this week.")
+                    else:
+                        st.dataframe(casual_df, hide_index=True, width="stretch")
+                with bd[2]:
+                    st.dataframe(section_df, hide_index=True, width="stretch")
+                with bd[3]:
+                    st.dataframe(daily_df, hide_index=True, width="stretch")
+
+                st.download_button(
+                    "⬇️ Download full Excel report",
+                    payroll.build_workbook(results, out["week_ending"]),
+                    file_name=f"Payroll_WeekEnding_{wk_end.strftime('%Y-%m-%d')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+                st.divider()
+                st.caption(f"Save sets labour for **{iso}** — gross **${out['total_gross']:,.0f}**, "
+                           f"{out['total_hours']:g} hrs → feeds Labour % / Prime cost %.")
+                foh_hours = round(sum(r["hrs"]["total"] for r in results
+                                      if str(r["section"]).upper() == "FOH"), 2)
+                boh_hours = round(sum(r["hrs"]["total"] for r in results
+                                      if str(r["section"]).upper() == "BOH"), 2)
+                if st.button(f"✅ Save labour to {iso}", key="savelab"):
+                    storage.set_labour("week", iso, out["total_gross"], out["total_hours"],
+                                       foh_hours, boh_hours)
                     st.session_state.pop("pay", None)
+                    st.session_state["lab_flash"] = iso
+                    st.rerun()
+            if st.session_state.pop("lab_flash", None):
+                st.success("Labour saved — check the Dashboard's Prime Cost section.")
 
-        out = st.session_state.get("pay")
-        if out:
-            wk_end = pd.Timestamp(out["week_ending"])
-            iso = storage.iso_week_of(wk_end.date())
 
-            # ---- Annual / sick leave (paid at flat rate, FT/PT only) ----
-            with st.expander("➕ Annual / sick leave (FT/PT, paid at flat rate)"):
-                st.caption("Enter AL/SL hours — added to each person's gross at their flat "
-                           "rate and carried into the report's SL/AL columns.")
-                perm = [r for r in out["results"] if r["emp_type"] != "Casual"]
-                leave_in = pd.DataFrame([{"Employee": r["name"],
-                                          "AL hrs": float(r.get("al_hrs", 0.0)),
-                                          "SL hrs": float(r.get("sl_hrs", 0.0))} for r in perm])
-                edited = st.data_editor(
-                    leave_in, hide_index=True, width="stretch", key="leave_ed",
-                    column_config={
-                        "Employee": st.column_config.TextColumn(disabled=True),
-                        "AL hrs": st.column_config.NumberColumn(min_value=0.0, step=1.0, format="%.1f"),
-                        "SL hrs": st.column_config.NumberColumn(min_value=0.0, step=1.0, format="%.1f")})
-                leave = {row["Employee"]: {"al": row["AL hrs"], "sl": row["SL hrs"]}
-                         for _, row in edited.iterrows()}
-            out = payroll.apply_leave(out, leave)
-            st.session_state["pay"] = out
+# ============ Reconciliation tab (owner only) ============
+if tab_recon is not None:
+    with tab_recon:
+        st.markdown("#### 🧾 Weekly reconciliation")
+        if recon is None:
+            st.error("Reconciliation unavailable — `python-calamine` isn't installed. "
+                     "Add it to requirements.txt and redeploy.")
+        else:
+            st.caption("Upload the 7 Tyro location reports → terminal nets auto-fill → add cash, "
+                       "turnover, deliveries & Bite → download the filled weekly template.")
 
-            st.divider()
-            mc = st.columns(4)
-            mc[0].metric("Week ending", wk_end.strftime("%d %b %Y"))
-            mc[1].metric("Total gross wages", f"${out['total_gross']:,.0f}")
-            mc[2].metric("Total hours", f"{out['total_hours']:,.1f}")
-            mc[3].metric("Top-ups", f"${out['total_topup']:,.0f}")
-            if out.get("total_leave"):
-                st.caption(f"Gross includes **${out['total_leave']:,.0f}** annual/sick leave.")
-            if out["unmatched"]:
-                st.warning("Not found in setup (paid on defaults — add them to the setup sheet): "
-                           + ", ".join(out["unmatched"]))
+            def _rnum(x):
+                try:
+                    return float(x)
+                except (TypeError, ValueError):
+                    return None
 
-            results = out["results"]
-            summary_df = pd.DataFrame([{
-                "Employee": r["name"], "Type": r["emp_type"], "Section": r["section"],
-                "Worked Hrs": round(r["hrs"]["total"], 2),
-                "AL hrs": round(r.get("al_hrs", 0), 2), "SL hrs": round(r.get("sl_hrs", 0), 2),
-                "Flat Pay": round(r["flat_pay"], 2), "Award Pay": round(r["award_pay"], 2),
-                "Top Up": round(r["topup"], 2), "Leave Pay": round(r.get("leave_pay", 0), 2),
-                "Gross Pay": round(r["gross"], 2)} for r in results])
-            cas = [r for r in results if r["emp_type"] == "Casual"]
-            casual_df = pd.DataFrame([{
-                "Employee": r["name"], "WD": r["hrs"]["wd"], "Sat": r["hrs"]["sat"],
-                "Sun": r["hrs"]["sun"], "Sun OT": r["hrs"]["sun_ot"], "PH": r["hrs"]["ph"],
-                "Daily OT": round(r["hrs"]["daily_ot1"] + r["hrs"]["daily_ot2"], 2),
-                "Weekly OT": round(r["hrs"]["weekly_ot1"] + r["hrs"]["weekly_ot2"], 2),
-                "Late Night": round(r["hrs"]["late_night"], 2),
-                "Total Hrs": round(r["hrs"]["total"], 2),
-                "Total Pay": round(r["pay"]["total"], 2)} for r in cas])
-            secs = {}
-            for r in results:
-                sec = r.get("section") or "Unknown"
-                d = secs.setdefault(sec, {"FT/PT Hrs": 0.0, "FT/PT Cost": 0.0,
-                                          "Casual Hrs": 0.0, "Casual Cost": 0.0})
-                if r["emp_type"] == "Casual":
-                    d["Casual Hrs"] += r["hrs"]["total"]; d["Casual Cost"] += r["award_pay"]
-                else:
-                    d["FT/PT Hrs"] += r["hrs"]["total"]; d["FT/PT Cost"] += r["gross"]
-            section_df = pd.DataFrame([{
-                "Section": s, "FT/PT Hrs": round(d["FT/PT Hrs"], 2),
-                "FT/PT Cost": round(d["FT/PT Cost"], 2), "Casual Hrs": round(d["Casual Hrs"], 2),
-                "Casual Cost": round(d["Casual Cost"], 2),
-                "Total Hrs": round(d["FT/PT Hrs"] + d["Casual Hrs"], 2),
-                "Total Cost": round(d["FT/PT Cost"] + d["Casual Cost"], 2)}
-                for s, d in sorted(secs.items())])
-            daily_df = pd.DataFrame([{
-                "Employee": r["name"], "Date": pd.Timestamp(day["date"]).strftime("%d/%m"),
-                "Day": day["day_name"], "Type": day["day_type"], "Shifts": day["shifts"],
-                "Total Hrs": round(day["total_hrs"], 2), "Ordinary": round(day["ordinary_hrs"], 2),
-                "Daily OT": round(day.get("daily_ot1", 0) + day.get("daily_ot2", 0), 2),
-                "Late Night": round(day["late_night"], 2), "Section": r["section"]}
-                for r in results for day in r["day_rows"]])
+            rec_mon = ref - dt.timedelta(days=ref.weekday())
+            wk_start = st.date_input("Week commencing (Monday)", value=rec_mon, key="rec_mon")
+            rdays = [wk_start + dt.timedelta(days=i) for i in range(7)]
+            rlabels = [d.strftime("%a %d %b") for d in rdays]
 
-            bd = st.tabs(["Summary", "Casual detail", "By section", "Daily"])
-            with bd[0]:
-                st.dataframe(summary_df, hide_index=True, width="stretch")
-            with bd[1]:
-                if casual_df.empty:
-                    st.caption("No casual employees this week.")
-                else:
-                    st.dataframe(casual_df, hide_index=True, width="stretch")
-            with bd[2]:
-                st.dataframe(section_df, hide_index=True, width="stretch")
-            with bd[3]:
-                st.dataframe(daily_df, hide_index=True, width="stretch")
+            st.markdown("##### 1 · Upload Tyro location reports")
+            st.caption("Download them **Monday → Sunday in order** — the tool sorts by download time.")
+            rfiles = st.file_uploader("Location report .xlsx files", type=["xlsx"],
+                                      accept_multiple_files=True, key="rec_up")
+            nets = [[None, None, None] for _ in range(7)]
+            if rfiles:
+                ordered = sorted(rfiles, key=lambda f: recon.ts_key(f.name))
+                parsed = []
+                for f in ordered:
+                    try:
+                        parsed.append(recon.parse_report(f.getvalue()))
+                    except Exception as e:
+                        st.error(f"Couldn't read {f.name}: {e}")
+                if len(parsed) != 7:
+                    st.warning(f"Got {len(parsed)} report(s); expected 7 (one per day). "
+                               "Fill any gaps in the table below.")
+                for i, n in enumerate(parsed[:7]):
+                    nets[i] = n
 
-            st.download_button(
-                "⬇️ Download full Excel report",
-                payroll.build_workbook(results, out["week_ending"]),
-                file_name=f"Payroll_WeekEnding_{wk_end.strftime('%Y-%m-%d')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            st.markdown("##### 2 · Terminal nets (auto-filled — edit if needed)")
+            tyro_in = st.data_editor(pd.DataFrame({
+                "Day": rlabels,
+                "Terminal 1 Net": [nets[i][0] for i in range(7)],
+                "Terminal 2 Net": [nets[i][1] for i in range(7)],
+                "Terminal 3 Net": [nets[i][2] for i in range(7)],
+            }), hide_index=True, width="stretch", disabled=["Day"], key="rec_tyro")
+            tyro_in = tyro_in.copy()
+            tyro_in["Daily Total"] = tyro_in[["Terminal 1 Net", "Terminal 2 Net",
+                                              "Terminal 3 Net"]].sum(axis=1, numeric_only=True)
+            st.caption("Daily totals: " + " · ".join(
+                f"{rlabels[i].split()[0]} ${tyro_in.iloc[i]['Daily Total']:,.0f}" for i in range(7)))
 
-            st.divider()
-            st.caption(f"Save sets labour for **{iso}** — gross **${out['total_gross']:,.0f}**, "
-                       f"{out['total_hours']:g} hrs → feeds Labour % / Prime cost %.")
-            foh_hours = round(sum(r["hrs"]["total"] for r in results
-                                  if str(r["section"]).upper() == "FOH"), 2)
-            boh_hours = round(sum(r["hrs"]["total"] for r in results
-                                  if str(r["section"]).upper() == "BOH"), 2)
-            if st.button(f"✅ Save labour to {iso}", key="savelab"):
-                storage.set_labour("week", iso, out["total_gross"], out["total_hours"],
-                                   foh_hours, boh_hours)
-                st.session_state.pop("pay", None)
-                st.session_state["lab_flash"] = iso
-                st.rerun()
-        if st.session_state.pop("lab_flash", None):
-            st.success("Labour saved — check the Dashboard's Prime Cost section.")
+            st.markdown("##### 3 · Cash + POS slip turnover (type these in)")
+            cash_in = st.data_editor(pd.DataFrame({
+                "Day": rlabels, "POS": [None]*7, "ACT": [None]*7,
+                "Adjustment": [None]*7, "Turnover (POS slip)": [None]*7,
+            }), hide_index=True, width="stretch", disabled=["Day"], key="rec_cash")
+
+            st.markdown("##### 4 · Deliveries + Bite (type these in)")
+            deliv_in = st.data_editor(pd.DataFrame({
+                "Day": rlabels, "Uber Eats gross": [None]*7,
+                "DoorDash gross": [None]*7, "Bite (App pymt)": [None]*7,
+            }), hide_index=True, width="stretch", disabled=["Day"], key="rec_deliv")
+
+            tyro_days = [{"t1": _rnum(tyro_in.iloc[i]["Terminal 1 Net"]),
+                          "t2": _rnum(tyro_in.iloc[i]["Terminal 2 Net"]),
+                          "t3": _rnum(tyro_in.iloc[i]["Terminal 3 Net"]),
+                          "pos": _rnum(cash_in.iloc[i]["POS"]), "act": _rnum(cash_in.iloc[i]["ACT"]),
+                          "adj": _rnum(cash_in.iloc[i]["Adjustment"]),
+                          "turnover": _rnum(cash_in.iloc[i]["Turnover (POS slip)"])} for i in range(7)]
+            deliv_days = [{"uber": _rnum(deliv_in.iloc[i]["Uber Eats gross"]),
+                           "doordash": _rnum(deliv_in.iloc[i]["DoorDash gross"]),
+                           "bite": _rnum(deliv_in.iloc[i]["Bite (App pymt)"])} for i in range(7)]
+
+            st.markdown("##### 5 · Download")
+            buf = recon.build_workbook(dt.datetime.combine(wk_start, dt.time()), tyro_days, deliv_days)
+            fname = f"{rdays[0]:%d %b} - {rdays[6]:%d %b %Y} Reconciliation.xlsx"
+            st.download_button("⬇️ Download filled template", buf, file_name=fname,
+                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                               key="rec_dl")
+            st.caption("Then paste the Deliveries & Bite columns into Uber.xlsx / App payments.xlsx "
+                       "(the map is on that sheet).")
 
 
 # ============ Dashboard tab ============
@@ -584,16 +723,27 @@ with tab_dash:
     mom = ((_mo_cost(ref) - _lm_prev) / _lm_prev * 100) if _lm_prev else None
 
     # ---- KPI cards ----
-    k = st.columns(5)
-    kpi(k[0], "Revenue (ex-GST)", f"${revenue:,.0f}" if revenue > 0 else "—", "net of delivery cut")
-    kpi(k[1], "Total COGS", f"${total_cogs:,.0f}",
-        f"{var:+,.0f} vs target" if revenue > 0 else "", COLORS[tstat] if revenue > 0 else "#8b95a7")
-    kpi(k[2], "COGS %", f"{cogs_pct*100:.1f}%" if cogs_pct is not None else "—",
-        ((("▼ " if tstat == "green" else "▲ ") + f"{(cogs_pct-gp)*100:+.1f} pts vs {gp*100:.0f}%")
-         if cogs_pct is not None else f"target ≤{gp*100:.0f}%"),
-        COLORS[tstat] if cogs_pct is not None else "#8b95a7")
-    kpi(k[3], f"Target COGS ({gp*100:.0f}%)", f"${target_cogs:,.0f}" if revenue > 0 else "—", "the 40% line")
-    kpi(k[4], "Deliveries", f"{n_del}", "supplier drops")
+    if owner:
+        k = st.columns(5)
+        kpi(k[0], "Revenue (ex-GST)", f"${revenue:,.0f}" if revenue > 0 else "—", "net of delivery cut")
+        kpi(k[1], "Total COGS", f"${total_cogs:,.0f}",
+            f"{var:+,.0f} vs target" if revenue > 0 else "", COLORS[tstat] if revenue > 0 else "#8b95a7")
+        kpi(k[2], "COGS %", f"{cogs_pct*100:.1f}%" if cogs_pct is not None else "—",
+            ((("▼ " if tstat == "green" else "▲ ") + f"{(cogs_pct-gp)*100:+.1f} pts vs {gp*100:.0f}%")
+             if cogs_pct is not None else f"target ≤{gp*100:.0f}%"),
+            COLORS[tstat] if cogs_pct is not None else "#8b95a7")
+        kpi(k[3], f"Target COGS ({gp*100:.0f}%)", f"${target_cogs:,.0f}" if revenue > 0 else "—", "the 40% line")
+        kpi(k[4], "Deliveries", f"{n_del}", "supplier drops")
+    else:
+        # Chef view: spend $ + percentages + BOH hours, but no revenue / target $.
+        k = st.columns(4)
+        kpi(k[0], "Total supplier spend", f"${total_cogs:,.0f}", "food COGS this period")
+        kpi(k[1], "COGS %", f"{cogs_pct*100:.1f}%" if cogs_pct is not None else "—",
+            ((("▼ " if tstat == "green" else "▲ ") + f"{(cogs_pct-gp)*100:+.1f} pts vs {gp*100:.0f}%")
+             if cogs_pct is not None else f"target ≤{gp*100:.0f}%"),
+            COLORS[tstat] if cogs_pct is not None else "#8b95a7")
+        kpi(k[2], "BOH hours", f"{labour_boh:g}" if labour_boh else "—", "kitchen")
+        kpi(k[3], "Deliveries", f"{n_del}", "supplier drops")
     st.write("")
 
     # ---- Gauge + Baida tubs ----
@@ -604,7 +754,8 @@ with tab_dash:
             st.plotly_chart(cogs_gauge(cogs_pct, gp, rp), use_container_width=True,
                             config={"displayModeBar": False})
         else:
-            st.caption("Add revenue (sidebar) to see COGS %.")
+            st.caption("COGS % unavailable for this period." if not owner
+                       else "Add revenue (sidebar) to see COGS %.")
         st.caption(f"🟢 ≤{gp*100:.0f}% · 🟠 {gp*100:.0f}–{rp*100:.0f}% · 🔴 >{rp*100:.0f}%")
     with g2:
         tubs = metrics.baida_tubs(lines, p_col, period_key)
@@ -619,8 +770,8 @@ with tab_dash:
         st.caption(f"{int(tubs['total_chickens'])} chickens "
                    f"(RSPCA {int(tubs['RSPCA']['chickens'])}÷8 · Split {int(tubs['Split']['chickens'])}÷12)"
                    + (f" · TUB DEPOSIT {dep:g}" if dep else ""))
-        # Order-vs-turnover guide (weekly): is the Baida order high for the week's sales?
-        if mode == "Week" and not pos_df.empty:
+        # Order-vs-turnover guide references weekly sales $, so owner-only.
+        if owner and mode == "Week" and not pos_df.empty:
             gross_wk = float(pd.to_numeric(
                 pos_df[pos_df["iso_week"] == period_key]["total_incl_gst"],
                 errors="coerce").fillna(0).sum())
@@ -647,54 +798,62 @@ with tab_dash:
                                f"{rec_split:.0f} split ({rec_st:.0f} tubs).")
     st.write("")
 
-    # ---- Labour & Prime Cost ----
-    st.markdown("**💼 Labour & Prime Cost**")
+    # ---- Labour & Prime Cost (owner) / Kitchen hours (chef) ----
+    if owner:
+        st.markdown("**💼 Labour & Prime Cost**")
 
-    def _chg(p):
-        if p is None:
-            return "—"
-        return ("▲ " if p > 0 else "▼ ") + f"{abs(p):.0f}%"
+        def _chg(p):
+            if p is None:
+                return "—"
+            return ("▲ " if p > 0 else "▼ ") + f"{abs(p):.0f}%"
 
-    lc_cols = st.columns(5)
-    kpi(lc_cols[0], "Labour (gross wages)", f"${labour_cost:,.0f}" if labour_cost > 0 else "—",
-        (f"wk {_chg(wow)} · mth {_chg(mom)}" if (wow is not None or mom is not None) else "this period"))
-    kpi(lc_cols[1], "Labour %", f"{labour_pct*100:.1f}%" if labour_pct is not None else "—",
-        ((("▼ " if lstat == "green" else "▲ ") + f"{(labour_pct-config.LABOUR_GREEN)*100:+.1f} pts vs {config.LABOUR_GREEN*100:.0f}%")
-         if labour_pct is not None else f"target ≤{config.LABOUR_GREEN*100:.0f}%"),
-        COLORS[lstat] if labour_pct is not None else "#8b95a7")
-    kpi(lc_cols[2], "Prime cost %", f"{prime_pct*100:.1f}%" if prime_pct is not None else "—",
-        ((("▼ " if pstat == "green" else "▲ ") + f"{(prime_pct-config.PRIME_GREEN)*100:+.1f} pts vs {config.PRIME_GREEN*100:.0f}%")
-         if prime_pct is not None else f"target ≤{config.PRIME_GREEN*100:.0f}%"),
-        COLORS[pstat] if prime_pct is not None else "#8b95a7")
-    kpi(lc_cols[3], "FOH hours", f"{labour_foh:g}" if labour_foh else "—", "front of house")
-    kpi(lc_cols[4], "BOH hours", f"{labour_boh:g}" if labour_boh else "—", "kitchen")
-    st.write("")
+        lc_cols = st.columns(5)
+        kpi(lc_cols[0], "Labour (gross wages)", f"${labour_cost:,.0f}" if labour_cost > 0 else "—",
+            (f"wk {_chg(wow)} · mth {_chg(mom)}" if (wow is not None or mom is not None) else "this period"))
+        kpi(lc_cols[1], "Labour %", f"{labour_pct*100:.1f}%" if labour_pct is not None else "—",
+            ((("▼ " if lstat == "green" else "▲ ") + f"{(labour_pct-config.LABOUR_GREEN)*100:+.1f} pts vs {config.LABOUR_GREEN*100:.0f}%")
+             if labour_pct is not None else f"target ≤{config.LABOUR_GREEN*100:.0f}%"),
+            COLORS[lstat] if labour_pct is not None else "#8b95a7")
+        kpi(lc_cols[2], "Prime cost %", f"{prime_pct*100:.1f}%" if prime_pct is not None else "—",
+            ((("▼ " if pstat == "green" else "▲ ") + f"{(prime_pct-config.PRIME_GREEN)*100:+.1f} pts vs {config.PRIME_GREEN*100:.0f}%")
+             if prime_pct is not None else f"target ≤{config.PRIME_GREEN*100:.0f}%"),
+            COLORS[pstat] if prime_pct is not None else "#8b95a7")
+        kpi(lc_cols[3], "FOH hours", f"{labour_foh:g}" if labour_foh else "—", "front of house")
+        kpi(lc_cols[4], "BOH hours", f"{labour_boh:g}" if labour_boh else "—", "kitchen")
+        st.write("")
 
-    pg1, pg2 = st.columns([1, 1.3])
-    with pg1:
-        st.markdown("**Prime cost vs target** (COGS + labour)")
-        if prime_pct is not None:
-            st.plotly_chart(cogs_gauge(prime_pct, config.PRIME_GREEN, config.PRIME_RED, axis_max=90),
-                            use_container_width=True, config={"displayModeBar": False})
-        else:
-            st.caption("Add revenue + labour (sidebar) to see prime cost %.")
-        st.caption(f"🟢 ≤{config.PRIME_GREEN*100:.0f}% · 🟠 {config.PRIME_GREEN*100:.0f}–{config.PRIME_RED*100:.0f}% · "
-                   f"🔴 >{config.PRIME_RED*100:.0f}%  ·  ${total_cogs:,.0f} COGS + ${labour_cost:,.0f} labour")
-    with pg2:
-        st.markdown("**Labour % / Prime % trend**")
-        ltrend = (metrics.labour_prime_trend(df, trend_rev_map, labour_cost_map, p_col,
-                                             metrics.recent_periods(df, p_col, n=8))
-                  if not df.empty else pd.DataFrame())
-        if not ltrend.empty:
-            fig = px.line(ltrend, x="Period", y=["Labour %", "Prime %"], markers=True)
-            fig.update_yaxes(title="%")
-            st.plotly_chart(dark(fig), width="stretch", config={"displayModeBar": False})
-        else:
-            st.caption("Log labour across a few periods to see the trend.")
-    if prime_pct is not None and pstat == "red":
-        st.error(f"🔴 Prime cost {prime_pct*100:.1f}% is over the {config.PRIME_RED*100:.0f}% ceiling "
-                 f"(target ≤{config.PRIME_GREEN*100:.0f}%).")
-    st.write("")
+        pg1, pg2 = st.columns([1, 1.3])
+        with pg1:
+            st.markdown("**Prime cost vs target** (COGS + labour)")
+            if prime_pct is not None:
+                st.plotly_chart(cogs_gauge(prime_pct, config.PRIME_GREEN, config.PRIME_RED, axis_max=90),
+                                use_container_width=True, config={"displayModeBar": False})
+            else:
+                st.caption("Add revenue + labour (sidebar) to see prime cost %.")
+            st.caption(f"🟢 ≤{config.PRIME_GREEN*100:.0f}% · 🟠 {config.PRIME_GREEN*100:.0f}–{config.PRIME_RED*100:.0f}% · "
+                       f"🔴 >{config.PRIME_RED*100:.0f}%  ·  ${total_cogs:,.0f} COGS + ${labour_cost:,.0f} labour")
+        with pg2:
+            st.markdown("**Labour % / Prime % trend**")
+            ltrend = (metrics.labour_prime_trend(df, trend_rev_map, labour_cost_map, p_col,
+                                                 metrics.recent_periods(df, p_col, n=8))
+                      if not df.empty else pd.DataFrame())
+            if not ltrend.empty:
+                fig = px.line(ltrend, x="Period", y=["Labour %", "Prime %"], markers=True)
+                fig.update_yaxes(title="%")
+                st.plotly_chart(dark(fig), width="stretch", config={"displayModeBar": False})
+            else:
+                st.caption("Log labour across a few periods to see the trend.")
+        if prime_pct is not None and pstat == "red":
+            st.error(f"🔴 Prime cost {prime_pct*100:.1f}% is over the {config.PRIME_RED*100:.0f}% ceiling "
+                     f"(target ≤{config.PRIME_GREEN*100:.0f}%).")
+        st.write("")
+    else:
+        st.markdown("**👨‍🍳 Kitchen labour hours**")
+        hc = st.columns(3)
+        kpi(hc[0], "BOH hours", f"{labour_boh:g}" if labour_boh else "—", "kitchen")
+        kpi(hc[1], "FOH hours", f"{labour_foh:g}" if labour_foh else "—", "front of house")
+        kpi(hc[2], "Total hours", f"{labour_hours:g}" if labour_hours else "—", "all staff")
+        st.write("")
 
     # ---- Veggie price alerts ----
     if not lines.empty:
@@ -848,18 +1007,19 @@ with tab_list:
                         st.session_state["del_flash"] = f"Removed {len(grp) - 1} duplicate(s)"
                         st.rerun()
 
-        # ---- Delete an invoice ----
-        st.divider()
-        st.markdown("**🗑️ Delete an invoice** (permanent)")
-        vs = view.sort_values("invoice_date", ascending=False)
-        sa_list = vs["saved_at"].astype(str).tolist()
-        labels = {str(r["saved_at"]): f"{r['invoice_date']} · {r['supplier_raw']} · "
-                                      f"${float(r['total_ex_gst']):,.2f}"
-                  for _, r in vs.iterrows()}
-        chosen = st.selectbox("Invoice to delete", sa_list,
-                              format_func=lambda s: labels.get(s, s), key="del_sel")
-        confirm = st.checkbox("Yes, permanently delete this invoice", key="del_confirm")
-        if st.button("Delete invoice", key="del_btn", disabled=not confirm):
-            storage.delete_invoice(chosen)
-            st.session_state["del_flash"] = labels.get(chosen, "invoice")
-            st.rerun()
+        # ---- Delete an invoice (owner only) ----
+        if owner:
+            st.divider()
+            st.markdown("**🗑️ Delete an invoice** (permanent)")
+            vs = view.sort_values("invoice_date", ascending=False)
+            sa_list = vs["saved_at"].astype(str).tolist()
+            labels = {str(r["saved_at"]): f"{r['invoice_date']} · {r['supplier_raw']} · "
+                                          f"${float(r['total_ex_gst']):,.2f}"
+                      for _, r in vs.iterrows()}
+            chosen = st.selectbox("Invoice to delete", sa_list,
+                                  format_func=lambda s: labels.get(s, s), key="del_sel")
+            confirm = st.checkbox("Yes, permanently delete this invoice", key="del_confirm")
+            if st.button("Delete invoice", key="del_btn", disabled=not confirm):
+                storage.delete_invoice(chosen)
+                st.session_state["del_flash"] = labels.get(chosen, "invoice")
+                st.rerun()

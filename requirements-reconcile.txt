@@ -1,0 +1,7 @@
+# Extra packages used only by the standalone reconcile_app.py tool.
+# Already installed in .venv. If you ever rebuild the venv, run:
+#   .venv\Scripts\python -m pip install -r requirements-reconcile.txt
+openpyxl>=3.1
+python-calamine>=0.2
+streamlit>=1.30
+pandas>=2.0
