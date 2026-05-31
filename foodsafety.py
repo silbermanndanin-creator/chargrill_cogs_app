@@ -25,6 +25,14 @@ BORDER = Border(left=_thin, right=_thin, top=_thin, bottom=_thin)
 
 MANAGERS = ["Danin", "Prakash", "Ashmita", "Mark", "Steve", "Jaskirat"]
 
+# Which weekdays each delivery turns up (Mon=0 .. Sun=6). Rows on non-delivery
+# days are left blank (no supplier, no temps).
+DELIVERY_DAYS = {
+    "Chilled Chicken": {0, 2, 4, 5},        # BAIDA: Mon, Wed, Fri, Sat
+    "Chilled Salad": {0, 1, 2, 3, 4, 5},    # St George: Mon-Sat
+    "Chilled Product": {0, 1, 2, 4, 5},     # BLUESEAS: Mon, Tue, Wed, Fri, Sat
+}
+
 
 def _fill(h): return PatternFill('solid', fgColor=h)
 
@@ -73,11 +81,10 @@ def random_day(d):
 
     return {
         "managers": (mo, mc),
-        "deliveries": {  # (before 11am, before 5pm)
-            "Chilled Chicken": (round(rng.uniform(2.5, 4.5), 1), round(rng.uniform(3.2, 5.0), 1)),
-            "Chilled Salad": (round(rng.uniform(2.5, 4.5), 1), round(rng.uniform(3.2, 5.0), 1)),
-            "Chilled Product": (round(rng.uniform(2.5, 4.5), 1), round(rng.uniform(3.2, 5.0), 1)),
-        },
+        "deliveries": {  # only suppliers that deliver this weekday → (before 11am, before 5pm)
+            name: (round(rng.uniform(2.5, 4.5), 1), round(rng.uniform(3.2, 5.0), 1))
+            for name in ("Chilled Chicken", "Chilled Salad", "Chilled Product")
+            if d.weekday() in DELIVERY_DAYS[name]},
         "products": {k: (chilled(), chilled()) for k in
                      ["Stuffed & Salted Ckn", "Peeled Chicken", "Short Cut Bacon", "Beef Patties"]},
         "hotbar": {  # devil wings & schnitzel: no 2hr-after-open value
@@ -141,12 +148,13 @@ def build_day_sheet(wb, d, title=None):
              ('Chilled Product', '(1-5°C)', 'BLUESEAS'), ('Frozen', '(-15°C>)', '')]
     for name, rg, sup in deliv:
         _set(ws, f'A{r}', name); _set(ws, f'B{r}', rg, rng_font, align='center')
-        _set(ws, f'C{r}', sup, val_font, align='center'); _set(ws, f'D{r}', '')
-        if name != 'Frozen':
+        _set(ws, f'D{r}', '')  # conditional column always blank
+        if name in data['deliveries']:   # supplier delivered today
+            _set(ws, f'C{r}', sup, val_font, align='center')
             b11, b5 = data['deliveries'][name]
             val(f'E{r}', b11); val(f'F{r}', b5)
-        else:
-            _set(ws, f'E{r}', ''); _set(ws, f'F{r}', '')
+        else:                            # no delivery this day → blank row
+            _set(ws, f'C{r}', ''); _set(ws, f'E{r}', ''); _set(ws, f'F{r}', '')
         r += 1
 
     # ---- Shredded Chicken Process Time Log ----
