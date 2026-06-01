@@ -701,6 +701,35 @@ FS_SECTIONS = [
     ("equipment", "Equipment", ("2hrs after Open", "2hrs before Close")),
 ]
 
+
+def _fs_cell(x):
+    """Clean one editor cell -> float, trimmed str, or None (handles NaN/blank)."""
+    if x is None:
+        return None
+    if isinstance(x, str):
+        return x.strip() or None
+    try:
+        xf = float(x)
+        return None if xf != xf else xf  # NaN -> None
+    except (TypeError, ValueError):
+        return None
+
+
+def _fs_due(d):
+    """A day is 'complete' (safe to auto-fill blanks) once it's past, or after 9pm today."""
+    now = dt.datetime.now()
+    return d < now.date() or (d == now.date() and now.hour >= 21)
+
+
+def _fs_export(rec, d):
+    """Data to render/download: finalised records as-is; drafts only auto-filled once due."""
+    if not rec:
+        return None
+    if rec.get("_final", True):
+        return rec
+    return {**fsafe.merge_entry(d, rec), "_final": True} if _fs_due(d) else rec
+
+
 if tab_temp is not None:
     with tab_temp:
         st.markdown("#### 🌡️ Food Safety daily temperature records")
@@ -713,17 +742,27 @@ if tab_temp is not None:
             if view == "✍️ Daily entry":
                 tday = st.date_input("Date", value=dt.date.today(), key="ts_day")
                 saved = storage.food_safety_for(tday)
+                # Lazily finalise a draft once the day is complete (past, or after 9pm today).
+                if saved and not saved.get("_final", True) and _fs_due(tday):
+                    saved = {**fsafe.merge_entry(tday, saved), "_final": True}
+                    storage.save_food_safety(tday, saved)
                 base = saved if saved else fsafe.blank_entry(tday)
-                if saved:
-                    st.info("A record already exists for this day — edit below and re-save to update it.")
-                st.caption("Enter the temperatures you took. Anything left blank is auto-filled "
-                           "with a realistic value when you save.")
+                is_final = bool(saved) and saved.get("_final", True)
+
+                if is_final:
+                    st.success("✅ Finalised — blank readings were auto-filled. Edit and re-finalise to change.")
+                elif saved:
+                    st.info("📝 Draft saved — your readings are kept and blanks stay empty. "
+                            "Add more through the day, then **Finalise** (or it auto-fills after 9pm).")
+                else:
+                    st.caption("Enter the temperatures you took. Use **Save progress** through the day — "
+                               "blanks are kept and only auto-filled when you **Finalise** (or after 9pm).")
 
                 mc = st.columns(2)
                 mo = mc[0].text_input("Manager Open", value=(base["managers"][0] or ""), key="ts_mo")
                 mcl = mc[1].text_input("Manager Close", value=(base["managers"][1] or ""), key="ts_mc")
 
-                ent = {"managers": [mo, mcl]}
+                ent = {"managers": [_fs_cell(mo), _fs_cell(mcl)]}
                 for _sk, _lbl, _cols in FS_SECTIONS:
                     _rows = base.get(_sk, {})
                     if not _rows:
@@ -738,7 +777,7 @@ if tab_temp is not None:
                         column_config={"Item": st.column_config.TextColumn(disabled=True),
                                        _cols[0]: st.column_config.NumberColumn(format="%.1f"),
                                        _cols[1]: st.column_config.NumberColumn(format="%.1f")})
-                    ent[_sk] = {r["Item"]: [r[_cols[0]], r[_cols[1]]] for _, r in _sed.iterrows()}
+                    ent[_sk] = {r["Item"]: [_fs_cell(r[_cols[0]]), _fs_cell(r[_cols[1]])] for _, r in _sed.iterrows()}
 
                 st.markdown("**Chicken Temp Records**")
                 ck = pd.DataFrame(base["cooks"]).rename(
@@ -747,18 +786,23 @@ if tab_temp is not None:
                     ck, hide_index=True, width="stretch", key="ts_cooks",
                     column_config={"Cook Size": st.column_config.NumberColumn(format="%d"),
                                    "Temperature": st.column_config.NumberColumn(format="%.1f")})
-                ent["cooks"] = [{"size": r["Cook Size"], "in": r["Time In"], "out": r["Time Out"],
-                                 "temp": r["Temperature"]} for _, r in cked.iterrows()]
+                ent["cooks"] = [{"size": (int(_fs_cell(r["Cook Size"])) if _fs_cell(r["Cook Size"]) else None),
+                                 "in": _fs_cell(r["Time In"]), "out": _fs_cell(r["Time Out"]),
+                                 "temp": _fs_cell(r["Temperature"])} for _, r in cked.iterrows()]
 
-                if st.button("💾 Save day's record", type="primary", key="ts_save"):
-                    merged = fsafe.merge_entry(tday, ent)
-                    storage.save_food_safety(tday, merged)
-                    st.session_state["ts_saved"] = tday.strftime("%d %b %Y")
+                b = st.columns(2)
+                if b[0].button("💾 Save progress (keep blanks)", key="ts_draft"):
+                    storage.save_food_safety(tday, {**ent, "_final": False})
+                    st.session_state["ts_flash"] = "📝 Progress saved — blanks kept for later."
                     st.rerun()
-                if st.session_state.pop("ts_saved", None):
-                    st.success("Saved to historical records — any blanks were auto-filled.")
+                if b[1].button("✅ Finalise day (auto-fill blanks)", type="primary", key="ts_final"):
+                    storage.save_food_safety(tday, {**fsafe.merge_entry(tday, ent), "_final": True})
+                    st.session_state["ts_flash"] = "✅ Finalised — blanks auto-filled and saved to history."
+                    st.rerun()
+                if st.session_state.get("ts_flash"):
+                    st.success(st.session_state.pop("ts_flash"))
 
-                data_dl = storage.food_safety_for(tday) or fsafe.merge_entry(tday, ent)
+                data_dl = _fs_export(saved, tday) or fsafe.merge_entry(tday, ent)
                 buf = fsafe.build_workbook_data([(tday, data_dl)])
                 st.download_button("⬇️ Download this day", buf, key="ts_dl",
                                    file_name=f"Food Safety Temps - {tday:%d %b %Y}.xlsx", mime=XLMIME)
@@ -776,7 +820,7 @@ if tab_temp is not None:
                     sel = [d for d in days if hf.isoformat() <= d <= ht.isoformat()]
                     if sel:
                         items = [(pd.to_datetime(d).date(), storage.food_safety_for(d)) for d in sel]
-                        items = [(d, x) for d, x in items if x]
+                        items = [(d, _fs_export(x, d)) for d, x in items if x]
                         buf = fsafe.build_workbook_data(items)
                         st.download_button(f"⬇️ Download {len(items)} saved day(s)", buf, key="ts_hdl",
                                            file_name=f"Food Safety Temps - {hf:%d %b} to {ht:%d %b %Y}.xlsx",
