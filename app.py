@@ -137,6 +137,37 @@ def _owner_pin():
 
 if "is_owner" not in st.session_state:
     st.session_state["is_owner"] = False
+if "role_chosen" not in st.session_state:
+    st.session_state["role_chosen"] = False
+
+# ---- Landing gate: pick Chef or Owner (PIN) before the app loads ----
+if not st.session_state["role_chosen"]:
+    st.markdown("""<div style='max-width:460px;margin:7vh auto .5rem;text-align:center'>
+      <div style='font-size:3rem'>🍗</div>
+      <div style='font-size:1.55rem;font-weight:700;color:#fff;margin:.2rem 0'>Chargrill COGS</div>
+      <div style='color:#8b95a7;margin-bottom:1.2rem'>Choose how you want to sign in</div>
+    </div>""", unsafe_allow_html=True)
+    _g = st.columns([1, 2, 1])[1]
+    with _g:
+        if st.button("👨‍🍳  Chef / Team", width="stretch", key="gate_chef"):
+            st.session_state["is_owner"] = False
+            st.session_state["role_chosen"] = True
+            st.rerun()
+        st.write("")
+        if st.button("👑  Owner", width="stretch", key="gate_owner"):
+            st.session_state["gate_pin_open"] = True
+        if st.session_state.get("gate_pin_open"):
+            _pin = st.text_input("Owner PIN", type="password", key="gate_pin")
+            if st.button("Enter as owner", type="primary", width="stretch", key="gate_enter"):
+                if _pin == _owner_pin():
+                    st.session_state["is_owner"] = True
+                    st.session_state["role_chosen"] = True
+                    st.session_state.pop("gate_pin_open", None)
+                    st.rerun()
+                else:
+                    st.error("Incorrect PIN.")
+    st.stop()
+
 owner = st.session_state["is_owner"]
 
 
@@ -269,22 +300,13 @@ with st.sidebar:
                 st.caption("No labour logged this month — add weeks in **🧮 Labour**.")
     labour_cost_map = storage.labour_cost_map_for(mode)
 
-    # ---- Owner unlock / lock ----
+    # ---- Current role / switch user ----
     st.divider()
-    if owner:
-        st.caption("👑 Owner view — full access")
-        if st.button("🔒 Lock to chef view", width="stretch"):
-            st.session_state["is_owner"] = False
-            st.rerun()
-    else:
-        with st.expander("🔒 Owner access"):
-            pin = st.text_input("Owner PIN", type="password", key="ownerpin")
-            if st.button("Unlock", key="ownerunlock"):
-                if pin == _owner_pin():
-                    st.session_state["is_owner"] = True
-                    st.rerun()
-                else:
-                    st.error("Incorrect PIN.")
+    st.caption("👑 Owner view — full access" if owner else "👨‍🍳 Chef / Team view")
+    if st.button("↩️ Switch user", width="stretch", key="switchuser"):
+        for _k in ("role_chosen", "is_owner", "gate_pin_open"):
+            st.session_state.pop(_k, None)
+        st.rerun()
 
 df = storage.load_invoices()
 lines = metrics.explode_lines(df)
