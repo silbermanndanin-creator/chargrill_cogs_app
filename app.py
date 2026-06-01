@@ -27,13 +27,66 @@ st.set_page_config(page_title="Chargrill COGS", page_icon="🍗", layout="wide")
 COLORS = {"green": "#2faa5e", "amber": "#d9a300", "red": "#e0533d"}
 LIGHT = {"green": "🟢", "amber": "🟠", "red": "🔴"}
 
-st.markdown("""<style>
+# ============ Theme system: light (default) ⇄ dark (slate-950) ============
+# A toggle in the top-right of the header flips st.session_state["theme"]; the
+# whole script re-runs top-to-bottom, so every colour below is recomputed for
+# the chosen theme. Streamlit's own data-grids (st.dataframe / st.data_editor)
+# follow the config.toml base theme and can't be flipped via CSS — see README.
+from string import Template
+
+if "theme" not in st.session_state:
+    st.session_state["theme"] = "dark"
+THEME = st.session_state["theme"]
+
+_THEMES = {
+    "light": {
+        "bg": "#f8fafc", "surface": "#ffffff", "surface2": "#f1f5f9",
+        "border": "#e2e8f0", "border_hov": "#cbd5e1",
+        "text": "#0f172a", "muted": "#64748b",
+        "accent": "#0d9488", "accent2": "#0f766e",
+        "card_grad": "#ffffff",
+        "shadow_sm": "0 1px 2px rgba(15,23,42,.06),0 1px 3px rgba(15,23,42,.07)",
+        "shadow_md": "0 10px 25px rgba(15,23,42,.10),0 4px 10px rgba(15,23,42,.06)",
+        "pri_btn_text": "#ffffff",
+    },
+    "dark": {  # true charcoal / slate-950
+        "bg": "#020617", "surface": "#0f172a", "surface2": "#1e293b",
+        "border": "#1e293b", "border_hov": "#334155",
+        "text": "#f1f5f9", "muted": "#94a3b8",
+        "accent": "#2dd4bf", "accent2": "#5eead4",
+        "card_grad": "linear-gradient(180deg,#0f172a,#0b1120)",
+        "shadow_sm": "0 1px 2px rgba(0,0,0,.4),0 1px 3px rgba(0,0,0,.5)",
+        "shadow_md": "0 12px 30px rgba(0,0,0,.55),0 4px 10px rgba(0,0,0,.4)",
+        "pri_btn_text": "#04201c",
+    },
+}
+T = _THEMES[THEME]
+
+# Chart palette — deep navy / slate primaries, soft accent (teal) for totals.
+# High data-ink: no vertical gridlines, faint horizontal grid, soft-gray axes.
+_CHARTS = {
+    "light": {
+        "navy": "#1e3a8a", "slate": "#64748b", "accent": "#0d9488",
+        "red": "#dc2626", "axis": "#cbd5e1", "grid": "rgba(100,116,139,.12)",
+        "font": "#475569", "muted": "#94a3b8", "tmpl": "plotly_white",
+        "seq": ["#1e3a8a", "#0d9488", "#64748b", "#7c3aed", "#d97706", "#dc2626", "#0891b2"],
+    },
+    "dark": {
+        "navy": "#60a5fa", "slate": "#94a3b8", "accent": "#2dd4bf",
+        "red": "#f87171", "axis": "#475569", "grid": "rgba(148,163,184,.12)",
+        "font": "#cbd5e1", "muted": "#94a3b8", "tmpl": "plotly_dark",
+        "seq": ["#60a5fa", "#2dd4bf", "#94a3b8", "#a78bfa", "#fbbf24", "#f87171", "#34d399"],
+    },
+}
+C = _CHARTS[THEME]
+
+_CSS = Template("""
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap');
 
 :root{
-  --bg:#0e1320; --surface:#161d2e; --surface2:#1c2742; --border:#28324d;
-  --text:#e8ecf3; --muted:#8b95a7; --accent:#2ec4b6; --accent2:#5eead4;
-  --radius:16px; --shadow:0 1px 2px rgba(0,0,0,.35),0 12px 30px rgba(0,0,0,.22);
+  --bg:$bg; --surface:$surface; --surface2:$surface2; --border:$border;
+  --text:$text; --muted:$muted; --accent:$accent; --accent2:$accent2;
+  --radius:14px; --shadow:$shadow_sm;
 }
 
 /* typography */
@@ -44,65 +97,99 @@ button, input, select, textarea, .stMarkdown, p, span, label, div{
 h1,h2,h3,h4,.hdr,.brand-name,.kpi .v,.tub .v{
   font-family:'Space Grotesk','Inter',sans-serif; letter-spacing:-.01em;
 }
-.stApp{ background:var(--bg); color:var(--text); }
+.stApp,[data-testid="stAppViewContainer"]{ background:$bg; color:$text; }
+h1,h2,h3,h4,h5{ color:$text; }
 
 /* blend Streamlit's top toolbar, keep room for it */
 [data-testid="stHeader"]{ background:transparent; }
 .block-container{ padding-top:3.5rem; max-width:1280px; }
 
+/* spacing & hierarchy — space-y-6 (1.5rem) between content sections */
+.block-container [data-testid="stVerticalBlock"]{ gap:1.5rem; }
+[data-testid="stHorizontalBlock"]{ gap:1rem; }
+
 /* branded app header bar */
 .appbar{ display:flex; align-items:center; justify-content:space-between;
-  padding:8px 2px 14px; border-bottom:1px solid var(--border); margin-bottom:14px; }
+  padding:8px 2px 14px; border-bottom:1px solid $border; margin-bottom:14px; }
 .brand{ display:flex; align-items:center; gap:12px; }
-.brand-name{ font-size:1.18rem; font-weight:700; color:#fff; line-height:1.05; }
-.brand-sub{ font-size:.72rem; color:var(--muted); font-weight:500; margin-top:2px; }
-.appbar-period{ font-size:.78rem; color:var(--text); font-weight:600; background:var(--surface);
-  border:1px solid var(--border); padding:7px 14px; border-radius:999px; white-space:nowrap; }
+.brand-name{ font-size:1.18rem; font-weight:700; color:$text; line-height:1.05; }
+.brand-sub{ font-size:.72rem; color:$muted; font-weight:500; margin-top:2px; }
+.appbar-period{ font-size:.78rem; color:$text; font-weight:600; background:$surface;
+  border:1px solid $border; padding:7px 14px; border-radius:999px; white-space:nowrap; }
 
-/* KPI cards */
-.kpi{ background:linear-gradient(180deg,var(--surface2),var(--surface));
-  border:1px solid var(--border); border-radius:var(--radius); padding:16px 18px;
-  height:100%; box-shadow:var(--shadow); }
-.kpi .t{ color:var(--muted); font-size:.67rem; font-weight:700; letter-spacing:.08em; text-transform:uppercase; }
-.kpi .v{ font-size:1.72rem; font-weight:700; color:#fff; line-height:1.15; margin-top:8px; }
+/* floating metric cards — rounded-xl, shadow-sm, hover:elevate + accent border */
+.kpi{ background:$card_grad; border:1px solid $border; border-radius:14px; padding:16px 18px;
+  height:100%; box-shadow:$shadow_sm; transition:all .2s ease-in-out; }
+.kpi:hover{ box-shadow:$shadow_md; border-color:$accent; transform:translateY(-2px); }
+.kpi .t{ color:$muted; font-size:.67rem; font-weight:700; letter-spacing:.08em; text-transform:uppercase; }
+.kpi .v{ font-size:1.72rem; font-weight:700; color:$text; line-height:1.15; margin-top:8px; }
 .kpi .s{ font-size:.77rem; margin-top:6px; font-weight:600; }
 
-.hdr{ font-size:1.6rem; font-weight:700; color:#fff; margin-bottom:.3rem; }
+.hdr{ font-size:1.6rem; font-weight:700; color:$text; margin-bottom:.3rem; }
 
 /* tub cards */
-.tub{ background:linear-gradient(180deg,var(--surface2),var(--surface)); border:1px solid var(--border);
-  border-radius:var(--radius); padding:14px 6px; text-align:center; box-shadow:var(--shadow); }
-.tub .v{ font-size:1.85rem; font-weight:700; color:#fff; }
-.tub .t{ color:var(--muted); font-size:.67rem; font-weight:700; text-transform:uppercase; letter-spacing:.06em; }
+.tub{ background:$card_grad; border:1px solid $border; border-radius:14px;
+  padding:14px 6px; text-align:center; box-shadow:$shadow_sm; transition:all .2s ease-in-out; }
+.tub:hover{ box-shadow:$shadow_md; border-color:$accent; transform:translateY(-2px); }
+.tub .v{ font-size:1.85rem; font-weight:700; color:$text; }
+.tub .t{ color:$muted; font-size:.67rem; font-weight:700; text-transform:uppercase; letter-spacing:.06em; }
 
-/* tabs -> pill style with accent underline */
-.stTabs [data-baseweb="tab-list"]{ gap:4px; border-bottom:1px solid var(--border); }
+/* tabs -> pill style with accent underline + hover transition */
+.stTabs [data-baseweb="tab-list"]{ gap:4px; border-bottom:1px solid $border; }
 .stTabs [data-baseweb="tab"]{ height:auto; padding:9px 14px; background:transparent;
-  border-radius:10px 10px 0 0; color:var(--muted); font-weight:600; font-size:.9rem; }
-.stTabs [aria-selected="true"]{ color:#fff; background:var(--surface); }
-.stTabs [data-baseweb="tab-highlight"]{ background:var(--accent); height:3px; }
+  border-radius:10px 10px 0 0; color:$muted; font-weight:600; font-size:.9rem;
+  transition:all .2s ease-in-out; }
+.stTabs [data-baseweb="tab"]:hover{ color:$text; background:$surface2; }
+.stTabs [aria-selected="true"]{ color:$text; background:$surface; }
+.stTabs [data-baseweb="tab-highlight"]{ background:$accent; height:3px; }
 .stTabs [data-baseweb="tab-border"]{ background:transparent; }
 
-/* buttons */
+/* buttons (incl. sidebar nav items) — smooth hover, subtle lift */
 .stButton>button, .stDownloadButton>button{ border-radius:10px; font-weight:600;
-  border:1px solid var(--border); transition:all .12s ease; }
-.stButton>button:hover, .stDownloadButton>button:hover{ border-color:var(--accent); color:var(--accent2); }
-.stButton>button[kind="primary"]{ background:var(--accent); border-color:var(--accent); color:#06231f; }
-.stButton>button[kind="primary"]:hover{ filter:brightness(1.08); color:#06231f; }
+  background:$surface; color:$text; border:1px solid $border; transition:all .2s ease-in-out; }
+.stButton>button:hover, .stDownloadButton>button:hover{ border-color:$accent; color:$accent;
+  box-shadow:$shadow_sm; transform:translateY(-1px); }
+.stButton>button[kind="primary"]{ background:$accent; border-color:$accent; color:$pri_btn_text; }
+.stButton>button[kind="primary"]:hover{ filter:brightness(1.08); color:$pri_btn_text; }
 
-/* st.metric cards */
-[data-testid="stMetric"]{ background:var(--surface); border:1px solid var(--border);
-  border-radius:14px; padding:12px 16px; box-shadow:var(--shadow); }
-[data-testid="stMetricValue"]{ font-family:'Space Grotesk',sans-serif; }
+/* radio / nav options hover */
+.stRadio [role="radiogroup"] label{ transition:all .2s ease-in-out; border-radius:8px; padding:1px 6px; }
+.stRadio [role="radiogroup"] label:hover{ background:rgba(100,116,139,.10); }
 
-/* bordered containers, expanders, sidebar */
-[data-testid="stExpander"]{ border:1px solid var(--border); border-radius:12px; background:var(--surface); }
-[data-testid="stSidebar"]{ background:#0b101b; border-right:1px solid var(--border); }
-section[data-testid="stSidebar"] h3{ color:#fff; }
+/* form fields adopt the theme surface (so light & dark both read cleanly) */
+[data-baseweb="input"], [data-baseweb="base-input"], [data-baseweb="select"]>div,
+.stTextInput input, .stNumberInput input, .stDateInput input, .stTextArea textarea{
+  background:$surface !important; color:$text !important; }
+[data-baseweb="select"] *{ color:$text; }
+input::placeholder, textarea::placeholder{ color:$muted !important; }
 
-hr{ border-color:var(--border); }
+/* st.metric cards — floating + hover */
+[data-testid="stMetric"]{ background:$surface; border:1px solid $border;
+  border-radius:14px; padding:14px 18px; box-shadow:$shadow_sm; transition:all .2s ease-in-out; }
+[data-testid="stMetric"]:hover{ box-shadow:$shadow_md; border-color:$accent; transform:translateY(-2px); }
+[data-testid="stMetricValue"]{ font-family:'Space Grotesk',sans-serif; color:$text; }
+
+/* bordered containers, expanders, sidebar, tables */
+[data-testid="stExpander"]{ border:1px solid $border; border-radius:12px; background:$surface;
+  transition:all .2s ease-in-out; }
+[data-testid="stExpander"]:hover{ border-color:$border_hov; }
+[data-testid="stSidebar"]{ background:$surface; border-right:1px solid $border; }
+section[data-testid="stSidebar"] h3{ color:$text; }
+[data-testid="stDataFrame"], [data-testid="stDataEditor"]{ border:1px solid $border; border-radius:12px; }
+
+hr{ border-color:$border; }
 [data-testid="stAlert"]{ border-radius:12px; }
-</style>""", unsafe_allow_html=True)
+
+/* dark-mode toggle — pinned top-right of the nav bar */
+.st-key-theme_toggle{ position:fixed; top:.5rem; right:4.5rem; z-index:1000; width:auto; }
+.st-key-theme_toggle button{ border-radius:999px !important; padding:3px 14px !important;
+  min-height:auto !important; font-size:.85rem !important; font-weight:600 !important;
+  background:$surface !important; color:$text !important; border:1px solid $border !important;
+  box-shadow:$shadow_sm; transition:all .2s ease-in-out; }
+.st-key-theme_toggle button:hover{ border-color:$accent !important; color:$accent !important;
+  transform:translateY(-1px); }
+""")
+st.markdown(f"<style>{_CSS.substitute(**T)}</style>", unsafe_allow_html=True)
 
 
 def get_api_key():
@@ -142,10 +229,10 @@ if "role_chosen" not in st.session_state:
 
 # ---- Landing gate: pick Chef or Owner (PIN) before the app loads ----
 if not st.session_state["role_chosen"]:
-    st.markdown("""<div style='max-width:460px;margin:7vh auto .5rem;text-align:center'>
+    st.markdown(f"""<div style='max-width:460px;margin:7vh auto .5rem;text-align:center'>
       <div style='font-size:3rem'>🍗</div>
-      <div style='font-size:1.55rem;font-weight:700;color:#fff;margin:.2rem 0'>Chargrill COGS</div>
-      <div style='color:#8b95a7;margin-bottom:1.2rem'>Choose how you want to sign in</div>
+      <div style='font-size:1.55rem;font-weight:700;color:{T["text"]};margin:.2rem 0'>Chargrill COGS</div>
+      <div style='color:{T["muted"]};margin-bottom:1.2rem'>Choose how you want to sign in</div>
     </div>""", unsafe_allow_html=True)
     _g = st.columns([1, 2, 1])[1]
     with _g:
@@ -192,24 +279,34 @@ def cogs_gauge(pct, gp, rp, axis_max=55):
     v = pct * 100
     fig = go.Figure(go.Indicator(
         mode="gauge+number", value=v,
-        number={"suffix": "%", "font": {"size": 38, "color": "#fff", "family": "Space Grotesk"}},
-        gauge={"axis": {"range": [0, axis_max], "tickcolor": "#8b95a7"},
+        number={"suffix": "%", "font": {"size": 38, "color": T["text"], "family": "Space Grotesk"}},
+        gauge={"axis": {"range": [0, axis_max], "tickcolor": C["axis"], "tickfont": {"color": C["font"]}},
                "bar": {"color": "rgba(0,0,0,0)"}, "borderwidth": 0,
                "steps": [{"range": [0, gp * 100], "color": "#1f7a4d"},
                          {"range": [gp * 100, rp * 100], "color": "#b8860b"},
                          {"range": [rp * 100, axis_max], "color": "#9c3a28"}],
-               "threshold": {"line": {"color": "#fff", "width": 4}, "thickness": 0.8, "value": v}}))
+               "threshold": {"line": {"color": T["text"], "width": 4}, "thickness": 0.8, "value": v}}))
     fig.update_layout(height=230, margin=dict(l=24, r=24, t=16, b=8),
-                      paper_bgcolor="rgba(0,0,0,0)", font_color="#E8ECF3")
+                      paper_bgcolor="rgba(0,0,0,0)", font_color=T["text"])
     return fig
 
 
 def dark(fig, h=320):
-    fig.update_layout(template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)",
+    """Apply the high-data-ink chart style: transparent canvas, no vertical
+    gridlines, faint horizontal grid, soft-gray axes and bold (3px) data lines."""
+    fig.update_layout(template=C["tmpl"], paper_bgcolor="rgba(0,0,0,0)",
                       plot_bgcolor="rgba(0,0,0,0)", height=h,
-                      margin=dict(l=10, r=10, t=10, b=10),
-                      font=dict(family="Inter, sans-serif", color="#E8ECF3"),
-                      legend=dict(orientation="h", y=-0.2))
+                      margin=dict(l=10, r=10, t=10, b=10), colorway=C["seq"],
+                      font=dict(family="Inter, sans-serif", color=C["font"], size=12),
+                      legend=dict(orientation="h", y=-0.2, font=dict(color=C["font"])))
+    fig.update_xaxes(showgrid=False, zeroline=False, showline=True, linewidth=1,
+                     linecolor=C["axis"], tickcolor=C["axis"],
+                     tickfont=dict(color=C["font"]), title_font=dict(color=C["muted"]))
+    fig.update_yaxes(showgrid=True, gridcolor=C["grid"], gridwidth=1, zeroline=False,
+                     showline=False, tickcolor=C["axis"],
+                     tickfont=dict(color=C["font"]), title_font=dict(color=C["muted"]))
+    # bold the primary data lines (markers stay compact)
+    fig.update_traces(selector=dict(type="scatter"), line=dict(width=3), marker=dict(size=6))
     return fig
 
 
@@ -343,6 +440,12 @@ st.markdown(f"""<div class="appbar">
   </div>
   <div class="appbar-period">{period_label}</div>
 </div>""", unsafe_allow_html=True)
+
+# Dark-mode toggle — pinned top-right of the nav bar (CSS: .st-key-theme_toggle)
+_toggle_label = "🌙 Dark" if THEME == "light" else "☀️ Light"
+if st.button(_toggle_label, key="theme_toggle", help="Toggle light / dark mode"):
+    st.session_state["theme"] = "dark" if THEME == "light" else "light"
+    st.rerun()
 
 # Owner sees all six tabs; chef sees only the four cost/operations tabs.
 if owner:
@@ -505,10 +608,12 @@ if tab_pos is not None:
         wkdf = pd.DataFrame(rows)
         if wkdf["Net (ex-GST)"].sum() > 0:
             fig = px.bar(wkdf, x="Day", y="Net (ex-GST)", text_auto=".0f")
-            fig.update_traces(marker_color="#2ec4b6", textposition="outside")
+            fig = dark(fig, h=270)
+            fig.update_traces(marker_color=C["accent"], marker_line_width=0,
+                              textposition="outside", textfont=dict(color=C["font"]))
             fig.update_yaxes(title="Net $ ex-GST")
             fig.update_xaxes(title="")
-            st.plotly_chart(dark(fig, h=270), width="stretch", config={"displayModeBar": False})
+            st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
             st.dataframe(wkdf, hide_index=True, width="stretch")
             n_days = int((wkdf["Net (ex-GST)"] > 0).sum())
             st.caption(f"Week net ex-GST: **${wkdf['Net (ex-GST)'].sum():,.0f}** · {n_days} day(s) logged")
@@ -1081,7 +1186,8 @@ with tab_dash:
                                                  metrics.recent_periods(df, p_col, n=8))
                       if not df.empty else pd.DataFrame())
             if not ltrend.empty:
-                fig = px.line(ltrend, x="Period", y=["Labour %", "Prime %"], markers=True)
+                fig = px.line(ltrend, x="Period", y=["Labour %", "Prime %"], markers=True,
+                              color_discrete_sequence=[C["navy"], C["slate"]])
                 fig.update_yaxes(title="%")
                 st.plotly_chart(dark(fig), width="stretch", config={"displayModeBar": False})
             else:
@@ -1119,15 +1225,24 @@ with tab_dash:
         with c1:
             st.markdown(f"**Spend by supplier — last {len(periods)} {p_type}s**")
             if not spend_long.empty:
-                fig = px.bar(spend_long, x="Period", y="Spend", color="Supplier", barmode="stack")
+                fig = px.bar(spend_long, x="Period", y="Spend", color="Supplier", barmode="stack",
+                             color_discrete_sequence=C["seq"])
+                fig.update_traces(marker_line_width=0)
                 st.plotly_chart(dark(fig), width="stretch", config={"displayModeBar": False})
         with c2:
             st.markdown("**COGS % trend**")
             trend = metrics.cogs_pct_trend(df, trend_rev_map, p_col, periods)
             if not trend.empty:
-                fig = px.line(trend, x="Period", y=["COGS %", "Target 40%", "Red 42%"], markers=True)
+                fig = px.line(trend, x="Period", y=["COGS %", "Target 40%", "Red 42%"], markers=True,
+                              color_discrete_sequence=[C["navy"], C["slate"], C["red"]])
+                fig = dark(fig)
+                # reference lines stay thin & dashed so the COGS % line reads as primary
+                fig.update_traces(selector=dict(name="Target 40%"),
+                                  line=dict(dash="dash", width=1.5), marker=dict(size=0))
+                fig.update_traces(selector=dict(name="Red 42%"),
+                                  line=dict(dash="dot", width=1.5), marker=dict(size=0))
                 fig.update_yaxes(title="%")
-                st.plotly_chart(dark(fig), width="stretch", config={"displayModeBar": False})
+                st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
             else:
                 st.caption("Log revenue across a few periods to see the % trend.")
 
@@ -1193,7 +1308,8 @@ with tab_veg:
         pick = st.multiselect("Plot price history for:", items, default=items[:5])
         plot = vprices[vprices["item"].isin(pick)].assign(date=lambda d: pd.to_datetime(d["date"]))
         if not plot.empty:
-            fig = px.line(plot, x="date", y="unit_price", color="item", markers=True)
+            fig = px.line(plot, x="date", y="unit_price", color="item", markers=True,
+                          color_discrete_sequence=C["seq"])
             fig.update_yaxes(title="$ / unit")
             fig.update_xaxes(title="")
             st.plotly_chart(dark(fig), width="stretch", config={"displayModeBar": False})

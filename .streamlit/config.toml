@@ -1,7 +1,12 @@
+# Native base theme = dark slate-950 (the app's default). The in-app theme
+# toggle (top-right of the header) restyles surfaces/charts via CSS. NOTE:
+# st.dataframe and st.data_editor grids follow THIS base theme and can't be
+# flipped by CSS, so they stay dark-styled even in light mode — a known
+# Streamlit limitation.
 [theme]
 base = "dark"
-primaryColor = "#2EC4B6"
-backgroundColor = "#0E1320"
-secondaryBackgroundColor = "#161D2E"
-textColor = "#E8ECF3"
+primaryColor = "#2DD4BF"
+backgroundColor = "#020617"
+secondaryBackgroundColor = "#0F172A"
+textColor = "#F1F5F9"
 font = "sans serif"
