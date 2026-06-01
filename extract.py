@@ -85,7 +85,8 @@ line. 0 if there is no such line.
 - ubereats_incl_gst: the Recorded amount on the 'UberEats' (or 'UberEats - Deliverect') \
 line. 0 if there is no such line.
 - bite_incl_gst: the Recorded amount on the 'Bite Business' (or 'App Payments' / 'LOKE' / \
-'Bite') line. 0 if there is no such line.
+'Bite') line. On these slips it is typically the 3rd amount from the top of the Recorded \
+summary. 0 if there is no such line.
 - confidence: "high" if clear and the figures reconcile, else "medium"/"low".
 Return numbers as plain decimals (no $ or thousands separators)."""
 
