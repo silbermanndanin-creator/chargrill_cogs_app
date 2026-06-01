@@ -663,6 +663,25 @@ if tab_recon is not None:
             rdays = [wk_start + dt.timedelta(days=i) for i in range(7)]
             rlabels = [d.strftime("%a %d %b") for d in rdays]
 
+            # Pre-fill deliveries + turnover from saved daily POS slips for this week.
+            _pos_by_date = {}
+            if pos_df is not None and not pos_df.empty:
+                _tmp = pos_df.copy()
+                _tmp["date"] = _tmp["date"].astype(str)
+                _pos_by_date = {r["date"]: r for _, r in _tmp.iterrows()}
+
+            def _posval(d, col):
+                r = _pos_by_date.get(d.isoformat())
+                if r is None:
+                    return None
+                v = pd.to_numeric(r.get(col), errors="coerce")
+                return None if pd.isna(v) else round(float(v), 2)
+
+            uber_def = [_posval(rdays[i], "ubereats") for i in range(7)]
+            dd_def = [_posval(rdays[i], "doordash") for i in range(7)]
+            turn_def = [_posval(rdays[i], "total_incl_gst") for i in range(7)]
+            n_pos = sum(1 for d in rdays if d.isoformat() in _pos_by_date)
+
             st.markdown("##### 1 · Upload Tyro location reports")
             st.caption("Download them **Monday → Sunday in order** — the tool sorts by download time.")
             rfiles = st.file_uploader("Location report .xlsx files", type=["xlsx"],
@@ -695,16 +714,19 @@ if tab_recon is not None:
             st.caption("Daily totals: " + " · ".join(
                 f"{rlabels[i].split()[0]} ${tyro_in.iloc[i]['Daily Total']:,.0f}" for i in range(7)))
 
-            st.markdown("##### 3 · Cash + POS slip turnover (type these in)")
+            st.markdown("##### 3 · Cash + POS slip turnover")
+            st.caption("Turnover pre-filled from saved POS slips — POS/ACT/Adjustment are typed in.")
             cash_in = st.data_editor(pd.DataFrame({
                 "Day": rlabels, "POS": [None]*7, "ACT": [None]*7,
-                "Adjustment": [None]*7, "Turnover (POS slip)": [None]*7,
+                "Adjustment": [None]*7, "Turnover (POS slip)": turn_def,
             }), hide_index=True, width="stretch", disabled=["Day"], key="rec_cash")
 
-            st.markdown("##### 4 · Deliveries + Bite (type these in)")
+            st.markdown("##### 4 · Deliveries + Bite")
+            st.caption(f"Uber Eats & DoorDash auto-filled from {n_pos} saved POS slip(s) this week — "
+                       "edit if needed. **Bite** isn't on the POS slip, so enter it manually.")
             deliv_in = st.data_editor(pd.DataFrame({
-                "Day": rlabels, "Uber Eats gross": [None]*7,
-                "DoorDash gross": [None]*7, "Bite (App pymt)": [None]*7,
+                "Day": rlabels, "Uber Eats gross": uber_def,
+                "DoorDash gross": dd_def, "Bite (App pymt)": [None]*7,
             }), hide_index=True, width="stretch", disabled=["Day"], key="rec_deliv")
 
             tyro_days = [{"t1": _rnum(tyro_in.iloc[i]["Terminal 1 Net"]),
