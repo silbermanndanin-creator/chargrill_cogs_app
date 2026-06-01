@@ -18,6 +18,7 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
 DAILY_OT_THRESHOLD = 11.0   # single day hours that trigger daily OT
 WEEKLY_OT_THRESHOLD = 38.0  # weekly hours that trigger weekly OT (FT default)
+LAUNDRY_PER_SHIFT = 1.25    # laundry allowance per shift (Casual & Part-Time only)
 
 # ── STYLES (Excel report) ────────────────────────────────────────────────────
 HDR_BG = '1F3864'; HDR_FG = 'FFFFFF'
@@ -392,6 +393,12 @@ def process_shifts(shift_df, emp_df, all_rates, public_holidays):
         rates = get_rates_for_employee(emp_row_dict, all_rates)
         hrs, day_rows = process_employee(emp_shifts, public_holidays, emp_type, min_weekly)
         pay = calculate_pay(hrs, rates)
+
+        # Laundry allowance: $1.25 per shift for Casual & Part-Time (else none).
+        n_shifts = sum(int(d.get('shifts', 0) or 0) for d in day_rows)
+        laundry = round(LAUNDRY_PER_SHIFT * n_shifts, 2) if emp_type in ('Casual', 'Part-Time') else 0.0
+        pay['total'] = round(pay['total'] - pay.get('laundry', 0.0) + laundry, 4)
+        pay['laundry'] = laundry
 
         flat_pay = hrs['total'] * flat_rate
         award_pay = pay['total']
