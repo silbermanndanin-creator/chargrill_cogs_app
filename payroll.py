@@ -237,9 +237,11 @@ def process_employee(emp_shifts, public_holidays, emp_type, min_weekly_hrs=38):
             if dtype == 'ph':
                 hrs['ph_daily_ot'] += ot1 + ot2
             elif dtype == 'sun':
-                # Sunday overtime is paid entirely at the higher (after-2 / double-time) rate.
+                # Sunday overtime: all hours at the higher Sunday OT rate (Sunday penalty +
+                # base), kept separate from the weekday after-2 rate. Shown as OT in the
+                # daily table via ot2 for display only.
                 ot1, ot2 = 0.0, excess
-                hrs['daily_ot2'] += excess
+                hrs['sun_ot'] += excess
             else:
                 hrs['daily_ot1'] += ot1
                 hrs['daily_ot2'] += ot2
@@ -297,7 +299,7 @@ def calculate_pay(hrs, rates):
         'wd':        hrs['wd']          * r['weekday'],
         'sat':       hrs['sat']         * r['saturday'],
         'sun':       hrs['sun']         * r['sunday'],
-        'sun_ot':    hrs['sun_ot']      * r['daily_ot_2'],  # Sunday OT (>2h) at double-time
+        'sun_ot':    hrs['sun_ot']      * (r.get('sunday_ot') or (r['sunday'] + r['weekday'])),  # Sunday OT = Sun penalty + base
         'ph':        hrs['ph']          * r['ph_worked'],
         'ph_ot':     hrs['ph_daily_ot'] * r['ph_ot'],
         'daily_ot1': hrs['daily_ot1']   * r['daily_ot_1'],
