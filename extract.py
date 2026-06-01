@@ -47,26 +47,43 @@ class InvoiceData(BaseModel):
     confidence: str
 
 
-def _content_blocks(b64: str, media_type: str) -> list:
+def _doc_block(b64: str, media_type: str) -> dict:
     """A PDF goes in a `document` block; an image goes in an `image` block."""
     if media_type == "application/pdf":
-        doc = {"type": "document",
-               "source": {"type": "base64", "media_type": "application/pdf", "data": b64}}
-    else:
-        doc = {"type": "image",
-               "source": {"type": "base64", "media_type": media_type, "data": b64}}
-    return [doc, {"type": "text", "text": "Extract this supplier invoice."}]
+        return {"type": "document",
+                "source": {"type": "base64", "media_type": "application/pdf", "data": b64}}
+    return {"type": "image",
+            "source": {"type": "base64", "media_type": media_type, "data": b64}}
 
 
-def extract_invoice(file_bytes: bytes, media_type: str,
+def _content_blocks(b64: str, media_type: str) -> list:
+    return [_doc_block(b64, media_type), {"type": "text", "text": "Extract this supplier invoice."}]
+
+
+def extract_invoice(pages, media_type: Optional[str] = None,
                     client: Optional[anthropic.Anthropic] = None) -> InvoiceData:
+    """Extract ONE invoice from one or more pages/photos.
+
+    `pages` may be a single bytes object (with media_type) or a list of
+    (file_bytes, media_type) tuples — all pages are combined into one invoice.
+    """
     client = client or anthropic.Anthropic()
-    b64 = base64.standard_b64encode(file_bytes).decode("utf-8")
+    if isinstance(pages, (bytes, bytearray)):
+        pages = [(pages, media_type or "image/jpeg")]
+    content = []
+    for fb, mt in pages:
+        b64 = base64.standard_b64encode(fb).decode("utf-8")
+        content.append(_doc_block(b64, mt or "image/jpeg"))
+    n = len(content)
+    content.append({"type": "text", "text":
+                    f"Extract this supplier invoice. It is provided as {n} page(s)/photo(s) — "
+                    "treat them as ONE invoice and combine all line items across the pages. "
+                    "Use the grand total from the final page if a running total spans pages."})
     resp = client.messages.parse(
         model=MODEL,
-        max_tokens=2000,
+        max_tokens=4000,
         system=[{"type": "text", "text": SYSTEM, "cache_control": {"type": "ephemeral"}}],
-        messages=[{"role": "user", "content": _content_blocks(b64, media_type)}],
+        messages=[{"role": "user", "content": content}],
         output_format=InvoiceData,
     )
     return resp.parsed_output

@@ -359,18 +359,39 @@ with tab_inv:
     if st.session_state.pop("flash", None):
         st.success(st.session_state.pop("flash_msg", "Saved."))
     st.markdown("#### Add a supplier invoice")
+    st.caption("Multi-page invoice? Snap each page (or upload several files) — they're combined into one.")
     src = st.radio("Source", ["Take photo", "Upload file"], horizontal=True, key="invsrc")
-    up = st.camera_input("Photograph the invoice") if src == "Take photo" \
-        else st.file_uploader("Upload invoice (photo or PDF)",
-                              type=["jpg", "jpeg", "png", "webp", "pdf"], key="invup")
-    if up is not None:
+
+    pages = []  # list of (bytes, media_type) making up ONE invoice
+    if src == "Take photo":
+        shots = st.session_state.setdefault("inv_shots", [])
+        cam = st.camera_input(f"Photograph page {len(shots) + 1}", key=f"invcam{len(shots)}")
+        if cam is not None:
+            shots.append((cam.getvalue(), getattr(cam, "type", "image/jpeg")))
+            st.rerun()  # reset the camera for the next page
+        if shots:
+            c1, c2 = st.columns([3, 1])
+            c1.success(f"📄 {len(shots)} page(s) captured — snap another, or extract below.")
+            if c2.button("↺ Clear", key="invclear"):
+                st.session_state["inv_shots"] = []
+                st.rerun()
+        pages = list(shots)
+    else:
+        ups = st.file_uploader("Upload invoice page(s) — photos or PDF",
+                               type=["jpg", "jpeg", "png", "webp", "pdf"],
+                               accept_multiple_files=True, key="invup")
+        pages = [(u.getvalue(), getattr(u, "type", "image/jpeg")) for u in (ups or [])]
+        if len(pages) > 1:
+            st.caption(f"{len(pages)} files — combined into one invoice.")
+
+    if pages:
         if not get_api_key():
             st.error("No ANTHROPIC_API_KEY set — add it to .streamlit/secrets.toml.")
         elif st.button("Extract with Claude Vision", type="primary", key="invbtn"):
-            with st.spinner("Reading invoice…"):
-                media = getattr(up, "type", "image/jpeg")
+            with st.spinner(f"Reading invoice ({len(pages)} page(s))…"):
                 try:
-                    st.session_state["inv"] = extract_invoice(up.getvalue(), media).model_dump()
+                    st.session_state["inv"] = extract_invoice(pages).model_dump()
+                    st.session_state.pop("inv_shots", None)
                 except Exception as e:
                     st.error(f"Extraction failed: {e}")
 
