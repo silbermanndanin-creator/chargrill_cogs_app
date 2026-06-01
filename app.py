@@ -217,7 +217,23 @@ def dark(fig, h=320):
 with st.sidebar:
     st.markdown("### 🍗 Chargrill COGS")
     mode = st.radio("Track by", ["Week", "Month"], horizontal=True)
-    ref = st.date_input("Date in period", value=dt.date.today())
+    if "period_ref" not in st.session_state:
+        st.session_state["period_ref"] = dt.date.today()
+    _nav = st.columns([1, 1, 1])
+    if _nav[0].button("◀ Prev", width="stretch", help=f"Previous {mode.lower()}"):
+        r = st.session_state["period_ref"]
+        st.session_state["period_ref"] = (r - dt.timedelta(days=7) if mode == "Week"
+                                          else (r.replace(day=1) - dt.timedelta(days=1)).replace(day=1))
+        st.rerun()
+    if _nav[1].button("Today", width="stretch"):
+        st.session_state["period_ref"] = dt.date.today()
+        st.rerun()
+    if _nav[2].button("Next ▶", width="stretch", help=f"Next {mode.lower()}"):
+        r = st.session_state["period_ref"]
+        st.session_state["period_ref"] = (r + dt.timedelta(days=7) if mode == "Week"
+                                          else (r.replace(day=1) + pd.offsets.MonthBegin(1)).date())
+        st.rerun()
+    ref = st.date_input("Or jump to a date", key="period_ref")
     if mode == "Week":
         monday = ref - dt.timedelta(days=ref.weekday())
         sunday = monday + dt.timedelta(days=6)
@@ -230,6 +246,7 @@ with st.sidebar:
         p_start = ref.replace(day=1)
         p_end = (pd.Timestamp(p_start) + pd.offsets.MonthEnd(1)).date()
         p_col, p_type = "month", "month"
+    st.caption(f"📆 Showing: **{period_label}**")
 
     pos_df = storage.load_pos_days()
     pos_map = metrics.pos_revenue_map(pos_df, p_col)
