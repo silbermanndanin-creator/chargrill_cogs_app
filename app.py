@@ -329,12 +329,12 @@ st.markdown(f"""<div class="appbar">
 
 # Owner sees all six tabs; chef sees only the four cost/operations tabs.
 if owner:
-    tab_dash, tab_inv, tab_pos, tab_lab, tab_recon, tab_temp, tab_veg, tab_list = st.tabs(
+    tab_dash, tab_inv, tab_pos, tab_lab, tab_veg, tab_list, tab_recon, tab_temp = st.tabs(
         ["📊 Dashboard", "📸 Add invoice", "💰 Daily takings", "🧮 Labour",
-         "🧾 Reconciliation", "🌡️ Temp records", "🥬 Veggie prices", "📋 Invoices"])
+         "🥬 Veggie prices", "📋 Invoices", "🧾 Reconciliation", "🌡️ Temp records"])
 else:
-    tab_dash, tab_inv, tab_temp, tab_veg, tab_list = st.tabs(
-        ["📊 Dashboard", "📸 Add invoice", "🌡️ Temp records", "🥬 Veggie prices", "📋 Invoices"])
+    tab_dash, tab_inv, tab_veg, tab_list, tab_temp = st.tabs(
+        ["📊 Dashboard", "📸 Add invoice", "🥬 Veggie prices", "📋 Invoices", "🌡️ Temp records"])
     tab_pos = tab_lab = tab_recon = None
 
 # ============ Add-invoice tab ============
