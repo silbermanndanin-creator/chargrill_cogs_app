@@ -235,6 +235,10 @@ def process_employee(emp_shifts, public_holidays, emp_type, min_weekly_hrs=38):
             day_ord = DAILY_OT_THRESHOLD
             if dtype == 'ph':
                 hrs['ph_daily_ot'] += ot1 + ot2
+            elif dtype == 'sun':
+                # Sunday overtime is paid entirely at the higher (after-2 / double-time) rate.
+                ot1, ot2 = 0.0, excess
+                hrs['daily_ot2'] += excess
             else:
                 hrs['daily_ot1'] += ot1
                 hrs['daily_ot2'] += ot2
