@@ -132,7 +132,7 @@ def _owner_pin():
         p = st.secrets.get("OWNER_PIN")
     except Exception:
         p = None
-    return str(p or os.environ.get("OWNER_PIN") or "4321")
+    return str(p or os.environ.get("OWNER_PIN") or "1111")
 
 
 if "is_owner" not in st.session_state:
