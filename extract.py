@@ -84,6 +84,8 @@ Return:
 line. 0 if there is no such line.
 - ubereats_incl_gst: the Recorded amount on the 'UberEats' (or 'UberEats - Deliverect') \
 line. 0 if there is no such line.
+- bite_incl_gst: the Recorded amount on the 'Bite Business' (or 'App Payments' / 'LOKE' / \
+'Bite') line. 0 if there is no such line.
 - confidence: "high" if clear and the figures reconcile, else "medium"/"low".
 Return numbers as plain decimals (no $ or thousands separators)."""
 
@@ -93,6 +95,7 @@ class PosSlip(BaseModel):
     total_incl_gst: float
     doordash_incl_gst: float = 0.0
     ubereats_incl_gst: float = 0.0
+    bite_incl_gst: float = 0.0
     confidence: str
 
 

@@ -443,15 +443,18 @@ if tab_pos is not None:
             c1, c2 = st.columns(2)
             pdate = c1.text_input("Date", pos["business_date"])
             ptot = c2.number_input("Total takings (incl GST) $", value=float(pos["total_incl_gst"]), step=0.01)
-            c3, c4 = st.columns(2)
+            c3, c4, c5 = st.columns(3)
             pdd = c3.number_input("DoorDash (incl GST) $", value=float(pos.get("doordash_incl_gst", 0)), step=0.01)
             pue = c4.number_input("UberEats (incl GST) $", value=float(pos.get("ubereats_incl_gst", 0)), step=0.01)
+            pbite = c5.number_input("Bite Business / App (incl GST) $",
+                                    value=float(pos.get("bite_incl_gst", 0)), step=0.01, key="posbite")
             adj_incl, adj_ex = config.delivery_adjust(ptot, pdd, pue)
             cut = config.DELIVERY_COMMISSION * (pdd + pue)
             st.info(f"Delivery −{config.DELIVERY_COMMISSION*100:.0f}% on ${pdd+pue:,.2f} = −${cut:,.2f}  →  "
-                    f"**${adj_incl:,.2f} incl GST**  =  **${adj_ex:,.2f} ex-GST** for the day.")
+                    f"**${adj_incl:,.2f} incl GST**  =  **${adj_ex:,.2f} ex-GST** for the day."
+                    + (f"  ·  Bite ${pbite:,.2f}" if pbite else ""))
             if st.button("✅ Save day's takings", key="possave"):
-                storage.save_pos_day(pdate, ptot, pdd, pue)
+                storage.save_pos_day(pdate, ptot, pdd, pue, pbite)
                 st.session_state["pflash"] = True
                 st.session_state["pflash_msg"] = f"Saved {pdate}: ${adj_ex:,.0f} ex-GST"
                 st.session_state.pop("pos", None)
@@ -679,6 +682,7 @@ if tab_recon is not None:
 
             uber_def = [_posval(rdays[i], "ubereats") for i in range(7)]
             dd_def = [_posval(rdays[i], "doordash") for i in range(7)]
+            bite_def = [_posval(rdays[i], "bite") for i in range(7)]
             turn_def = [_posval(rdays[i], "total_incl_gst") for i in range(7)]
             n_pos = sum(1 for d in rdays if d.isoformat() in _pos_by_date)
 
@@ -722,11 +726,11 @@ if tab_recon is not None:
             }), hide_index=True, width="stretch", disabled=["Day"], key="rec_cash")
 
             st.markdown("##### 4 · Deliveries + Bite")
-            st.caption(f"Uber Eats & DoorDash auto-filled from {n_pos} saved POS slip(s) this week — "
-                       "edit if needed. **Bite** isn't on the POS slip, so enter it manually.")
+            st.caption(f"Uber Eats, DoorDash & Bite auto-filled from {n_pos} saved POS slip(s) "
+                       "this week — edit if needed.")
             deliv_in = st.data_editor(pd.DataFrame({
                 "Day": rlabels, "Uber Eats gross": uber_def,
-                "DoorDash gross": dd_def, "Bite (App pymt)": [None]*7,
+                "DoorDash gross": dd_def, "Bite (App pymt)": bite_def,
             }), hide_index=True, width="stretch", disabled=["Day"], key="rec_deliv")
 
             tyro_days = [{"t1": _rnum(tyro_in.iloc[i]["Terminal 1 Net"]),

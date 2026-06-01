@@ -52,10 +52,13 @@ create table if not exists pos_days (
     total_incl_gst    numeric,
     doordash          numeric,
     ubereats          numeric,
+    bite              numeric,               -- Bite Business / app payments (incl GST)
     adjusted_incl_gst numeric,               -- after netting the delivery commission
     adjusted_ex_gst   numeric,               -- ex-GST revenue used for COGS %
     saved_at          text
 );
+-- If pos_days already exists from before, add the bite column:
+--   alter table pos_days add column if not exists bite numeric;
 
 -- Food Safety daily temperature records — one record per day, stored as a JSON blob
 -- (managers, all section temps, chicken cooks). Enables upsert on date.
