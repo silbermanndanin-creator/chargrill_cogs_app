@@ -528,8 +528,8 @@ if tab_lab is not None:
                         leave_in, hide_index=True, width="stretch", key="leave_ed",
                         column_config={
                             "Employee": st.column_config.TextColumn(disabled=True),
-                            "AL hrs": st.column_config.NumberColumn(min_value=0.0, step=1.0, format="%.1f"),
-                            "SL hrs": st.column_config.NumberColumn(min_value=0.0, step=1.0, format="%.1f")})
+                            "AL hrs": st.column_config.NumberColumn(min_value=0.0, step=0.01, format="%.2f"),
+                            "SL hrs": st.column_config.NumberColumn(min_value=0.0, step=0.01, format="%.2f")})
                     leave = {row["Employee"]: {"al": row["AL hrs"], "sl": row["SL hrs"]}
                              for _, row in edited.iterrows()}
                 out = payroll.apply_leave(out, leave)
