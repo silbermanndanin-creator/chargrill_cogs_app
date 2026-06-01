@@ -562,16 +562,24 @@ if tab_lab is not None:
                     st.caption("Enter AL/SL hours — added to each person's gross at their flat "
                                "rate and carried into the report's SL/AL columns.")
                     perm = [r for r in out["results"] if r["emp_type"] != "Casual"]
-                    leave_in = pd.DataFrame([{"Employee": r["name"],
-                                              "AL hrs": float(r.get("al_hrs", 0.0)),
-                                              "SL hrs": float(r.get("sl_hrs", 0.0))} for r in perm])
+                    # Stable 0.0 base so the editor doesn't reset/lose focus on each
+                    # keystroke (the keyed widget remembers what you type); apply_leave
+                    # below reads the typed values without feeding back into this input.
+                    leave_in = pd.DataFrame([{"Employee": r["name"], "AL hrs": 0.0, "SL hrs": 0.0}
+                                             for r in perm])
                     edited = st.data_editor(
                         leave_in, hide_index=True, width="stretch", key="leave_ed",
                         column_config={
                             "Employee": st.column_config.TextColumn(disabled=True),
-                            "AL hrs": st.column_config.NumberColumn(min_value=0.0, step=0.01, format="%.2f"),
-                            "SL hrs": st.column_config.NumberColumn(min_value=0.0, step=0.01, format="%.2f")})
-                    leave = {row["Employee"]: {"al": row["AL hrs"], "sl": row["SL hrs"]}
+                            "AL hrs": st.column_config.NumberColumn(min_value=0.0, format="%.2f"),
+                            "SL hrs": st.column_config.NumberColumn(min_value=0.0, format="%.2f")})
+
+                    def _lv(x):
+                        try:
+                            return 0.0 if x is None or float(x) != float(x) else float(x)
+                        except (TypeError, ValueError):
+                            return 0.0
+                    leave = {row["Employee"]: {"al": _lv(row["AL hrs"]), "sl": _lv(row["SL hrs"])}
                              for _, row in edited.iterrows()}
                 out = payroll.apply_leave(out, leave)
                 st.session_state["pay"] = out
