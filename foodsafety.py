@@ -110,8 +110,55 @@ def random_day(d):
     }
 
 
-def build_day_sheet(wb, d, title=None):
-    data = random_day(d)
+PAIRED = ("deliveries", "products", "hotbar", "burger_chilled",
+          "burger_cooked", "salad", "desserts", "equipment")
+
+
+def blank_entry(d):
+    """Editable skeleton for a day: same shape as random_day but temps blank.
+    Only includes delivery rows for suppliers that deliver that weekday."""
+    rnd = random_day(d)
+    e = {"managers": ["", ""],
+         "cooks": [{"size": c["size"], "in": c["in"], "out": c["out"], "temp": None}
+                   for c in rnd["cooks"]]}
+    for key in PAIRED:
+        e[key] = {name: [None, None] for name in rnd[key]}
+    return e
+
+
+def _pick(user, rand):
+    return user if user not in (None, "") and not (isinstance(user, float) and user != user) else rand
+
+
+def merge_entry(d, entry):
+    """Fill any blank reading in `entry` with a realistic value for that day.
+    Returns a complete data dict ready for build_day_sheet / storage."""
+    rnd = random_day(d)
+    out = {}
+    mo = (entry.get("managers") or ["", ""])
+    out["managers"] = [_pick(mo[0], rnd["managers"][0]), _pick(mo[1], rnd["managers"][1])]
+    for key in PAIRED:
+        out[key] = {}
+        for name, rv in rnd[key].items():
+            ev = (entry.get(key) or {}).get(name) or [None, None]
+            out[key][name] = [_pick(ev[0], rv[0]), _pick(ev[1], rv[1])]
+    # Devil Wings & Schnitzel are never cooked at open -> force n/a regardless of entry
+    for n in ("Devil Wings", "Schnitzel"):
+        if n in out["hotbar"]:
+            out["hotbar"][n][0] = None
+    out["cooks"] = []
+    ecooks = entry.get("cooks") or []
+    for i, rc in enumerate(rnd["cooks"]):
+        ec = ecooks[i] if i < len(ecooks) else {}
+        out["cooks"].append({"size": _pick(ec.get("size"), rc["size"]),
+                             "in": _pick(ec.get("in"), rc["in"]),
+                             "out": _pick(ec.get("out"), rc["out"]),
+                             "temp": _pick(ec.get("temp"), rc["temp"])})
+    return out
+
+
+def build_day_sheet(wb, d, title=None, data=None):
+    data = data or random_day(d)
     ws = wb.create_sheet(title or d.strftime("%Y-%m-%d"))
     ws.sheet_view.showGridLines = False
     for col, w in {'A': 24, 'B': 9, 'C': 11, 'D': 13, 'E': 10, 'F': 10,
@@ -257,6 +304,16 @@ def build_workbook(dates):
 
 def build_single(d):
     return build_workbook([d])
+
+
+def build_workbook_data(items):
+    """items: list of (date, data_dict). Builds one sheet per day from given data."""
+    wb = Workbook()
+    wb.remove(wb.active)
+    for d, data in items:
+        build_day_sheet(wb, d, title=d.strftime("%Y-%m-%d"), data=data)
+    buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+    return buf
 
 
 def daterange(start, end):

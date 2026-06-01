@@ -689,36 +689,100 @@ if tab_recon is not None:
 
 
 # ============ Food Safety temp records tab ============
+XLMIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+FS_SECTIONS = [
+    ("deliveries", "Temperature of Deliveries", ("Before 11am", "Before 5pm")),
+    ("products", "Products & Holding Temperatures", ("2hrs after Open", "2hrs before Close")),
+    ("hotbar", "Hot Bar Holding Temperatures", ("2hrs after Open", "2hrs before Close")),
+    ("burger_chilled", "Burger / Grilled — chilled", ("2hrs after Open", "2hrs before Close")),
+    ("burger_cooked", "Burger / Grilled — cooked", ("2hrs after Open", "2hrs before Close")),
+    ("salad", "Salad Bar Fridge", ("2hrs after Open", "2hrs before Close")),
+    ("desserts", "Desserts / Sauces / Soups", ("2hrs after Open", "2hrs before Close")),
+    ("equipment", "Equipment", ("2hrs after Open", "2hrs before Close")),
+]
+
 if tab_temp is not None:
     with tab_temp:
         st.markdown("#### 🌡️ Food Safety daily temperature records")
         if fsafe is None:
             st.error("Temp-records module unavailable.")
         else:
-            st.caption("Generates a filled daily record with realistic randomised temperatures "
-                       "(same rules and layout as the paper book). Pick a single day or a range.")
-            tmode = st.radio("Generate", ["Single day", "Date range"], horizontal=True, key="ts_mode")
-            dates, fname = [], "Food Safety Temps.xlsx"
-            if tmode == "Single day":
+            view = st.radio("view", ["✍️ Daily entry", "🗂️ History"], horizontal=True,
+                            label_visibility="collapsed", key="ts_view")
+
+            if view == "✍️ Daily entry":
                 tday = st.date_input("Date", value=dt.date.today(), key="ts_day")
-                dates = [tday]
-                fname = f"Food Safety Temps - {tday:%d %b %Y}.xlsx"
-            else:
-                c1, c2 = st.columns(2)
-                tfrom = c1.date_input("From", value=dt.date.today().replace(day=1), key="ts_from")
-                tto = c2.date_input("To", value=dt.date.today(), key="ts_to")
-                if tto < tfrom:
-                    st.warning("'To' is before 'From'.")
+                saved = storage.food_safety_for(tday)
+                base = saved if saved else fsafe.blank_entry(tday)
+                if saved:
+                    st.info("A record already exists for this day — edit below and re-save to update it.")
+                st.caption("Enter the temperatures you took. Anything left blank is auto-filled "
+                           "with a realistic value when you save.")
+
+                mc = st.columns(2)
+                mo = mc[0].text_input("Manager Open", value=(base["managers"][0] or ""), key="ts_mo")
+                mcl = mc[1].text_input("Manager Close", value=(base["managers"][1] or ""), key="ts_mc")
+
+                ent = {"managers": [mo, mcl]}
+                for _sk, _lbl, _cols in FS_SECTIONS:
+                    _rows = base.get(_sk, {})
+                    if not _rows:
+                        st.caption(f"**{_lbl}** — no scheduled deliveries today." if _sk == "deliveries"
+                                   else f"**{_lbl}** — none.")
+                        ent[_sk] = {}
+                        continue
+                    st.markdown(f"**{_lbl}**")
+                    _sdf = pd.DataFrame([{"Item": k, _cols[0]: _rows[k][0], _cols[1]: _rows[k][1]} for k in _rows])
+                    _sed = st.data_editor(
+                        _sdf, hide_index=True, width="stretch", key=f"ts_{_sk}",
+                        column_config={"Item": st.column_config.TextColumn(disabled=True),
+                                       _cols[0]: st.column_config.NumberColumn(format="%.1f"),
+                                       _cols[1]: st.column_config.NumberColumn(format="%.1f")})
+                    ent[_sk] = {r["Item"]: [r[_cols[0]], r[_cols[1]]] for _, r in _sed.iterrows()}
+
+                st.markdown("**Chicken Temp Records**")
+                ck = pd.DataFrame(base["cooks"]).rename(
+                    columns={"size": "Cook Size", "in": "Time In", "out": "Time Out", "temp": "Temperature"})
+                cked = st.data_editor(
+                    ck, hide_index=True, width="stretch", key="ts_cooks",
+                    column_config={"Cook Size": st.column_config.NumberColumn(format="%d"),
+                                   "Temperature": st.column_config.NumberColumn(format="%.1f")})
+                ent["cooks"] = [{"size": r["Cook Size"], "in": r["Time In"], "out": r["Time Out"],
+                                 "temp": r["Temperature"]} for _, r in cked.iterrows()]
+
+                if st.button("💾 Save day's record", type="primary", key="ts_save"):
+                    merged = fsafe.merge_entry(tday, ent)
+                    storage.save_food_safety(tday, merged)
+                    st.session_state["ts_saved"] = tday.strftime("%d %b %Y")
+                    st.rerun()
+                if st.session_state.pop("ts_saved", None):
+                    st.success("Saved to historical records — any blanks were auto-filled.")
+
+                data_dl = storage.food_safety_for(tday) or fsafe.merge_entry(tday, ent)
+                buf = fsafe.build_workbook_data([(tday, data_dl)])
+                st.download_button("⬇️ Download this day", buf, key="ts_dl",
+                                   file_name=f"Food Safety Temps - {tday:%d %b %Y}.xlsx", mime=XLMIME)
+
+            else:  # History
+                hist = storage.load_food_safety()
+                if hist.empty:
+                    st.info("No saved records yet — enter a day under ✍️ Daily entry and save it.")
                 else:
-                    dates = fsafe.daterange(tfrom, tto)
-                    st.caption(f"{len(dates)} day(s) — one sheet per day.")
-                    fname = f"Food Safety Temps - {tfrom:%d %b} to {tto:%d %b %Y}.xlsx"
-            if dates:
-                buf = fsafe.build_workbook(dates)
-                st.download_button("⬇️ Download temp records", buf, file_name=fname,
-                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                   key="ts_dl")
-            st.caption("1 Mar → 1 Jun 2026 already back-filled to Google Drive › Chargrill › Food Safety.")
+                    days = sorted(hist["date"].astype(str).tolist())
+                    st.caption(f"{len(days)} day(s) saved · {days[0]} → {days[-1]}")
+                    c = st.columns(2)
+                    hf = c[0].date_input("From", value=pd.to_datetime(days[0]).date(), key="ts_hf")
+                    ht = c[1].date_input("To", value=pd.to_datetime(days[-1]).date(), key="ts_ht")
+                    sel = [d for d in days if hf.isoformat() <= d <= ht.isoformat()]
+                    if sel:
+                        items = [(pd.to_datetime(d).date(), storage.food_safety_for(d)) for d in sel]
+                        items = [(d, x) for d, x in items if x]
+                        buf = fsafe.build_workbook_data(items)
+                        st.download_button(f"⬇️ Download {len(items)} saved day(s)", buf, key="ts_hdl",
+                                           file_name=f"Food Safety Temps - {hf:%d %b} to {ht:%d %b %Y}.xlsx",
+                                           mime=XLMIME)
+                    st.dataframe(pd.DataFrame({"Saved records (date)": days[::-1]}),
+                                 hide_index=True, width="stretch")
 
 
 # ============ Dashboard tab ============

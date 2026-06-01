@@ -28,6 +28,8 @@ LABOUR_COLUMNS = ["period_type", "period_key", "labour_cost", "hours",
                   "foh_hours", "boh_hours", "updated_at"]
 POS_COLUMNS = ["date", "iso_week", "month", "total_incl_gst", "doordash", "ubereats",
                "adjusted_incl_gst", "adjusted_ex_gst", "saved_at"]
+FS_PATH = os.path.join(DATA_DIR, "food_safety.csv")
+FS_COLUMNS = ["date", "data", "saved_at"]
 
 
 def iso_week_of(d: dt.date) -> str:
@@ -336,3 +338,50 @@ def load_pos_days() -> pd.DataFrame:
     _ensure_csv(POS_PATH, POS_COLUMNS)
     df = pd.read_csv(POS_PATH)
     return df if not df.empty else pd.DataFrame(columns=POS_COLUMNS)
+
+
+# ---------- food safety daily temperature records (one record per date) ----------
+def save_food_safety(date, data: dict):
+    d = pd.to_datetime(date).date()
+    row = {"date": d.isoformat(), "data": json.dumps(data),
+           "saved_at": dt.datetime.now().isoformat(timespec="seconds")}
+    if _use_supabase():
+        _client().table("food_safety").upsert(row, on_conflict="date").execute()
+    else:
+        _ensure_csv(FS_PATH, FS_COLUMNS)
+        df = pd.read_csv(FS_PATH)
+        df = df[df["date"].astype(str) != row["date"]]  # one record per day
+        df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+        df.to_csv(FS_PATH, index=False)
+    return row
+
+
+def load_food_safety() -> pd.DataFrame:
+    if _use_supabase():
+        try:
+            data = _client().table("food_safety").select("*").execute().data
+        except Exception:
+            return pd.DataFrame(columns=FS_COLUMNS)  # table not created yet -> degrade
+        return pd.DataFrame(data, columns=FS_COLUMNS) if data else pd.DataFrame(columns=FS_COLUMNS)
+    _ensure_csv(FS_PATH, FS_COLUMNS)
+    df = pd.read_csv(FS_PATH)
+    return df if not df.empty else pd.DataFrame(columns=FS_COLUMNS)
+
+
+def food_safety_for(date):
+    """Return the saved data dict for a date, or None."""
+    try:
+        d = pd.to_datetime(date).date().isoformat()
+    except Exception:
+        return None
+    df = load_food_safety()
+    if df.empty:
+        return None
+    m = df[df["date"].astype(str) == d]
+    if m.empty:
+        return None
+    raw = m.iloc[0]["data"]
+    try:
+        return json.loads(raw) if isinstance(raw, str) else raw
+    except Exception:
+        return None

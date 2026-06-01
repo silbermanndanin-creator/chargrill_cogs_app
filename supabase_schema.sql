@@ -57,6 +57,14 @@ create table if not exists pos_days (
     saved_at          text
 );
 
+-- Food Safety daily temperature records — one record per day, stored as a JSON blob
+-- (managers, all section temps, chicken cooks). Enables upsert on date.
+create table if not exists food_safety (
+    date      text primary key,
+    data      text,                            -- JSON string of the day's full record
+    saved_at  text
+);
+
 -- This app runs server-side on Streamlit Cloud and connects with the service_role
 -- key, so Row Level Security is not required. If you prefer to enable RLS, add
 -- policies that allow the service role full access.
