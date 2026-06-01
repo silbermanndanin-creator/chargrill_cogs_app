@@ -190,7 +190,14 @@ def set_labour(period_type: str, period_key: str, labour_cost: float, hours: flo
            "boh_hours": round(float(boh_hours or 0), 2),
            "updated_at": dt.datetime.now().isoformat(timespec="seconds")}
     if _use_supabase():
-        _client().table("labour").upsert(row, on_conflict="period_type,period_key").execute()
+        try:
+            _client().table("labour").upsert(row, on_conflict="period_type,period_key").execute()
+        except Exception:
+            # Older labour table without foh_hours/boh_hours columns -> still save the
+            # core fields so the app doesn't crash. Run the ALTERs in supabase_schema.sql
+            # to enable FOH/BOH persistence.
+            slim = {k: v for k, v in row.items() if k not in ("foh_hours", "boh_hours")}
+            _client().table("labour").upsert(slim, on_conflict="period_type,period_key").execute()
     else:
         _ensure_csv(LABOUR_PATH, LABOUR_COLUMNS)
         df = pd.read_csv(LABOUR_PATH)
