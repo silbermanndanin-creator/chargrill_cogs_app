@@ -27,7 +27,7 @@ REV_COLUMNS = ["period_type", "period_key", "revenue", "updated_at"]
 LABOUR_COLUMNS = ["period_type", "period_key", "labour_cost", "hours",
                   "foh_hours", "boh_hours", "updated_at"]
 POS_COLUMNS = ["date", "iso_week", "month", "total_incl_gst", "doordash", "ubereats",
-               "bite", "adjusted_incl_gst", "adjusted_ex_gst", "saved_at"]
+               "bite", "cash", "adjusted_incl_gst", "adjusted_ex_gst", "saved_at"]
 FS_PATH = os.path.join(DATA_DIR, "food_safety.csv")
 FS_COLUMNS = ["date", "data", "saved_at"]
 
@@ -312,7 +312,7 @@ def load_payroll_setup():
 
 
 # ---------- POS daily takings (one finalised end-of-day slip per date) ----------
-def save_pos_day(date, total_incl_gst, doordash, ubereats, bite=0.0):
+def save_pos_day(date, total_incl_gst, doordash, ubereats, bite=0.0, cash=0.0):
     d = pd.to_datetime(date).date()
     iso_y, iso_w, _ = d.isocalendar()
     adj_incl, adj_ex = config.delivery_adjust(total_incl_gst, doordash, ubereats)
@@ -324,6 +324,7 @@ def save_pos_day(date, total_incl_gst, doordash, ubereats, bite=0.0):
         "doordash": round(float(doordash or 0), 2),
         "ubereats": round(float(ubereats or 0), 2),
         "bite": round(float(bite or 0), 2),
+        "cash": round(float(cash or 0), 2),
         "adjusted_incl_gst": adj_incl,
         "adjusted_ex_gst": adj_ex,
         "saved_at": dt.datetime.now().isoformat(timespec="seconds"),
@@ -332,8 +333,8 @@ def save_pos_day(date, total_incl_gst, doordash, ubereats, bite=0.0):
         try:
             _client().table("pos_days").upsert(row, on_conflict="date").execute()
         except Exception:
-            # Older pos_days table without the 'bite' column -> save the rest.
-            slim = {k: v for k, v in row.items() if k != "bite"}
+            # Older pos_days table missing the 'bite'/'cash' columns -> save the rest.
+            slim = {k: v for k, v in row.items() if k not in ("bite", "cash")}
             _client().table("pos_days").upsert(slim, on_conflict="date").execute()
     else:
         _ensure_csv(POS_PATH, POS_COLUMNS)

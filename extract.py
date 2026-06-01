@@ -106,6 +106,8 @@ Recorded column in the Summary, or equivalently from the 'Total' under 'Bite Bus
 the 'Breakdown by payment means' section lower on the slip (both show the same figure). \
 This is its OWN line — do NOT use the separate 'App Payments' or 'App Ordering' lines, \
 which are different and usually 0.00. Use 0 only if there is no 'Bite Business' line.
+- cash_incl_gst: the amount on the 'Cash' line — the Recorded column in the Summary, or \
+the 'Cash' Total in the 'Breakdown by payment means' section. 0 if there is no Cash line.
 - confidence: "high" if clear and the figures reconcile, else "medium"/"low".
 Return numbers as plain decimals (no $ or thousands separators)."""
 
@@ -116,6 +118,7 @@ class PosSlip(BaseModel):
     doordash_incl_gst: float = 0.0
     ubereats_incl_gst: float = 0.0
     bite_incl_gst: float = 0.0
+    cash_incl_gst: float = 0.0
     confidence: str
 
 
