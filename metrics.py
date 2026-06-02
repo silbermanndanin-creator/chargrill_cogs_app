@@ -313,13 +313,18 @@ def bas_summary(pos_df, inv_df, months):
             "net_gst": gst_on_sales - gst_credits_est}
 
 
-def suggest_stock_items(lines, top_n=25):
-    """[{item, unit, unit_price}] — the most-purchased products (by total spend) across
-    all suppliers, with their last per-unit price + invoice unit, to pre-fill the
-    stocktake item list. Owner then adjusts units/prices (e.g. salmon -> kg/$37.25)."""
+def suggest_stock_items(lines, suppliers=None, top_n=60):
+    """[{item, supplier, unit, unit_price}] — most-purchased products with their last
+    per-unit price + invoice unit, to pre-fill the stocktake list. If `suppliers` is
+    given, only items from those categories are returned (the stocktake tracks only
+    Baida/Veggies/Blueseas). Owner then adjusts units/prices (e.g. salmon -> kg/$37.25)."""
     if lines is None or lines.empty:
         return []
     sub = lines.copy()
+    if suppliers:
+        sub = sub[sub["supplier"].isin(list(suppliers))]
+    if sub.empty:
+        return []
     sub["k"] = sub["description"].map(_item_key)
     sub["q"] = pd.to_numeric(sub["quantity"], errors="coerce")
     sub["a"] = pd.to_numeric(sub["amount"], errors="coerce")
@@ -338,11 +343,11 @@ def suggest_stock_items(lines, top_n=25):
             up = float(last["a"])
             unit = last.get("unit")
         unit = unit if isinstance(unit, str) and unit else "ea"
-        rows.append({"item": str(last["description"]), "unit": unit,
-                     "unit_price": round(up, 2), "_spend": spend})
+        rows.append({"item": str(last["description"]), "supplier": str(last["supplier"]),
+                     "unit": unit, "unit_price": round(up, 2), "_spend": spend})
     rows.sort(key=lambda r: -r["_spend"])
-    return [{"item": r["item"], "unit": r["unit"], "unit_price": r["unit_price"]}
-            for r in rows[:top_n]]
+    return [{"item": r["item"], "supplier": r["supplier"], "unit": r["unit"],
+             "unit_price": r["unit_price"]} for r in rows[:top_n]]
 
 
 def order_pad(lines, supplier):

@@ -1174,59 +1174,75 @@ with tab_dash:
                                f"{rec_split:.0f} split ({rec_st:.0f} tubs).")
     st.write("")
 
-    # ---- Weekly stocktake → TRUE COGS (count-based, all roles, Week mode) (#4) ----
+    # ---- Weekly stocktake → TRUE COGS (count-based, by supplier, Week mode) (#4) ----
+    STOCK_SUPPLIERS = ["Chicken", "Veggies", "Blueseas (Broadline)"]
+    STOCK_SUP_LABEL = {"Chicken": "🐔 Baida (Chicken)", "Veggies": "🥬 Veggies",
+                       "Blueseas (Broadline)": "🌊 Blueseas"}
     if mode == "Week":
         st.markdown("**📦 Weekly stocktake → true COGS**")
-        _items = storage.load_stock_items()
+        _items = [i for i in storage.load_stock_items() if i.get("supplier") in STOCK_SUPPLIERS]
 
-        # 1) Manage the products counted + their per-unit prices
+        # 1) Manage the products counted (Baida / Veggies / Blueseas only)
         with st.expander(f"🧾 Stock items & prices ({len(_items)})", expanded=not _items):
-            st.caption("Define the main products you count. Set the **unit** (kg, ea, carton…) and "
-                       "the **price per that unit** — e.g. salmon as unit `kg`, price `37.25` shows "
-                       "**$37.25/kg**. *Suggest from invoices* pre-fills from what you buy; then adjust.")
+            st.caption("Only **Baida, Veggies and Blueseas** products are counted. Pick the "
+                       "**supplier**, set the **unit** (kg, ea, carton…) and **price per unit** — "
+                       "e.g. salmon as unit `kg`, price `37.25` shows **$37.25/kg**. "
+                       "*Suggest from invoices* pre-fills from what you buy; then adjust.")
             _seed = st.session_state.pop("_stock_seed", None)
-            _src = _seed if _seed is not None else (_items or [{"item": "", "unit": "", "unit_price": 0.0}])
+            _src = _seed if _seed is not None else (_items or [{"item": "", "supplier": "Veggies",
+                                                                "unit": "", "unit_price": 0.0}])
             _idf = pd.DataFrame(_src)
-            for _c in ["item", "unit", "unit_price"]:
+            for _c, _dv in [("item", ""), ("supplier", "Veggies"), ("unit", ""), ("unit_price", 0.0)]:
                 if _c not in _idf.columns:
-                    _idf[_c] = "" if _c != "unit_price" else 0.0
+                    _idf[_c] = _dv
             _ie = st.data_editor(
-                _idf[["item", "unit", "unit_price"]], num_rows="dynamic", hide_index=True,
-                width="stretch", key="stockitems_ed",
+                _idf[["item", "supplier", "unit", "unit_price"]], num_rows="dynamic",
+                hide_index=True, width="stretch", key="stockitems_ed",
                 column_config={
                     "item": st.column_config.TextColumn("Item"),
+                    "supplier": st.column_config.SelectboxColumn("Supplier", options=STOCK_SUPPLIERS,
+                                                                 required=True),
                     "unit": st.column_config.TextColumn("Unit (kg/ea/…)"),
                     "unit_price": st.column_config.NumberColumn("Price per unit", format="$%.2f",
                                                                 min_value=0.0)})
             _b = st.columns(2)
             if _b[0].button("💡 Suggest from invoices", key="stock_suggest"):
-                st.session_state["_stock_seed"] = metrics.suggest_stock_items(lines, 25)
+                st.session_state["_stock_seed"] = metrics.suggest_stock_items(lines, STOCK_SUPPLIERS, 60)
                 st.rerun()
             if _b[1].button("💾 Save stock items", key="stockitems_save"):
-                storage.save_stock_items(_ie.to_dict("records"))
+                _keep = [r for r in _ie.to_dict("records") if r.get("supplier") in STOCK_SUPPLIERS]
+                storage.save_stock_items(_keep)
                 st.session_state["stk_flash"] = True
                 st.rerun()
         if st.session_state.pop("stk_flash", None):
             st.success("Stock items saved.")
 
-        # 2) This week's count sheet -> closing value -> true COGS
+        # 2) This week's count sheet, grouped by supplier -> closing value -> true COGS
         if not _items:
-            st.info("Add stock items above (or **Suggest from invoices**) to start counting.")
+            st.info("Add Baida / Veggies / Blueseas items above (or **Suggest from invoices**) "
+                    "to start counting.")
         else:
             st.caption("Enter the **count on hand** at the end of this week:")
-            _csheet = pd.DataFrame([
-                {"Item": i["item"],
-                 "Price": f"${i['unit_price']:.2f}/{i['unit'] or 'unit'}",
-                 "Count": 0.0, "_p": i["unit_price"]} for i in _items])
-            _ce = st.data_editor(
-                _csheet[["Item", "Price", "Count"]], hide_index=True, width="stretch",
-                key="stockcount_ed",
-                column_config={
-                    "Item": st.column_config.TextColumn(disabled=True),
-                    "Price": st.column_config.TextColumn("Price", disabled=True),
-                    "Count": st.column_config.NumberColumn(min_value=0.0, step=1.0)})
-            _counts = pd.to_numeric(_ce["Count"], errors="coerce").fillna(0).values
-            _total = float((_counts * _csheet["_p"].values).sum())
+            _total = 0.0
+            for _sup in STOCK_SUPPLIERS:
+                _sit = [i for i in _items if i.get("supplier") == _sup]
+                if not _sit:
+                    continue
+                st.markdown(f"**{STOCK_SUP_LABEL[_sup]}**")
+                _csheet = pd.DataFrame([
+                    {"Item": i["item"], "Price": f"${i['unit_price']:.2f}/{i['unit'] or 'unit'}",
+                     "Count": 0.0, "_p": i["unit_price"]} for i in _sit])
+                _ce = st.data_editor(
+                    _csheet[["Item", "Price", "Count"]], hide_index=True, width="stretch",
+                    key=f"stockcount_{_sup.replace(' ', '_').replace('(', '').replace(')', '')}",
+                    column_config={
+                        "Item": st.column_config.TextColumn(disabled=True),
+                        "Price": st.column_config.TextColumn("Price", disabled=True),
+                        "Count": st.column_config.NumberColumn(min_value=0.0, step=1.0)})
+                _cnt = pd.to_numeric(_ce["Count"], errors="coerce").fillna(0).values
+                _sub = float((_cnt * _csheet["_p"].values).sum())
+                _total += _sub
+                st.caption(f"{STOCK_SUP_LABEL[_sup]} subtotal: **${_sub:,.0f}**")
             st.markdown(f"**Closing stock value this week: ${_total:,.0f}**")
             if st.button("💾 Save this week's stocktake", type="primary", key="stock_save_wk"):
                 storage.set_stock_value(period_key, _total)

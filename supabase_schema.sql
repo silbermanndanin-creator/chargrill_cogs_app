@@ -96,13 +96,17 @@ create table if not exists variation_events (
     primary key (employee, shift_date)
 );
 
--- Stock items: the products counted in the weekly stocktake, with the price per their
--- unit (e.g. salmon unit 'kg', unit_price 37.25 -> $37.25/kg).
+-- Stock items: the products counted in the weekly stocktake, grouped by supplier
+-- (Baida/Chicken, Veggies, Blueseas only), with the price per their unit
+-- (e.g. salmon unit 'kg', unit_price 37.25 -> $37.25/kg).
 create table if not exists stock_items (
     item        text primary key,
+    supplier    text,
     unit        text,
     unit_price  numeric
 );
+-- If stock_items already existed without the supplier column:
+--   alter table stock_items add column if not exists supplier text;
 
 -- Weekly stocktake: end-of-week stock-on-hand $ value (valued at last-paid prices),
 -- used to compute TRUE COGS = opening + purchases - closing. One row per ISO week.

@@ -40,7 +40,7 @@ VAR_COLUMNS = ["employee", "shift_date", "weekday", "actual_start", "actual_fini
 CONTRACT_PATH = os.path.join(DATA_DIR, "contracts.csv")
 CONTRACT_COLUMNS = ["employee", "weekday", "start", "finish"]
 STOCK_ITEMS_PATH = os.path.join(DATA_DIR, "stock_items.csv")
-STOCK_ITEMS_COLUMNS = ["item", "unit", "unit_price"]
+STOCK_ITEMS_COLUMNS = ["item", "supplier", "unit", "unit_price"]
 
 
 def iso_week_of(d: dt.date) -> str:
@@ -382,13 +382,15 @@ def load_stock_items() -> list:
             up = float(r.get("unit_price") or 0)
         except (TypeError, ValueError):
             up = 0.0
-        out.append({"item": it, "unit": str(r.get("unit") or "").strip(), "unit_price": up})
-    out.sort(key=lambda r: r["item"].lower())
+        out.append({"item": it, "supplier": str(r.get("supplier") or "").strip(),
+                    "unit": str(r.get("unit") or "").strip(), "unit_price": up})
+    out.sort(key=lambda r: (r["supplier"], r["item"].lower()))
     return out
 
 
 def save_stock_items(items):
-    """Replace the whole stock-item list. items = iterable of {item, unit, unit_price}."""
+    """Replace the whole stock-item list. items = iterable of
+    {item, supplier, unit, unit_price}."""
     rows, seen = [], set()
     for i in items:
         it = str(i.get("item") or "").strip()
@@ -399,7 +401,8 @@ def save_stock_items(items):
             up = round(float(i.get("unit_price") or 0), 2)
         except (TypeError, ValueError):
             up = 0.0
-        rows.append({"item": it, "unit": str(i.get("unit") or "").strip(), "unit_price": up})
+        rows.append({"item": it, "supplier": str(i.get("supplier") or "").strip(),
+                     "unit": str(i.get("unit") or "").strip(), "unit_price": up})
     if _use_supabase():
         try:
             _client().table("stock_items").delete().neq("item", "").execute()
