@@ -280,6 +280,12 @@ def price_anomalies(lines, min_pct=8.0):
     return df.sort_values("_pct", ascending=False).reset_index(drop=True) if not df.empty else df
 
 
+def true_cogs(purchases, opening_stock, closing_stock):
+    """Actual food used = opening stock + purchases - closing stock. This is the real
+    COGS; invoice spend alone only measures PURCHASES (distorted by over/under-buying)."""
+    return float(opening_stock) + float(purchases) - float(closing_stock)
+
+
 def bas_summary(pos_df, inv_df, months):
     """GST summary for a list of 'YYYY-MM' months (one BAS quarter).
     sales_incl from POS takings (GST on sales = incl/11); gst_credits_est from invoice

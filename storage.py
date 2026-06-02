@@ -30,6 +30,8 @@ POS_COLUMNS = ["date", "iso_week", "month", "total_incl_gst", "doordash", "ubere
                "bite", "cash", "adjusted_incl_gst", "adjusted_ex_gst", "saved_at"]
 FS_PATH = os.path.join(DATA_DIR, "food_safety.csv")
 FS_COLUMNS = ["date", "data", "saved_at"]
+STOCK_PATH = os.path.join(DATA_DIR, "stocktake.csv")
+STOCK_COLUMNS = ["period_key", "stock_value", "updated_at"]
 
 
 def iso_week_of(d: dt.date) -> str:
@@ -185,6 +187,40 @@ def revenue_map(period_type: str) -> dict:
         return {}
     df = df[df["period_type"] == period_type]
     return dict(zip(df["period_key"], df["revenue"]))
+
+
+# ---------- weekly stocktake (closing stock $ value, for TRUE COGS) ----------
+def set_stock_value(period_key: str, stock_value: float):
+    """Store the end-of-week stock-on-hand $ value (valued at last-paid prices)."""
+    row = {"period_key": period_key, "stock_value": round(float(stock_value), 2),
+           "updated_at": dt.datetime.now().isoformat(timespec="seconds")}
+    if _use_supabase():
+        try:
+            _client().table("stocktake").upsert(row, on_conflict="period_key").execute()
+        except Exception:
+            pass  # stocktake table not created yet -> degrade silently
+    else:
+        _ensure_csv(STOCK_PATH, STOCK_COLUMNS)
+        df = pd.read_csv(STOCK_PATH)
+        df = df[df["period_key"].astype(str) != str(period_key)]
+        df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+        df.to_csv(STOCK_PATH, index=False)
+    return row
+
+
+def stock_value_map() -> dict:
+    """{period_key (ISO week): closing stock $ value}."""
+    if _use_supabase():
+        try:
+            data = _client().table("stocktake").select("*").execute().data or []
+        except Exception:
+            return {}
+        return {r["period_key"]: float(r.get("stock_value") or 0) for r in data}
+    _ensure_csv(STOCK_PATH, STOCK_COLUMNS)
+    df = pd.read_csv(STOCK_PATH)
+    if df.empty:
+        return {}
+    return {str(k): float(v or 0) for k, v in zip(df["period_key"], df["stock_value"])}
 
 
 # ---------- labour (gross wages per period, for labour % + prime cost %) ----------

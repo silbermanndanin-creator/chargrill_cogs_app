@@ -62,6 +62,14 @@ create table if not exists pos_days (
 --   alter table pos_days add column if not exists bite numeric;
 --   alter table pos_days add column if not exists cash numeric;
 
+-- Weekly stocktake: end-of-week stock-on-hand $ value (valued at last-paid prices),
+-- used to compute TRUE COGS = opening + purchases - closing. One row per ISO week.
+create table if not exists stocktake (
+    period_key   text primary key,      -- 'YYYY-Www'; enables upsert on the week
+    stock_value  numeric,               -- $ value of stock on hand at week's end
+    updated_at   text
+);
+
 -- Food Safety daily temperature records — one record per day, stored as a JSON blob
 -- (managers, all section temps, chicken cooks). Enables upsert on date.
 create table if not exists food_safety (

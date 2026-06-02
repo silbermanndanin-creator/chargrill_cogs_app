@@ -1158,6 +1158,38 @@ with tab_dash:
                                f"{rec_split:.0f} split ({rec_st:.0f} tubs).")
     st.write("")
 
+    # ---- Weekly stocktake → TRUE COGS (owner, Week mode) (#4) ----
+    if owner and mode == "Week":
+        with st.expander("📦 Weekly stocktake → true COGS"):
+            st.caption("Invoice spend measures **purchases**, not what you actually used. "
+                       "Enter the **$ value of stock on hand at the end of this week** "
+                       "(valued at last-paid prices) to get true COGS = opening + purchases − closing.")
+            _smap = storage.stock_value_map()
+            _close = st.number_input("Closing stock value this week $", min_value=0.0, step=100.0,
+                                     value=float(_smap.get(period_key, 0.0)), key="stock_close")
+            if _close != float(_smap.get(period_key, 0.0)) and _close > 0:
+                storage.set_stock_value(period_key, _close)
+                _smap[period_key] = _close
+            _prev_wk = storage.iso_week_of(ref - dt.timedelta(days=7))
+            _opening = _smap.get(_prev_wk)
+            if _opening is not None and _close > 0:
+                _actual = metrics.true_cogs(total_cogs, _opening, _close)
+                _act_pct = (_actual / revenue) if revenue > 0 else None
+                cc = st.columns(3)
+                kpi(cc[0], "Opening stock", f"${_opening:,.0f}", f"end of {_prev_wk}")
+                kpi(cc[1], "True COGS (used)", f"${_actual:,.0f}",
+                    f"vs ${total_cogs:,.0f} purchased")
+                if _act_pct is not None:
+                    _astat = config.total_status(_act_pct)
+                    kpi(cc[2], "True COGS %", f"{_act_pct*100:.1f}%",
+                        f"purchases read {cogs_pct*100:.1f}%" if cogs_pct is not None else "",
+                        COLORS[_astat])
+            elif _close > 0:
+                st.caption(f"Enter last week's ({_prev_wk}) closing stock too — it becomes this "
+                           "week's opening — to unlock true COGS.")
+    if owner and mode == "Month":
+        st.caption("📦 Switch to **Week** view to record a stocktake and see true COGS.")
+
     # ---- Labour & Prime Cost (owner) / Kitchen hours (chef) ----
     if owner:
         st.markdown("**💼 Labour & Prime Cost**")
