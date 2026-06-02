@@ -141,6 +141,13 @@ def duplicate_groups(df):
     return out
 
 
+def update_invoice(old_saved_at, supplier_raw, invoice_date, total_ex_gst, line_items):
+    """Correct a mis-scanned invoice: delete the old row and re-save the fixed values,
+    re-deriving the category + delivery period. Returns the new row."""
+    delete_invoice(old_saved_at)
+    return save_invoice(supplier_raw, invoice_date, total_ex_gst, line_items)
+
+
 def delete_invoice(saved_at):
     """Permanently delete the invoice(s) with this saved_at timestamp."""
     if _use_supabase():

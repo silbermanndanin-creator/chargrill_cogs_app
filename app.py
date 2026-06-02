@@ -1343,12 +1343,31 @@ with tab_list:
     deleted = st.session_state.pop("del_flash", None)
     if deleted:
         st.success(f"Deleted: {deleted}")
+    edited_f = st.session_state.pop("edit_flash", None)
+    if edited_f:
+        st.success(edited_f)
     if df.empty:
         st.info("No invoices submitted yet — add one in **📸 Add invoice**.")
     else:
+        fc = st.columns([1.2, 1.8, 1, 1])
         cats = ["All categories"] + list(config.SUPPLIERS.keys())
-        pick = st.selectbox("Filter by category", cats, key="invlist_cat")
+        pick = fc[0].selectbox("Category", cats, key="invlist_cat")
+        q = fc[1].text_input("Search supplier or item", key="invlist_q",
+                             placeholder="e.g. chicken, st george…").strip().lower()
+        _alld = pd.to_datetime(df["invoice_date"], errors="coerce")
+        _dmin = _alld.min()
+        _dmax = _alld.max()
+        d_from = fc[2].date_input("From", key="invlist_from",
+                                  value=_dmin.date() if pd.notna(_dmin) else dt.date.today())
+        d_to = fc[3].date_input("To", key="invlist_to",
+                                value=_dmax.date() if pd.notna(_dmax) else dt.date.today())
+
         view = df if pick == "All categories" else df[df["supplier"] == pick]
+        _vd = pd.to_datetime(view["invoice_date"], errors="coerce").dt.date
+        view = view[(_vd >= d_from) & (_vd <= d_to)]
+        if q:
+            view = view[view["supplier_raw"].astype(str).str.lower().str.contains(q, na=False)
+                        | view["line_items"].astype(str).str.lower().str.contains(q, na=False)]
         view = view.sort_values("invoice_date", ascending=False)
         total = pd.to_numeric(view["total_ex_gst"], errors="coerce").sum()
         st.caption(f"{len(view)} invoice(s) · ${total:,.0f} ex-GST")
@@ -1387,6 +1406,56 @@ with tab_list:
                         for sa in grp["saved_at"].astype(str).tolist()[1:]:
                             storage.delete_invoice(sa)
                         st.session_state["del_flash"] = f"Removed {len(grp) - 1} duplicate(s)"
+                        st.rerun()
+
+        # ---- Edit / fix a mis-scanned invoice (owner only) ----
+        if owner:
+            st.divider()
+            with st.expander("✏️ Edit / fix an invoice"):
+                if view.empty:
+                    st.caption("No invoices match the current filter.")
+                else:
+                    ev = view.sort_values("invoice_date", ascending=False)
+                    elabels = {str(r["saved_at"]): f"{r['invoice_date']} · {r['supplier_raw']} · "
+                                                   f"${float(r['total_ex_gst']):,.2f}"
+                               for _, r in ev.iterrows()}
+                    esel = st.selectbox("Pick an invoice to correct", list(elabels),
+                                        format_func=lambda s: elabels[s], key="edit_sel")
+                    erow = df[df["saved_at"].astype(str) == esel].iloc[0]
+                    ec = st.columns(3)
+                    e_sup = ec[0].text_input("Supplier (as invoiced)",
+                                             value=str(erow["supplier_raw"]), key="edit_sup")
+                    try:
+                        _ed = pd.to_datetime(erow["invoice_date"]).date()
+                    except Exception:
+                        _ed = dt.date.today()
+                    e_date = ec[1].date_input("Invoice date", value=_ed, key="edit_date")
+                    e_total = ec[2].number_input("Total ex-GST $", min_value=0.0, step=1.0,
+                                                 value=float(erow["total_ex_gst"]), key="edit_total")
+                    st.caption(f"Category re-derives from the supplier name → "
+                               f"**{config.canonicalize(e_sup)}**")
+                    try:
+                        _items = (json.loads(erow["line_items"])
+                                  if isinstance(erow["line_items"], str) and erow["line_items"].strip()
+                                  else [])
+                    except Exception:
+                        _items = []
+                    _idf = pd.DataFrame(_items)
+                    for _c in ["description", "quantity", "unit", "amount"]:
+                        if _c not in _idf.columns:
+                            _idf[_c] = None
+                    _idf = _idf[["description", "quantity", "unit", "amount"]]
+                    edf = st.data_editor(_idf, num_rows="dynamic", hide_index=True,
+                                         width="stretch", key="edit_items")
+                    if st.button("💾 Save corrections", type="primary", key="edit_save"):
+                        new_items = [{"description": r["description"], "quantity": r["quantity"],
+                                      "unit": r["unit"], "amount": r["amount"]}
+                                     for _, r in edf.iterrows()
+                                     if str(r.get("description") or "").strip()
+                                     or pd.notna(r.get("amount"))]
+                        storage.update_invoice(esel, e_sup, e_date.isoformat(),
+                                               float(e_total), new_items)
+                        st.session_state["edit_flash"] = f"Updated: {e_date} · {e_sup}"
                         st.rerun()
 
         # ---- Delete an invoice (owner only) ----
