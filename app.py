@@ -456,14 +456,16 @@ if st.button(_toggle_label, key="theme_toggle", help="Toggle light / dark mode")
 # Owner sees all tabs; chef sees only the cost/operations tabs.
 if owner:
     (tab_dash, tab_inv, tab_pos, tab_lab, tab_veg, tab_list,
-     tab_recon, tab_temp, tab_rep, tab_order) = st.tabs(
+     tab_recon, tab_temp, tab_rep, tab_order, tab_digest) = st.tabs(
         ["📊 Dashboard", "📸 Add invoice", "💰 Daily takings", "🧮 Labour",
          "🥬 Veggie prices", "📋 Invoices", "🧾 Reconciliation", "🌡️ Temp records",
-         "📈 Reports", "🛒 Order pad"])
+         "📈 Reports", "🛒 Order pad", "📨 Daily digest"])
 else:
-    tab_dash, tab_inv, tab_veg, tab_list, tab_temp = st.tabs(
-        ["📊 Dashboard", "📸 Add invoice", "🥬 Veggie prices", "📋 Invoices", "🌡️ Temp records"])
-    tab_pos = tab_lab = tab_recon = tab_rep = tab_order = None
+    (tab_dash, tab_inv, tab_veg, tab_list, tab_temp,
+     tab_order, tab_digest) = st.tabs(
+        ["📊 Dashboard", "📸 Add invoice", "🥬 Veggie prices", "📋 Invoices",
+         "🌡️ Temp records", "🛒 Order pad", "📨 Daily digest"])
+    tab_pos = tab_lab = tab_recon = tab_rep = None
 
 # ============ Add-invoice tab ============
 with tab_inv:
@@ -1171,8 +1173,8 @@ with tab_dash:
                                f"{rec_split:.0f} split ({rec_st:.0f} tubs).")
     st.write("")
 
-    # ---- Weekly stocktake → TRUE COGS (owner, Week mode) (#4) ----
-    if owner and mode == "Week":
+    # ---- Weekly stocktake → TRUE COGS (all roles, Week mode) (#4) ----
+    if mode == "Week":
         with st.expander("📦 Weekly stocktake → true COGS"):
             st.caption("Invoice spend measures **purchases**, not what you actually used. "
                        "Enter the **$ value of stock on hand at the end of this week** "
@@ -1200,7 +1202,7 @@ with tab_dash:
             elif _close > 0:
                 st.caption(f"Enter last week's ({_prev_wk}) closing stock too — it becomes this "
                            "week's opening — to unlock true COGS.")
-    if owner and mode == "Month":
+    if mode == "Month":
         st.caption("📦 Switch to **Week** view to record a stocktake and see true COGS.")
 
     # ---- Labour & Prime Cost (owner) / Kitchen hours (chef) ----
@@ -1689,3 +1691,47 @@ if tab_order is not None:
                                        for _, r in ordered.iterrows()))
                     st.download_button("⬇️ Download order list (.txt)", txt, key="order_dl",
                                        file_name=f"Order {osup}.txt", mime="text/plain")
+
+
+# ============ Daily digest tab (all roles; role-aware) ============
+if tab_digest is not None:
+    with tab_digest:
+        st.markdown("#### 📨 Today's digest")
+        st.caption("A snapshot you can glance at any time — the same summary is emailed each "
+                   "morning once the email digest is set up.")
+        import digest as _digest
+        d = _digest.build_digest(dt.date.today())
+        gp = config.TOTAL_COGS_GREEN
+        _cp = d["cogs_pct"]
+        _cp_status = COLORS[config.total_status(_cp)] if _cp is not None else "#8b95a7"
+
+        if owner:
+            dc = st.columns(3)
+            kpi(dc[0], f"Yesterday ({d['yesterday']:%a %d %b})",
+                f"${d['y_net']:,.0f}" if d["y_net"] else "—", "net ex-GST")
+            kpi(dc[1], "Week revenue", f"${d['wk_rev']:,.0f}" if d["wk_rev"] else "—", "to date")
+            kpi(dc[2], "Week COGS %", f"{_cp*100:.1f}%" if _cp is not None else "—",
+                f"target ≤{gp*100:.0f}%", _cp_status)
+            lc = st.columns(2)
+            kpi(lc[0], "Week food spend", f"${d['wk_cogs']:,.0f}", "COGS $ WTD")
+            kpi(lc[1], "Week labour", f"${d['lab']:,.0f}" if d["lab"] else "—",
+                f"{d['lab_pct']*100:.1f}%" if d["lab_pct"] is not None else "gross wages")
+        else:
+            # Chef view mirrors the dashboard: COGS % + spend $, never revenue/wages $.
+            dc = st.columns(2)
+            kpi(dc[0], "Week COGS %", f"{_cp*100:.1f}%" if _cp is not None else "—",
+                f"target ≤{gp*100:.0f}%", _cp_status)
+            kpi(dc[1], "Week food spend", f"${d['wk_cogs']:,.0f}", "to date")
+        st.write("")
+
+        if d["over"]:
+            st.markdown("**⚠️ Over budget this week**")
+            st.warning("  ·  ".join(
+                f"{'🔴' if stt == 'red' else '🟠'} **{s}** {pct:.1f}% of sales"
+                for s, pct, stt in d["over"]))
+        if not d["price_rises"].empty:
+            st.markdown("**💸 Supplier price rises (vs last delivery)**")
+            st.dataframe(d["price_rises"].drop(columns=["_pct"]).head(15),
+                         hide_index=True, width="stretch")
+        if not d["over"] and d["price_rises"].empty:
+            st.success("✅ Nothing flagged — COGS on track and no price spikes.")
