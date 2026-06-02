@@ -456,16 +456,16 @@ if st.button(_toggle_label, key="theme_toggle", help="Toggle light / dark mode")
 # Owner sees all tabs; chef sees only the cost/operations tabs.
 if owner:
     (tab_dash, tab_inv, tab_pos, tab_lab, tab_veg, tab_list,
-     tab_recon, tab_temp, tab_rep, tab_order, tab_digest) = st.tabs(
+     tab_recon, tab_temp, tab_rep, tab_order, tab_digest, tab_var) = st.tabs(
         ["📊 Dashboard", "📸 Add invoice", "💰 Daily takings", "🧮 Labour",
          "🥬 Veggie prices", "📋 Invoices", "🧾 Reconciliation", "🌡️ Temp records",
-         "📈 Reports", "🛒 Order pad", "📨 Daily digest"])
+         "📈 Reports", "🛒 Order pad", "📨 Daily digest", "📝 Variations"])
 else:
     (tab_dash, tab_inv, tab_veg, tab_list, tab_temp,
      tab_order, tab_digest) = st.tabs(
         ["📊 Dashboard", "📸 Add invoice", "🥬 Veggie prices", "📋 Invoices",
          "🌡️ Temp records", "🛒 Order pad", "📨 Daily digest"])
-    tab_pos = tab_lab = tab_recon = tab_rep = None
+    tab_pos = tab_lab = tab_recon = tab_rep = tab_var = None
 
 # ============ Add-invoice tab ============
 with tab_inv:
@@ -671,6 +671,7 @@ if tab_lab is not None:
             if csvf is not None and st.button("Calculate award pay", type="primary", key="calcpay"):
                 with st.spinner("Crunching the award…"):
                     try:
+                        st.session_state["shift_csv_bytes"] = csvf.getvalue()  # reused by Variations tab
                         st.session_state["pay"] = payroll.process_shift_csv(csvf.getvalue(), setup[1])
                     except Exception as e:
                         st.error(f"Processing failed: {e}")
@@ -1744,3 +1745,111 @@ if tab_digest is not None:
                          hide_index=True, width="stretch")
         if not d["over"] and d["price_rises"].empty:
             st.success("✅ Nothing flagged — COGS on track and no price spikes.")
+
+
+# ============ Variations tab (owner): part-time variation letters ============
+if tab_var is not None:
+    with tab_var:
+        import variations as V
+        import contracts as _contracts
+        st.markdown("#### 📝 Part-time variation letters")
+        st.caption("Compares each part-timer's actual start times against their contract. "
+                   "Drafts a *Variation of Employment Agreement* letter for material start-time "
+                   "changes (>15 min) or shifts on a non-contracted day; recurring changes "
+                   "combine into one dated letter. **Letters are drafts — review and sign before issuing.**")
+
+        # ---- Manage contracted patterns (stored in DB, not in git) ----
+        cmap = storage.load_contracts()
+        with st.expander(f"✏️ Part-time contracts ({len(cmap)} on file)", expanded=not cmap):
+            st.caption("One row per employee + contracted day. Day = Mon/Tue/.../Sun; "
+                       "times as 24h HH:MM. Edits are saved to your database.")
+            crows = [{"Employee": emp, "Day": wd, "Start": s, "Finish": f}
+                     for emp, days in cmap.items()
+                     for wd, (s, f) in sorted(days.items(), key=lambda kv: _contracts.WEEKDAYS.get(kv[0], 9))]
+            if not crows:
+                crows = [{"Employee": "", "Day": "", "Start": "", "Finish": ""}]
+            ced = st.data_editor(
+                pd.DataFrame(crows), num_rows="dynamic", hide_index=True, width="stretch",
+                key="contract_ed",
+                column_config={"Day": st.column_config.SelectboxColumn(options=_contracts.DAY_ORDER)})
+            if st.button("💾 Save contracts", key="contract_save"):
+                new_map = {}
+                for _, r in ced.iterrows():
+                    emp = str(r["Employee"]).strip()
+                    wd = str(r["Day"]).strip()
+                    if not emp or wd not in _contracts.WEEKDAYS:
+                        continue
+                    new_map.setdefault(emp, {})[wd] = (str(r["Start"]).strip(), str(r["Finish"]).strip())
+                for emp in set(cmap) - set(new_map):
+                    storage.delete_contract(emp)
+                for emp, days in new_map.items():
+                    storage.save_contract(emp, days)
+                st.session_state["var_flash"] = f"Saved contracts for {len(new_map)} employee(s)."
+                st.rerun()
+        if not cmap:
+            st.info("Add your part-time contracts above to start detecting variations.")
+
+        csv_bytes = st.session_state.get("shift_csv_bytes")
+        if csv_bytes is None:
+            vf = st.file_uploader("This week's Tanda shift CSV", type=["csv"], key="var_csv")
+            if vf is not None:
+                csv_bytes = vf.getvalue()
+                st.session_state["shift_csv_bytes"] = csv_bytes
+        else:
+            st.caption("Using the Tanda CSV from the 🧮 Labour tab (or upload a different one there).")
+
+        if csv_bytes:
+            try:
+                sdf = payroll.load_csv_from_bytes(csv_bytes)
+                wk_end = pd.to_datetime(sdf["Date"]).max().date()
+                vmap = V.detect_variations(sdf, cmap)
+            except Exception as e:
+                st.error(f"Could not read the shift CSV: {e}")
+                vmap, wk_end = {}, None
+            if wk_end is not None and not vmap:
+                st.success(f"✅ Week ending {wk_end:%d %b %Y}: every part-timer matched their "
+                           "contracted start times — no letters needed.")
+            elif vmap:
+                n = sum(len(v) for v in vmap.values())
+                st.markdown(f"**Week ending {wk_end:%d %b %Y} — {n} variation(s)**")
+                vrows = [{"Employee": emp, "Date": str(e["date"]), "Day": e["weekday"],
+                          "Contracted start": V._fmt(e["contracted_start"]) if e["contracted_start"] else "—",
+                          "Actual start": V._fmt(e["actual_start"]),
+                          "Type": "extra day" if e["kind"] == "extra_day" else "start time"}
+                         for emp, evs in vmap.items() for e in evs]
+                st.dataframe(pd.DataFrame(vrows), hide_index=True, width="stretch")
+                if st.button("💾 Save this week's variations to file", type="primary", key="var_save"):
+                    saved = storage.save_variation_events(vmap, wk_end)
+                    st.session_state["var_flash"] = f"Saved {saved} variation event(s) to file."
+                    st.rerun()
+        if st.session_state.pop("var_flash", None):
+            st.success(st.session_state.get("var_flash") or "Saved.")
+
+        st.divider()
+        st.markdown("**📄 Variation letters — recurring changes combined**")
+        allev = storage.load_variation_events()
+        if allev.empty:
+            st.caption("No variations on file yet — save a week above to start building the history.")
+        else:
+            by_emp = {}
+            for _, r in allev.iterrows():
+                by_emp.setdefault(r["employee"], []).append({
+                    "date": pd.to_datetime(r["shift_date"]).date(), "weekday": r["weekday"],
+                    "actual_start": r["actual_start"], "actual_finish": r["actual_finish"],
+                    "contracted_start": (r["contracted_start"] or None),
+                    "contracted_finish": None, "kind": r["kind"]})
+            for emp in sorted(by_emp):
+                pats = V.combine_patterns(by_emp[emp])
+                with st.container(border=True):
+                    st.markdown(f"**{emp}** — {V.summarise(pats)}")
+                    try:
+                        docx_bytes = V.render_letter(emp, pats)
+                        commence = min(min(p["dates"]) for p in pats)
+                        end = max(max(p["dates"]) for p in pats)
+                        st.download_button(
+                            f"⬇️ Variation letter (.docx)", docx_bytes, key=f"varletter_{emp}",
+                            file_name=f"Variation Letter - {emp} - {commence:%d%b}-{end:%d%b%Y}.docx",
+                            mime="application/vnd.openxmlformats-officedocument."
+                                 "wordprocessingml.document")
+                    except Exception as e:
+                        st.caption(f"Could not build letter: {e}")

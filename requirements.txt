@@ -6,4 +6,5 @@ python-calamine>=0.2   # robust reader for Tyro location reports (Reconciliation
 requests>=2.31
 pydantic>=2.0
 plotly>=5.20
+python-docx>=1.1   # generate part-time variation letters (.docx) from the firm template
 supabase>=2.0   # only used in cloud mode (SUPABASE_URL + SUPABASE_KEY set); local uses CSV

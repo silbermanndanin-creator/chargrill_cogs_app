@@ -34,6 +34,11 @@ STOCK_PATH = os.path.join(DATA_DIR, "stocktake.csv")
 STOCK_COLUMNS = ["period_key", "stock_value", "updated_at"]
 IMG_PATH = os.path.join(DATA_DIR, "invoice_images.csv")
 IMG_COLUMNS = ["saved_at", "media_type", "image_b64"]
+VAR_PATH = os.path.join(DATA_DIR, "variation_events.csv")
+VAR_COLUMNS = ["employee", "shift_date", "weekday", "actual_start", "actual_finish",
+               "contracted_start", "kind", "week_ending", "created_at"]
+CONTRACT_PATH = os.path.join(DATA_DIR, "contracts.csv")
+CONTRACT_COLUMNS = ["employee", "weekday", "start", "finish"]
 
 
 def iso_week_of(d: dt.date) -> str:
@@ -247,6 +252,110 @@ def revenue_map(period_type: str) -> dict:
         return {}
     df = df[df["period_type"] == period_type]
     return dict(zip(df["period_key"], df["revenue"]))
+
+
+# ---------- part-time contracts (employee fixed days/hours) ----------
+def load_contracts() -> dict:
+    """{employee: {weekday: (start, finish)}} from the contracts store."""
+    if _use_supabase():
+        try:
+            rows = _client().table("contracts").select("*").execute().data or []
+        except Exception:
+            return {}
+    else:
+        _ensure_csv(CONTRACT_PATH, CONTRACT_COLUMNS)
+        df = pd.read_csv(CONTRACT_PATH)
+        rows = df.to_dict("records") if not df.empty else []
+    out = {}
+    for r in rows:
+        emp = str(r.get("employee") or "").strip()
+        wd = str(r.get("weekday") or "").strip()
+        if not emp or not wd:
+            continue
+        out.setdefault(emp, {})[wd] = (str(r.get("start") or "").strip(),
+                                       str(r.get("finish") or "").strip())
+    return out
+
+
+def save_contract(employee, days_dict):
+    """Replace all rows for one employee. days_dict = {weekday: (start, finish)}."""
+    rows = [{"employee": employee, "weekday": wd, "start": s, "finish": f}
+            for wd, (s, f) in days_dict.items()]
+    if _use_supabase():
+        try:
+            _client().table("contracts").delete().eq("employee", employee).execute()
+            if rows:
+                _client().table("contracts").insert(rows).execute()
+        except Exception:
+            pass
+    else:
+        _ensure_csv(CONTRACT_PATH, CONTRACT_COLUMNS)
+        df = pd.read_csv(CONTRACT_PATH)
+        if not df.empty:
+            df = df[df["employee"].astype(str) != str(employee)]
+        if rows:
+            df = pd.concat([df, pd.DataFrame(rows)], ignore_index=True)
+        df.to_csv(CONTRACT_PATH, index=False)
+
+
+def delete_contract(employee):
+    if _use_supabase():
+        try:
+            _client().table("contracts").delete().eq("employee", employee).execute()
+        except Exception:
+            pass
+    else:
+        _ensure_csv(CONTRACT_PATH, CONTRACT_COLUMNS)
+        df = pd.read_csv(CONTRACT_PATH)
+        df = df[df["employee"].astype(str) != str(employee)]
+        df.to_csv(CONTRACT_PATH, index=False)
+
+
+# ---------- part-time variation events (for variation letters) ----------
+def save_variation_events(events_by_emp, week_ending):
+    """Upsert this week's detected variation events (one row per employee+shift_date),
+    so recurring patterns can later be combined across weeks. events_by_emp:
+    {employee: [event dicts from variations.detect_variations]}."""
+    we = str(week_ending)
+    now = dt.datetime.now().isoformat(timespec="seconds")
+    rows = []
+    for emp, events in events_by_emp.items():
+        for e in events:
+            rows.append({
+                "employee": emp, "shift_date": str(e["date"]), "weekday": e["weekday"],
+                "actual_start": e["actual_start"], "actual_finish": e["actual_finish"],
+                "contracted_start": e.get("contracted_start") or "", "kind": e["kind"],
+                "week_ending": we, "created_at": now})
+    if not rows:
+        return 0
+    if _use_supabase():
+        try:
+            _client().table("variation_events").upsert(
+                rows, on_conflict="employee,shift_date").execute()
+        except Exception:
+            pass  # table not created yet -> degrade
+    else:
+        _ensure_csv(VAR_PATH, VAR_COLUMNS)
+        df = pd.read_csv(VAR_PATH)
+        new = pd.DataFrame(rows)
+        if not df.empty:
+            keys = set(zip(new["employee"], new["shift_date"]))
+            df = df[~df.apply(lambda r: (r["employee"], str(r["shift_date"])) in keys, axis=1)]
+        df = pd.concat([df, new], ignore_index=True)
+        df.to_csv(VAR_PATH, index=False)
+    return len(rows)
+
+
+def load_variation_events() -> pd.DataFrame:
+    if _use_supabase():
+        try:
+            data = _client().table("variation_events").select("*").execute().data
+        except Exception:
+            return pd.DataFrame(columns=VAR_COLUMNS)
+        return pd.DataFrame(data, columns=VAR_COLUMNS) if data else pd.DataFrame(columns=VAR_COLUMNS)
+    _ensure_csv(VAR_PATH, VAR_COLUMNS)
+    df = pd.read_csv(VAR_PATH)
+    return df if not df.empty else pd.DataFrame(columns=VAR_COLUMNS)
 
 
 # ---------- weekly stocktake (closing stock $ value, for TRUE COGS) ----------

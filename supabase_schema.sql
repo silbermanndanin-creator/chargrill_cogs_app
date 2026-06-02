@@ -70,6 +70,32 @@ create table if not exists invoice_images (
     image_b64   text
 );
 
+-- Part-time contracts: each employee's fixed working days/times (kept in the DB, not
+-- in git, since it's personal data). One row per employee+weekday.
+create table if not exists contracts (
+    employee  text,
+    weekday   text,
+    start     text,
+    finish    text,
+    primary key (employee, weekday)
+);
+
+-- Part-time variation events: each shift where a tracked part-timer's actual start
+-- time (or day) differed from their contract. Combined across weeks into variation
+-- letters. One row per employee+shift_date.
+create table if not exists variation_events (
+    employee          text,
+    shift_date        text,
+    weekday           text,
+    actual_start      text,
+    actual_finish     text,
+    contracted_start  text,
+    kind              text,
+    week_ending       text,
+    created_at        text,
+    primary key (employee, shift_date)
+);
+
 -- Weekly stocktake: end-of-week stock-on-hand $ value (valued at last-paid prices),
 -- used to compute TRUE COGS = opening + purchases - closing. One row per ISO week.
 create table if not exists stocktake (
