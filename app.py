@@ -380,8 +380,14 @@ with st.sidebar:
                 token = biz = None
             r = get_revenue(p_start, p_end, token, biz)
             revenue = float(r) if r else 0.0
-            if not r:
-                st.caption("Lightspeed not connected.")
+            if r:
+                st.caption(f"🟢 Lightspeed: **${revenue:,.0f}** ex-GST for this {mode.lower()}.")
+            else:
+                st.caption("Lightspeed not connected — using manual/POS revenue. "
+                           "Add LIGHTSPEED_TOKEN + LIGHTSPEED_BUSINESS_ID to secrets.")
+                if st.button("🔌 Test Lightspeed connection", key="ls_test"):
+                    import lightspeed as _ls
+                    st.caption(f"Status: **{_ls.lightspeed_status(token, biz)}**")
     else:
         # Chef view: use POS revenue, fall back to manual entry — never displayed.
         revenue = float(pos_map.get(period_key, 0.0)) or float(manual_map.get(period_key, 0.0))
