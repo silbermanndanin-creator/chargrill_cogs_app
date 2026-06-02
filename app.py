@@ -450,14 +450,14 @@ if st.button(_toggle_label, key="theme_toggle", help="Toggle light / dark mode")
 # Owner sees all tabs; chef sees only the cost/operations tabs.
 if owner:
     (tab_dash, tab_inv, tab_pos, tab_lab, tab_veg, tab_list,
-     tab_recon, tab_temp, tab_rep) = st.tabs(
+     tab_recon, tab_temp, tab_rep, tab_order) = st.tabs(
         ["📊 Dashboard", "📸 Add invoice", "💰 Daily takings", "🧮 Labour",
          "🥬 Veggie prices", "📋 Invoices", "🧾 Reconciliation", "🌡️ Temp records",
-         "📈 Reports"])
+         "📈 Reports", "🛒 Order pad"])
 else:
     tab_dash, tab_inv, tab_veg, tab_list, tab_temp = st.tabs(
         ["📊 Dashboard", "📸 Add invoice", "🥬 Veggie prices", "📋 Invoices", "🌡️ Temp records"])
-    tab_pos = tab_lab = tab_recon = tab_rep = None
+    tab_pos = tab_lab = tab_recon = tab_rep = tab_order = None
 
 # ============ Add-invoice tab ============
 with tab_inv:
@@ -1642,3 +1642,44 @@ if tab_rep is not None:
                 _accountant_pack_xlsx(mk, df, pos_df), key="pack_dl",
                 file_name=f"Accountant Pack {mk}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+# ============ Order pad tab (owner): par-level order assistant (#8) ============
+if tab_order is not None:
+    with tab_order:
+        st.markdown("#### 🛒 Order pad")
+        st.caption("Pick a supplier — every item you buy from them, pre-filled with the "
+                   "last-paid price and your average order quantity. Adjust quantities to "
+                   "build an order and see the estimated cost.")
+        sups = sorted(lines["supplier"].dropna().unique()) if not lines.empty else []
+        if not sups:
+            st.info("No invoice history yet — add invoices so the pad can pre-fill prices.")
+        else:
+            osup = st.selectbox("Supplier / category", sups, key="order_sup")
+            pad = metrics.order_pad(lines, osup)
+            if pad.empty:
+                st.caption("No items found for this supplier.")
+            else:
+                pad = pad.copy()
+                pad["Order qty"] = pad["Avg qty/order"].fillna(0.0)
+                oedit = st.data_editor(
+                    pad[["Item", "Unit", "Last $/unit", "Avg qty/order", "Order qty", "Last bought"]],
+                    hide_index=True, width="stretch", key="order_edit",
+                    column_config={
+                        "Item": st.column_config.TextColumn(disabled=True),
+                        "Unit": st.column_config.TextColumn(disabled=True),
+                        "Last $/unit": st.column_config.NumberColumn(format="$%.2f", disabled=True),
+                        "Avg qty/order": st.column_config.NumberColumn(disabled=True),
+                        "Order qty": st.column_config.NumberColumn(min_value=0.0, step=1.0),
+                        "Last bought": st.column_config.TextColumn(disabled=True)})
+                _q = pd.to_numeric(oedit["Order qty"], errors="coerce").fillna(0)
+                _p = pd.to_numeric(oedit["Last $/unit"], errors="coerce").fillna(0)
+                est = float((_q * _p).sum())
+                st.caption(f"Estimated order cost at last-paid prices: **${est:,.2f}** ex-GST")
+                ordered = oedit[_q > 0]
+                if not ordered.empty:
+                    txt = (f"Order — {osup}\n"
+                           + "\n".join(f"{float(r['Order qty']):g} x {r['Item']}"
+                                       for _, r in ordered.iterrows()))
+                    st.download_button("⬇️ Download order list (.txt)", txt, key="order_dl",
+                                       file_name=f"Order {osup}.txt", mime="text/plain")

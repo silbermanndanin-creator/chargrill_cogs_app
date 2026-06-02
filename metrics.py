@@ -306,6 +306,37 @@ def bas_summary(pos_df, inv_df, months):
             "net_gst": gst_on_sales - gst_credits_est}
 
 
+def order_pad(lines, supplier):
+    """Order-sheet basis for a supplier: df [Item, Unit, Last $/unit, Avg qty/order,
+    Last bought] — one row per item they buy, pre-filled with the last-paid unit price
+    and the average quantity per past delivery (a suggested order qty)."""
+    cols = ["Item", "Unit", "Last $/unit", "Avg qty/order", "Last bought"]
+    if lines.empty:
+        return pd.DataFrame(columns=cols)
+    sub = lines[(lines["supplier"] == supplier) & lines["description"].notna()].copy()
+    if sub.empty:
+        return pd.DataFrame(columns=cols)
+    sub["item"] = sub["description"].map(_item_key)
+    sub["qnum"] = pd.to_numeric(sub["quantity"], errors="coerce")
+    sub["anum"] = pd.to_numeric(sub["amount"], errors="coerce")
+    rows = []
+    for _item, g in sub.groupby("item"):
+        g = g.sort_values("invoice_date")
+        last = g.iloc[-1]
+        gld = g[g["invoice_date"] == last["invoice_date"]]
+        amt = float(gld["anum"].fillna(0).sum())
+        qty = float(gld["qnum"].fillna(0).sum())
+        up = amt / qty if qty > 0 else amt
+        avgq = g["qnum"].dropna()
+        _u = last.get("unit")
+        unit = "" if (_u is None or (isinstance(_u, float) and pd.isna(_u))) else str(_u)
+        rows.append({"Item": str(last["description"]), "Unit": unit,
+                     "Last $/unit": round(up, 2),
+                     "Avg qty/order": round(float(avgq.mean()), 1) if len(avgq) else None,
+                     "Last bought": str(last["invoice_date"])})
+    return pd.DataFrame(rows, columns=cols).sort_values("Item").reset_index(drop=True)
+
+
 def pace_projection(p_start, p_end, today, cogs_to_date, rev_to_date, green_pct):
     """Linear end-of-period projection of food spend vs target. Returns None when the
     period hasn't started, is already complete (actuals stand), or has no revenue yet.
