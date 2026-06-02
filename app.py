@@ -1618,12 +1618,21 @@ if tab_rep is not None:
     with tab_rep:
         st.markdown("#### 📈 Reports")
 
-        # ---- BAS / GST quarter summary (#9) ----
-        st.markdown("**🧾 BAS / GST — quarter summary**")
-        quarters = _fin_quarters(dt.date.today(), n=6)
-        qlabel = st.selectbox("BAS quarter", [q[0] for q in quarters], key="bas_q")
-        qmonths = dict(quarters)[qlabel]
-        bas = metrics.bas_summary(pos_df, df, qmonths)
+        # ---- BAS / GST summary (#9) — monthly (default) or quarterly ----
+        st.markdown("**🧾 BAS / GST summary**")
+        bc0 = st.columns([1, 2])
+        bas_period = bc0[0].radio("BAS cycle", ["Monthly", "Quarterly"], key="bas_cycle")
+        if bas_period == "Monthly":
+            _today = dt.date.today()
+            recent_months = [((_today.replace(day=1) - pd.offsets.MonthBegin(i)).strftime("%Y-%m"))
+                             for i in range(12)]
+            mlabel = bc0[1].selectbox("BAS month", recent_months, key="bas_m")
+            bas_months = [mlabel]
+        else:
+            quarters = _fin_quarters(dt.date.today(), n=6)
+            qlabel = bc0[1].selectbox("BAS quarter", [q[0] for q in quarters], key="bas_q")
+            bas_months = dict(quarters)[qlabel]
+        bas = metrics.bas_summary(pos_df, df, bas_months)
         bc = st.columns(4)
         kpi(bc[0], "Sales (incl GST)", f"${bas['sales_incl']:,.0f}", "G1")
         kpi(bc[1], "GST on sales", f"${bas['gst_on_sales']:,.0f}", "1A")
