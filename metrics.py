@@ -232,8 +232,10 @@ def _item_key(desc):
 
 def item_price_history(lines):
     """Long df [supplier, item, description, date, unit_price, qty, amount]: one row per
-    (supplier, normalised item, invoice_date) with the weighted unit price. Covers EVERY
-    supplier/item (generalises veggie_prices to the whole catalogue)."""
+    (supplier, normalised item, invoice_date) with the weighted PER-UNIT price. Covers
+    every supplier/item. Only lines with a real quantity (>0) are included, so the unit
+    price is genuinely per-unit and comparable across deliveries (lines that carry an
+    amount but no quantity can't be priced per-unit and are skipped here)."""
     cols = ["supplier", "item", "description", "date", "unit_price", "qty", "amount"]
     if lines.empty:
         return pd.DataFrame(columns=cols)
@@ -241,14 +243,15 @@ def item_price_history(lines):
     sub["item"] = sub["description"].map(_item_key)
     sub["qnum"] = pd.to_numeric(sub["quantity"], errors="coerce")
     sub["anum"] = pd.to_numeric(sub["amount"], errors="coerce")
-    sub = sub[sub["item"].notna() & sub["anum"].notna() & sub["invoice_date"].notna()]
+    sub = sub[sub["item"].notna() & sub["anum"].notna() & sub["invoice_date"].notna()
+              & (sub["qnum"] > 0)]
     if sub.empty:
         return pd.DataFrame(columns=cols)
     g = (sub.groupby(["supplier", "item", "invoice_date"])
          .agg(amount=("anum", "sum"), qty=("qnum", "sum"),
               description=("description", "first")).reset_index())
-    g["unit_price"] = g.apply(
-        lambda r: r["amount"] / r["qty"] if r["qty"] and r["qty"] > 0 else r["amount"], axis=1)
+    g = g[g["qty"] > 0]
+    g["unit_price"] = g["amount"] / g["qty"]
     g = g.rename(columns={"invoice_date": "date"})
     return g[cols].sort_values(["supplier", "item", "date"]).reset_index(drop=True)
 
@@ -261,15 +264,19 @@ def price_anomalies(lines, min_pct=8.0):
     h = item_price_history(lines)
     if h.empty:
         return pd.DataFrame(columns=cols)
+    noise = ("rounding", "deposit", "freight", "delivery fee", "surcharge",
+             "fee", "credit", "rebate", "adjustment")
     rows = []
     for (sup, _item), sub in h.groupby(["supplier", "item"]):
+        if any(k in str(_item).lower() for k in noise):
+            continue  # not a product line — skip rounding/deposit/freight etc.
         sub = sub.sort_values("date")
         if len(sub) < 2:
             continue
         now = float(sub.iloc[-1]["unit_price"])
         prev = float(sub.iloc[-2]["unit_price"])
-        if prev <= 0:
-            continue
+        if prev <= 0 or now < 1.0 or (now - prev) < 0.5:
+            continue  # ignore trivially-priced lines and sub-50c moves (% noise)
         pct = (now - prev) / prev * 100
         if pct >= min_pct:
             rows.append({"Supplier": sup, "Item": str(sub.iloc[-1]["description"]),

@@ -1,0 +1,35 @@
+name: Daily digest
+
+# Emails the Chargrill COGS digest each morning. Times are UTC — 20:00 UTC is
+# ~7am in Sydney (AEDT). Adjust the cron to suit, or run it manually from the
+# Actions tab ("Run workflow"). Requires repo secrets (Settings → Secrets →
+# Actions): SUPABASE_URL, SUPABASE_KEY, SMTP_HOST, SMTP_PORT, SMTP_USER,
+# SMTP_PASS, DIGEST_FROM, DIGEST_TO. Without the SMTP secrets it just prints
+# the digest to the run log (safe to enable before configuring email).
+
+on:
+  schedule:
+    - cron: "0 20 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  send-digest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: pip install supabase pandas
+      - name: Send digest
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          DIGEST_FROM: ${{ secrets.DIGEST_FROM }}
+          DIGEST_TO: ${{ secrets.DIGEST_TO }}
+        run: python digest.py
