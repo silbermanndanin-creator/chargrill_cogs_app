@@ -496,6 +496,8 @@ with tab_inv:
             with st.spinner(f"Reading invoice ({len(pages)} page(s))…"):
                 try:
                     st.session_state["inv"] = extract_invoice(pages).model_dump()
+                    # keep the first page's original to file with the saved invoice (#7)
+                    st.session_state["inv_img"] = pages[0]
                     st.session_state.pop("inv_shots", None)
                 except Exception as e:
                     st.error(f"Extraction failed: {e}")
@@ -535,10 +537,15 @@ with tab_inv:
                 if r.get("tub_type") in ("—", "", None):
                     r.pop("tub_type", None)
                 cleaned.append(r)
-            storage.save_invoice(supplier_raw, inv_date, total, cleaned)
+            _row = storage.save_invoice(supplier_raw, inv_date, total, cleaned)
+            _img = st.session_state.get("inv_img")
+            if _img:
+                storage.save_invoice_image(_row["saved_at"], _img[0],
+                                           _img[1] if len(_img) > 1 else "image/jpeg")
             st.session_state["flash"] = True
             st.session_state["flash_msg"] = f"Saved {canon} — ${total:,.2f}"
             st.session_state.pop("inv", None)
+            st.session_state.pop("inv_img", None)
             st.rerun()
 
 # ============ Daily takings tab (owner only) ============
@@ -1441,6 +1448,29 @@ with tab_list:
                             storage.delete_invoice(sa)
                         st.session_state["del_flash"] = f"Removed {len(grp) - 1} duplicate(s)"
                         st.rerun()
+
+        # ---- Original invoice photo (#7) ----
+        st.divider()
+        with st.expander("📷 View original invoice photo"):
+            pv = view.sort_values("invoice_date", ascending=False)
+            if pv.empty:
+                st.caption("No invoices match the current filter.")
+            else:
+                plabels = {str(r["saved_at"]): f"{r['invoice_date']} · {r['supplier_raw']} · "
+                                              f"${float(r['total_ex_gst']):,.2f}"
+                           for _, r in pv.iterrows()}
+                psel = st.selectbox("Invoice", list(plabels),
+                                    format_func=lambda s: plabels[s], key="photo_sel")
+                _img = storage.load_invoice_image(psel)
+                if _img is None:
+                    st.caption("No photo stored for this invoice "
+                               "(only invoices added after this update keep their image).")
+                elif (_img[1] or "").startswith("image/"):
+                    st.image(_img[0], caption=plabels[psel], width="stretch")
+                else:
+                    st.download_button("⬇️ Download original (PDF)", _img[0], key="photo_dl",
+                                       file_name=f"invoice_{psel[:16].replace(':','-')}.pdf",
+                                       mime=_img[1] or "application/pdf")
 
         # ---- Edit / fix a mis-scanned invoice (owner only) ----
         if owner:

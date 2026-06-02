@@ -62,6 +62,14 @@ create table if not exists pos_days (
 --   alter table pos_days add column if not exists bite numeric;
 --   alter table pos_days add column if not exists cash numeric;
 
+-- Original invoice photos/PDFs (audit + GST trail), kept separate from the invoices
+-- table so the dashboard's load stays light. One row per invoice (keyed by saved_at).
+create table if not exists invoice_images (
+    saved_at    text primary key,
+    media_type  text,
+    image_b64   text
+);
+
 -- Weekly stocktake: end-of-week stock-on-hand $ value (valued at last-paid prices),
 -- used to compute TRUE COGS = opening + purchases - closing. One row per ISO week.
 create table if not exists stocktake (

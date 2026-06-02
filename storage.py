@@ -32,6 +32,8 @@ FS_PATH = os.path.join(DATA_DIR, "food_safety.csv")
 FS_COLUMNS = ["date", "data", "saved_at"]
 STOCK_PATH = os.path.join(DATA_DIR, "stocktake.csv")
 STOCK_COLUMNS = ["period_key", "stock_value", "updated_at"]
+IMG_PATH = os.path.join(DATA_DIR, "invoice_images.csv")
+IMG_COLUMNS = ["saved_at", "media_type", "image_b64"]
 
 
 def iso_week_of(d: dt.date) -> str:
@@ -143,6 +145,63 @@ def duplicate_groups(df):
     return out
 
 
+def save_invoice_image(saved_at, image_bytes, media_type="image/jpeg"):
+    """Keep the original photo/PDF of an invoice (audit / GST trail). Stored in a
+    SEPARATE store keyed by saved_at, so load_invoices() stays light."""
+    if not image_bytes:
+        return
+    row = {"saved_at": str(saved_at), "media_type": media_type or "image/jpeg",
+           "image_b64": base64.b64encode(image_bytes).decode("ascii")}
+    if _use_supabase():
+        try:
+            _client().table("invoice_images").upsert(row, on_conflict="saved_at").execute()
+        except Exception:
+            pass  # invoice_images table not created yet -> degrade (invoice still saved)
+    else:
+        _ensure_csv(IMG_PATH, IMG_COLUMNS)
+        df = pd.read_csv(IMG_PATH)
+        df = df[df["saved_at"].astype(str) != str(saved_at)]
+        df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+        df.to_csv(IMG_PATH, index=False)
+
+
+def load_invoice_image(saved_at):
+    """Return (bytes, media_type) for an invoice's stored original, or None."""
+    if _use_supabase():
+        try:
+            data = (_client().table("invoice_images").select("*")
+                    .eq("saved_at", str(saved_at)).execute().data)
+        except Exception:
+            return None
+        if not data:
+            return None
+        r = data[0]
+    else:
+        if not os.path.exists(IMG_PATH):
+            return None
+        df = pd.read_csv(IMG_PATH)
+        m = df[df["saved_at"].astype(str) == str(saved_at)]
+        if m.empty:
+            return None
+        r = m.iloc[0].to_dict()
+    try:
+        return base64.b64decode(r["image_b64"]), (r.get("media_type") or "image/jpeg")
+    except Exception:
+        return None
+
+
+def _delete_invoice_image(saved_at):
+    if _use_supabase():
+        try:
+            _client().table("invoice_images").delete().eq("saved_at", str(saved_at)).execute()
+        except Exception:
+            pass
+    elif os.path.exists(IMG_PATH):
+        df = pd.read_csv(IMG_PATH)
+        df = df[df["saved_at"].astype(str) != str(saved_at)]
+        df.to_csv(IMG_PATH, index=False)
+
+
 def update_invoice(old_saved_at, supplier_raw, invoice_date, total_ex_gst, line_items):
     """Correct a mis-scanned invoice: delete the old row and re-save the fixed values,
     re-deriving the category + delivery period. Returns the new row."""
@@ -151,7 +210,7 @@ def update_invoice(old_saved_at, supplier_raw, invoice_date, total_ex_gst, line_
 
 
 def delete_invoice(saved_at):
-    """Permanently delete the invoice(s) with this saved_at timestamp."""
+    """Permanently delete the invoice(s) with this saved_at timestamp + its photo."""
     if _use_supabase():
         _client().table("invoices").delete().eq("saved_at", str(saved_at)).execute()
     else:
@@ -159,6 +218,7 @@ def delete_invoice(saved_at):
         df = pd.read_csv(CSV_PATH)
         df = df[df["saved_at"].astype(str) != str(saved_at)]
         df.to_csv(CSV_PATH, index=False)
+    _delete_invoice_image(saved_at)
 
 
 # ---------- revenue (so COGS% can trend across periods) ----------
