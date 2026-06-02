@@ -1,4 +1,5 @@
 """Aggregation helpers for the dashboard. Pure functions over the invoices DataFrame."""
+import re
 import json
 import pandas as pd
 import config
@@ -220,6 +221,85 @@ def veggie_increases(lines, min_pct=0.5):
     daily_ups.sort(key=lambda x: -x[1])
     weekly_ups.sort(key=lambda x: -x[1])
     return daily_ups, weekly_ups
+
+
+def _item_key(desc):
+    """Normalise a line description so the SAME product across invoices groups together
+    (lowercase, collapse whitespace, drop trailing pack sizes like '10kg'/'x12')."""
+    s = re.sub(r"\s+", " ", str(desc or "").strip().lower())
+    return s or None
+
+
+def item_price_history(lines):
+    """Long df [supplier, item, description, date, unit_price, qty, amount]: one row per
+    (supplier, normalised item, invoice_date) with the weighted unit price. Covers EVERY
+    supplier/item (generalises veggie_prices to the whole catalogue)."""
+    cols = ["supplier", "item", "description", "date", "unit_price", "qty", "amount"]
+    if lines.empty:
+        return pd.DataFrame(columns=cols)
+    sub = lines.copy()
+    sub["item"] = sub["description"].map(_item_key)
+    sub["qnum"] = pd.to_numeric(sub["quantity"], errors="coerce")
+    sub["anum"] = pd.to_numeric(sub["amount"], errors="coerce")
+    sub = sub[sub["item"].notna() & sub["anum"].notna() & sub["invoice_date"].notna()]
+    if sub.empty:
+        return pd.DataFrame(columns=cols)
+    g = (sub.groupby(["supplier", "item", "invoice_date"])
+         .agg(amount=("anum", "sum"), qty=("qnum", "sum"),
+              description=("description", "first")).reset_index())
+    g["unit_price"] = g.apply(
+        lambda r: r["amount"] / r["qty"] if r["qty"] and r["qty"] > 0 else r["amount"], axis=1)
+    g = g.rename(columns={"invoice_date": "date"})
+    return g[cols].sort_values(["supplier", "item", "date"]).reset_index(drop=True)
+
+
+def price_anomalies(lines, min_pct=8.0):
+    """Items whose latest unit price ROSE >= min_pct vs the previous purchase of the same
+    item from the same supplier. df [Supplier, Item, Was, Now, Change, _pct, Last buy, Prev buy],
+    biggest rise first — catches silent supplier price creep across the whole catalogue."""
+    cols = ["Supplier", "Item", "Was", "Now", "Change", "_pct", "Last buy", "Prev buy"]
+    h = item_price_history(lines)
+    if h.empty:
+        return pd.DataFrame(columns=cols)
+    rows = []
+    for (sup, _item), sub in h.groupby(["supplier", "item"]):
+        sub = sub.sort_values("date")
+        if len(sub) < 2:
+            continue
+        now = float(sub.iloc[-1]["unit_price"])
+        prev = float(sub.iloc[-2]["unit_price"])
+        if prev <= 0:
+            continue
+        pct = (now - prev) / prev * 100
+        if pct >= min_pct:
+            rows.append({"Supplier": sup, "Item": str(sub.iloc[-1]["description"]),
+                         "Was": round(prev, 2), "Now": round(now, 2),
+                         "Change": f"+{pct:.0f}%", "_pct": pct,
+                         "Last buy": str(sub.iloc[-1]["date"]), "Prev buy": str(sub.iloc[-2]["date"])})
+    df = pd.DataFrame(rows, columns=cols)
+    return df.sort_values("_pct", ascending=False).reset_index(drop=True) if not df.empty else df
+
+
+def pace_projection(p_start, p_end, today, cogs_to_date, rev_to_date, green_pct):
+    """Linear end-of-period projection of food spend vs target. Returns None when the
+    period hasn't started, is already complete (actuals stand), or has no revenue yet.
+    {elapsed,total,frac,proj_rev,proj_cogs,proj_pct,target_cogs,delta}."""
+    total = (p_end - p_start).days + 1
+    if total <= 0 or today < p_start:
+        return None
+    elapsed = (min(today, p_end) - p_start).days + 1
+    if elapsed >= total:
+        return None  # period finished — the dashboard's actuals are the real number
+    if not rev_to_date or rev_to_date <= 0:
+        return None
+    frac = elapsed / total
+    proj_rev = rev_to_date / frac
+    proj_cogs = cogs_to_date / frac
+    proj_pct = (proj_cogs / proj_rev) if proj_rev else None
+    target_cogs = proj_rev * green_pct
+    return {"elapsed": elapsed, "total": total, "frac": frac, "proj_rev": proj_rev,
+            "proj_cogs": proj_cogs, "proj_pct": proj_pct, "target_cogs": target_cogs,
+            "delta": proj_cogs - target_cogs}
 
 
 def baida_tubs(lines, period_col, period_key):

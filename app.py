@@ -1105,6 +1105,16 @@ with tab_dash:
             st.caption("COGS % unavailable for this period." if not owner
                        else "Add revenue (sidebar) to see COGS %.")
         st.caption(f"🟢 ≤{gp*100:.0f}% · 🟠 {gp*100:.0f}–{rp*100:.0f}% · 🔴 >{rp*100:.0f}%")
+        # ---- End-of-period pacing/forecast (#3) ----
+        if owner:
+            _proj = metrics.pace_projection(p_start, p_end, dt.date.today(), total_cogs, revenue, gp)
+            if _proj:
+                _ps = config.total_status(_proj["proj_pct"])
+                st.caption(
+                    f"📈 Day {_proj['elapsed']}/{_proj['total']}: at this pace ≈ "
+                    f"**${_proj['proj_cogs']:,.0f}** food spend by {mode.lower()}-end vs "
+                    f"**${_proj['target_cogs']:,.0f}** target "
+                    f"({LIGHT[_ps]} {_proj['delta']:+,.0f} → {_proj['proj_pct']*100:.1f}%).")
     with g2:
         tubs = metrics.baida_tubs(lines, p_col, period_key)
         st.markdown(f"**🐔 Baida chicken — tubs this {p_type}**")
@@ -1203,6 +1213,19 @@ with tab_dash:
         kpi(hc[1], "FOH hours", f"{labour_foh:g}" if labour_foh else "—", "front of house")
         kpi(hc[2], "Total hours", f"{labour_hours:g}" if labour_hours else "—", "all staff")
         st.write("")
+
+    # ---- Supplier price-rise alerts (every item, #1) ----
+    if not lines.empty:
+        _anom = metrics.price_anomalies(lines, min_pct=8.0)
+        if not _anom.empty:
+            st.markdown("**💸 Supplier price rises** — items costing more than the last delivery")
+            _top = _anom.head(6)
+            st.warning("🔺 " + "  ·  ".join(
+                f"**{r.Item}** ({r.Supplier}) {r.Change} → ${r.Now:,.2f}/unit"
+                for r in _top.itertuples()))
+            with st.expander(f"See all {len(_anom)} price rise(s) since last buy"):
+                st.dataframe(_anom.drop(columns=["_pct"]), hide_index=True, width="stretch")
+            st.write("")
 
     # ---- Veggie price alerts ----
     if not lines.empty:
