@@ -1176,7 +1176,8 @@ with tab_dash:
 
     # ---- Weekly stocktake → TRUE COGS (all roles, Week mode) (#4) ----
     if mode == "Week":
-        with st.expander("📦 Weekly stocktake → true COGS"):
+        st.markdown("**📦 Weekly stocktake → true COGS**")
+        with st.expander("Enter / update this week's closing stock", expanded=True):
             st.caption("Invoice spend measures **purchases**, not what you actually used. "
                        "Enter the **$ value of stock on hand at the end of this week** "
                        "(valued at last-paid prices) to get true COGS = opening + purchases − closing.")
@@ -1204,7 +1205,8 @@ with tab_dash:
                 st.caption(f"Enter last week's ({_prev_wk}) closing stock too — it becomes this "
                            "week's opening — to unlock true COGS.")
     if mode == "Month":
-        st.caption("📦 Switch to **Week** view to record a stocktake and see true COGS.")
+        st.info("📦 **Weekly stocktake** is weekly — switch **Track by → Week** in the sidebar "
+                "to record closing stock and see true COGS.")
 
     # ---- Labour & Prime Cost (owner) / Kitchen hours (chef) ----
     if owner:
