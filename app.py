@@ -447,15 +447,17 @@ if st.button(_toggle_label, key="theme_toggle", help="Toggle light / dark mode")
     st.session_state["theme"] = "dark" if THEME == "light" else "light"
     st.rerun()
 
-# Owner sees all six tabs; chef sees only the four cost/operations tabs.
+# Owner sees all tabs; chef sees only the cost/operations tabs.
 if owner:
-    tab_dash, tab_inv, tab_pos, tab_lab, tab_veg, tab_list, tab_recon, tab_temp = st.tabs(
+    (tab_dash, tab_inv, tab_pos, tab_lab, tab_veg, tab_list,
+     tab_recon, tab_temp, tab_rep) = st.tabs(
         ["📊 Dashboard", "📸 Add invoice", "💰 Daily takings", "🧮 Labour",
-         "🥬 Veggie prices", "📋 Invoices", "🧾 Reconciliation", "🌡️ Temp records"])
+         "🥬 Veggie prices", "📋 Invoices", "🧾 Reconciliation", "🌡️ Temp records",
+         "📈 Reports"])
 else:
     tab_dash, tab_inv, tab_veg, tab_list, tab_temp = st.tabs(
         ["📊 Dashboard", "📸 Add invoice", "🥬 Veggie prices", "📋 Invoices", "🌡️ Temp records"])
-    tab_pos = tab_lab = tab_recon = None
+    tab_pos = tab_lab = tab_recon = tab_rep = None
 
 # ============ Add-invoice tab ============
 with tab_inv:
@@ -1474,3 +1476,107 @@ with tab_list:
                 storage.delete_invoice(chosen)
                 st.session_state["del_flash"] = labels.get(chosen, "invoice")
                 st.rerun()
+
+
+# ============ Reports tab (owner): BAS/GST + accountant pack ============
+def _fin_quarters(today, n=6):
+    """Recent Australian FY quarters as (label, [YYYY-MM, ...]) newest first.
+    Q1 Jul-Sep, Q2 Oct-Dec, Q3 Jan-Mar, Q4 Apr-Jun."""
+    q_starts = {1: 7, 2: 10, 3: 1, 4: 4}
+    # which quarter is 'today' in?
+    m = today.month
+    qnum = 1 if m >= 7 and m <= 9 else 2 if m >= 10 else 3 if m <= 3 else 4
+    fy = today.year if m >= 7 else today.year - 1  # FY starting year
+    out = []
+    for _ in range(n):
+        sm = q_starts[qnum]
+        sy = fy if sm >= 7 else fy + 1  # Jan-Jun months fall in the next calendar year
+        months = [f"{sy + ((sm + i - 1) // 12)}-{((sm + i - 1) % 12) + 1:02d}" for i in range(3)]
+        label = f"Q{qnum} FY{str(fy)[2:]}/{str(fy + 1)[2:]} ({months[0]} – {months[-1]})"
+        out.append((label, months))
+        # step back one quarter
+        qnum -= 1
+        if qnum == 0:
+            qnum = 4
+            fy -= 1
+    return out
+
+
+def _accountant_pack_xlsx(month_key, inv_df, pos_df):
+    """Monthly accountant pack as .xlsx bytes: Summary, Invoices, By category,
+    Labour, Daily takings."""
+    import io
+    buf = io.BytesIO()
+    inv = inv_df[inv_df["month"] == month_key] if not inv_df.empty else inv_df.iloc[0:0]
+    pos = pos_df[pos_df["month"] == month_key] if not pos_df.empty else pos_df.iloc[0:0]
+    lab = storage.labour_map("week")
+    lab_rows = [{"ISO week": k, "Gross wages $": v["cost"], "Hours": v["hours"],
+                 "FOH hours": v["foh"], "BOH hours": v["boh"]}
+                for k, v in sorted(lab.items()) if storage._iso_week_month(k) == month_key]
+    inv_tot = float(pd.to_numeric(inv["total_ex_gst"], errors="coerce").fillna(0).sum()) if not inv.empty else 0.0
+    sales_incl = float(pd.to_numeric(pos["total_incl_gst"], errors="coerce").fillna(0).sum()) if not pos.empty else 0.0
+    summary = pd.DataFrame([
+        {"Metric": "Month", "Value": month_key},
+        {"Metric": "Supplier spend (ex-GST)", "Value": round(inv_tot, 2)},
+        {"Metric": "Sales (incl GST)", "Value": round(sales_incl, 2)},
+        {"Metric": "Gross wages", "Value": round(sum(r["Gross wages $"] for r in lab_rows), 2)},
+        {"Metric": "Invoices count", "Value": int(len(inv))},
+    ])
+    with pd.ExcelWriter(buf, engine="openpyxl") as xw:
+        summary.to_excel(xw, sheet_name="Summary", index=False)
+        if not inv.empty:
+            inv[["invoice_date", "supplier_raw", "supplier", "total_ex_gst"]].rename(
+                columns={"invoice_date": "Date", "supplier_raw": "Supplier (as invoiced)",
+                         "supplier": "Category", "total_ex_gst": "Total ex-GST $"}
+            ).sort_values("Date").to_excel(xw, sheet_name="Invoices", index=False)
+            inv.groupby("supplier")["total_ex_gst"].sum().round(2).reset_index().rename(
+                columns={"supplier": "Category", "total_ex_gst": "Spend ex-GST $"}
+            ).to_excel(xw, sheet_name="By category", index=False)
+        if lab_rows:
+            pd.DataFrame(lab_rows).to_excel(xw, sheet_name="Labour", index=False)
+        if not pos.empty:
+            pos[["date", "total_incl_gst", "doordash", "ubereats", "adjusted_ex_gst"]].rename(
+                columns={"date": "Date", "total_incl_gst": "Takings incl GST",
+                         "doordash": "DoorDash", "ubereats": "UberEats",
+                         "adjusted_ex_gst": "Net ex-GST"}
+            ).sort_values("Date").to_excel(xw, sheet_name="Daily takings", index=False)
+    buf.seek(0)
+    return buf.getvalue()
+
+
+if tab_rep is not None:
+    with tab_rep:
+        st.markdown("#### 📈 Reports")
+
+        # ---- BAS / GST quarter summary (#9) ----
+        st.markdown("**🧾 BAS / GST — quarter summary**")
+        quarters = _fin_quarters(dt.date.today(), n=6)
+        qlabel = st.selectbox("BAS quarter", [q[0] for q in quarters], key="bas_q")
+        qmonths = dict(quarters)[qlabel]
+        bas = metrics.bas_summary(pos_df, df, qmonths)
+        bc = st.columns(4)
+        kpi(bc[0], "Sales (incl GST)", f"${bas['sales_incl']:,.0f}", "G1")
+        kpi(bc[1], "GST on sales", f"${bas['gst_on_sales']:,.0f}", "1A")
+        kpi(bc[2], "GST credits (est.)", f"${bas['gst_credits_est']:,.0f}", "1B — estimate")
+        kpi(bc[3], "Net GST payable", f"${bas['net_gst']:,.0f}",
+            "1A − 1B", COLORS["red"] if bas["net_gst"] >= 0 else COLORS["green"])
+        st.caption("⚠️ **GST credits are an estimate** (supplier spend × 10%). GST-free items "
+                   "— fresh produce, meat, plain milk, etc. — carry no GST, so the real credit "
+                   "is usually lower. Always reconcile against your actual tax invoices before lodging.")
+        st.write("")
+
+        # ---- One-click accountant pack (#10) ----
+        st.divider()
+        st.markdown("**📦 Accountant pack — monthly export**")
+        months_avail = sorted(set(df["month"].dropna().tolist()) | set(pos_df["month"].dropna().tolist()),
+                              reverse=True) if (not df.empty or not pos_df.empty) else []
+        if not months_avail:
+            st.caption("No data yet to export.")
+        else:
+            mk = st.selectbox("Month", months_avail, key="pack_month")
+            st.caption("Excel workbook: Summary · Invoices · By category · Labour · Daily takings.")
+            st.download_button(
+                "⬇️ Download accountant pack (.xlsx)",
+                _accountant_pack_xlsx(mk, df, pos_df), key="pack_dl",
+                file_name=f"Accountant Pack {mk}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")

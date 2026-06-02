@@ -280,6 +280,26 @@ def price_anomalies(lines, min_pct=8.0):
     return df.sort_values("_pct", ascending=False).reset_index(drop=True) if not df.empty else df
 
 
+def bas_summary(pos_df, inv_df, months):
+    """GST summary for a list of 'YYYY-MM' months (one BAS quarter).
+    sales_incl from POS takings (GST on sales = incl/11); gst_credits_est from invoice
+    spend × GST_RATE — an ESTIMATE, since GST-free items (fresh produce/meat/etc.)
+    overstate it. {sales_incl, gst_on_sales, purchases_ex, gst_credits_est, net_gst}."""
+    sales_incl = 0.0
+    if pos_df is not None and not pos_df.empty and "month" in pos_df:
+        sub = pos_df[pos_df["month"].isin(months)]
+        sales_incl = float(pd.to_numeric(sub["total_incl_gst"], errors="coerce").fillna(0).sum())
+    purchases_ex = 0.0
+    if inv_df is not None and not inv_df.empty and "month" in inv_df:
+        sub = inv_df[inv_df["month"].isin(months)]
+        purchases_ex = float(pd.to_numeric(sub["total_ex_gst"], errors="coerce").fillna(0).sum())
+    gst_on_sales = sales_incl / (1 + config.GST_RATE) * config.GST_RATE
+    gst_credits_est = purchases_ex * config.GST_RATE
+    return {"sales_incl": sales_incl, "gst_on_sales": gst_on_sales,
+            "purchases_ex": purchases_ex, "gst_credits_est": gst_credits_est,
+            "net_gst": gst_on_sales - gst_credits_est}
+
+
 def pace_projection(p_start, p_end, today, cogs_to_date, rev_to_date, green_pct):
     """Linear end-of-period projection of food spend vs target. Returns None when the
     period hasn't started, is already complete (actuals stand), or has no revenue yet.
