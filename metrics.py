@@ -313,6 +313,38 @@ def bas_summary(pos_df, inv_df, months):
             "net_gst": gst_on_sales - gst_credits_est}
 
 
+def suggest_stock_items(lines, top_n=25):
+    """[{item, unit, unit_price}] — the most-purchased products (by total spend) across
+    all suppliers, with their last per-unit price + invoice unit, to pre-fill the
+    stocktake item list. Owner then adjusts units/prices (e.g. salmon -> kg/$37.25)."""
+    if lines is None or lines.empty:
+        return []
+    sub = lines.copy()
+    sub["k"] = sub["description"].map(_item_key)
+    sub["q"] = pd.to_numeric(sub["quantity"], errors="coerce")
+    sub["a"] = pd.to_numeric(sub["amount"], errors="coerce")
+    sub = sub[sub["k"].notna() & sub["a"].notna()]
+    rows = []
+    for _k, g in sub.groupby("k"):
+        g = g.sort_values("invoice_date")
+        last = g.iloc[-1]
+        spend = float(g["a"].fillna(0).sum())
+        gq = g[g["q"] > 0]
+        if not gq.empty:
+            ll = gq.iloc[-1]
+            up = float(ll["a"]) / float(ll["q"])
+            unit = ll.get("unit")
+        else:
+            up = float(last["a"])
+            unit = last.get("unit")
+        unit = unit if isinstance(unit, str) and unit else "ea"
+        rows.append({"item": str(last["description"]), "unit": unit,
+                     "unit_price": round(up, 2), "_spend": spend})
+    rows.sort(key=lambda r: -r["_spend"])
+    return [{"item": r["item"], "unit": r["unit"], "unit_price": r["unit_price"]}
+            for r in rows[:top_n]]
+
+
 def order_pad(lines, supplier):
     """Order-sheet basis for a supplier: df [Item, Unit, Last $/unit, Avg qty/order,
     Last bought] — one row per item they buy, pre-filled with the last-paid unit price

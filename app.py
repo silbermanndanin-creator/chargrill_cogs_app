@@ -1174,36 +1174,84 @@ with tab_dash:
                                f"{rec_split:.0f} split ({rec_st:.0f} tubs).")
     st.write("")
 
-    # ---- Weekly stocktake → TRUE COGS (all roles, Week mode) (#4) ----
+    # ---- Weekly stocktake → TRUE COGS (count-based, all roles, Week mode) (#4) ----
     if mode == "Week":
         st.markdown("**📦 Weekly stocktake → true COGS**")
-        with st.expander("Enter / update this week's closing stock", expanded=True):
-            st.caption("Invoice spend measures **purchases**, not what you actually used. "
-                       "Enter the **$ value of stock on hand at the end of this week** "
-                       "(valued at last-paid prices) to get true COGS = opening + purchases − closing.")
+        _items = storage.load_stock_items()
+
+        # 1) Manage the products counted + their per-unit prices
+        with st.expander(f"🧾 Stock items & prices ({len(_items)})", expanded=not _items):
+            st.caption("Define the main products you count. Set the **unit** (kg, ea, carton…) and "
+                       "the **price per that unit** — e.g. salmon as unit `kg`, price `37.25` shows "
+                       "**$37.25/kg**. *Suggest from invoices* pre-fills from what you buy; then adjust.")
+            _seed = st.session_state.pop("_stock_seed", None)
+            _src = _seed if _seed is not None else (_items or [{"item": "", "unit": "", "unit_price": 0.0}])
+            _idf = pd.DataFrame(_src)
+            for _c in ["item", "unit", "unit_price"]:
+                if _c not in _idf.columns:
+                    _idf[_c] = "" if _c != "unit_price" else 0.0
+            _ie = st.data_editor(
+                _idf[["item", "unit", "unit_price"]], num_rows="dynamic", hide_index=True,
+                width="stretch", key="stockitems_ed",
+                column_config={
+                    "item": st.column_config.TextColumn("Item"),
+                    "unit": st.column_config.TextColumn("Unit (kg/ea/…)"),
+                    "unit_price": st.column_config.NumberColumn("Price per unit", format="$%.2f",
+                                                                min_value=0.0)})
+            _b = st.columns(2)
+            if _b[0].button("💡 Suggest from invoices", key="stock_suggest"):
+                st.session_state["_stock_seed"] = metrics.suggest_stock_items(lines, 25)
+                st.rerun()
+            if _b[1].button("💾 Save stock items", key="stockitems_save"):
+                storage.save_stock_items(_ie.to_dict("records"))
+                st.session_state["stk_flash"] = True
+                st.rerun()
+        if st.session_state.pop("stk_flash", None):
+            st.success("Stock items saved.")
+
+        # 2) This week's count sheet -> closing value -> true COGS
+        if not _items:
+            st.info("Add stock items above (or **Suggest from invoices**) to start counting.")
+        else:
+            st.caption("Enter the **count on hand** at the end of this week:")
+            _csheet = pd.DataFrame([
+                {"Item": i["item"],
+                 "Price": f"${i['unit_price']:.2f}/{i['unit'] or 'unit'}",
+                 "Count": 0.0, "_p": i["unit_price"]} for i in _items])
+            _ce = st.data_editor(
+                _csheet[["Item", "Price", "Count"]], hide_index=True, width="stretch",
+                key="stockcount_ed",
+                column_config={
+                    "Item": st.column_config.TextColumn(disabled=True),
+                    "Price": st.column_config.TextColumn("Price", disabled=True),
+                    "Count": st.column_config.NumberColumn(min_value=0.0, step=1.0)})
+            _counts = pd.to_numeric(_ce["Count"], errors="coerce").fillna(0).values
+            _total = float((_counts * _csheet["_p"].values).sum())
+            st.markdown(f"**Closing stock value this week: ${_total:,.0f}**")
+            if st.button("💾 Save this week's stocktake", type="primary", key="stock_save_wk"):
+                storage.set_stock_value(period_key, _total)
+                st.session_state["stk_flash2"] = f"Saved ${_total:,.0f} closing stock for {period_key}."
+                st.rerun()
+            if st.session_state.pop("stk_flash2", None):
+                st.success("Stocktake saved.")
+
             _smap = storage.stock_value_map()
-            _close = st.number_input("Closing stock value this week $", min_value=0.0, step=100.0,
-                                     value=float(_smap.get(period_key, 0.0)), key="stock_close")
-            if _close != float(_smap.get(period_key, 0.0)) and _close > 0:
-                storage.set_stock_value(period_key, _close)
-                _smap[period_key] = _close
             _prev_wk = storage.iso_week_of(ref - dt.timedelta(days=7))
             _opening = _smap.get(_prev_wk)
+            _close = _smap.get(period_key, _total)
             if _opening is not None and _close > 0:
                 _actual = metrics.true_cogs(total_cogs, _opening, _close)
                 _act_pct = (_actual / revenue) if revenue > 0 else None
                 cc = st.columns(3)
                 kpi(cc[0], "Opening stock", f"${_opening:,.0f}", f"end of {_prev_wk}")
-                kpi(cc[1], "True COGS (used)", f"${_actual:,.0f}",
-                    f"vs ${total_cogs:,.0f} purchased")
+                kpi(cc[1], "True COGS (used)", f"${_actual:,.0f}", f"vs ${total_cogs:,.0f} purchased")
                 if _act_pct is not None:
-                    _astat = config.total_status(_act_pct)
                     kpi(cc[2], "True COGS %", f"{_act_pct*100:.1f}%",
                         f"purchases read {cogs_pct*100:.1f}%" if cogs_pct is not None else "",
-                        COLORS[_astat])
+                        COLORS[config.total_status(_act_pct)])
             elif _close > 0:
-                st.caption(f"Enter last week's ({_prev_wk}) closing stock too — it becomes this "
-                           "week's opening — to unlock true COGS.")
+                st.caption(f"Save last week's ({_prev_wk}) stocktake too — it becomes this week's "
+                           "opening — to unlock true COGS.")
     if mode == "Month":
         st.info("📦 **Weekly stocktake** is weekly — switch **Track by → Week** in the sidebar "
                 "to record closing stock and see true COGS.")

@@ -39,6 +39,8 @@ VAR_COLUMNS = ["employee", "shift_date", "weekday", "actual_start", "actual_fini
                "contracted_start", "kind", "week_ending", "created_at"]
 CONTRACT_PATH = os.path.join(DATA_DIR, "contracts.csv")
 CONTRACT_COLUMNS = ["employee", "weekday", "start", "finish"]
+STOCK_ITEMS_PATH = os.path.join(DATA_DIR, "stock_items.csv")
+STOCK_ITEMS_COLUMNS = ["item", "unit", "unit_price"]
 
 
 def iso_week_of(d: dt.date) -> str:
@@ -356,6 +358,58 @@ def load_variation_events() -> pd.DataFrame:
     _ensure_csv(VAR_PATH, VAR_COLUMNS)
     df = pd.read_csv(VAR_PATH)
     return df if not df.empty else pd.DataFrame(columns=VAR_COLUMNS)
+
+
+# ---------- stock items (products counted in the weekly stocktake) ----------
+def load_stock_items() -> list:
+    """[{item, unit, unit_price}] — the products counted each week, with the price per
+    their unit (e.g. salmon unit 'kg', unit_price 37.25 -> $37.25/kg)."""
+    if _use_supabase():
+        try:
+            rows = _client().table("stock_items").select("*").execute().data or []
+        except Exception:
+            return []
+    else:
+        _ensure_csv(STOCK_ITEMS_PATH, STOCK_ITEMS_COLUMNS)
+        df = pd.read_csv(STOCK_ITEMS_PATH)
+        rows = df.to_dict("records") if not df.empty else []
+    out = []
+    for r in rows:
+        it = str(r.get("item") or "").strip()
+        if not it:
+            continue
+        try:
+            up = float(r.get("unit_price") or 0)
+        except (TypeError, ValueError):
+            up = 0.0
+        out.append({"item": it, "unit": str(r.get("unit") or "").strip(), "unit_price": up})
+    out.sort(key=lambda r: r["item"].lower())
+    return out
+
+
+def save_stock_items(items):
+    """Replace the whole stock-item list. items = iterable of {item, unit, unit_price}."""
+    rows, seen = [], set()
+    for i in items:
+        it = str(i.get("item") or "").strip()
+        if not it or it.lower() in seen:
+            continue
+        seen.add(it.lower())
+        try:
+            up = round(float(i.get("unit_price") or 0), 2)
+        except (TypeError, ValueError):
+            up = 0.0
+        rows.append({"item": it, "unit": str(i.get("unit") or "").strip(), "unit_price": up})
+    if _use_supabase():
+        try:
+            _client().table("stock_items").delete().neq("item", "").execute()
+            if rows:
+                _client().table("stock_items").insert(rows).execute()
+        except Exception:
+            pass
+    else:
+        _ensure_csv(STOCK_ITEMS_PATH, STOCK_ITEMS_COLUMNS)
+        pd.DataFrame(rows, columns=STOCK_ITEMS_COLUMNS).to_csv(STOCK_ITEMS_PATH, index=False)
 
 
 # ---------- weekly stocktake (closing stock $ value, for TRUE COGS) ----------
