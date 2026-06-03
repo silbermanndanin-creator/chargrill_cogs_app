@@ -1504,7 +1504,14 @@ with tab_list:
         show = view[["invoice_date", "supplier_raw", "supplier", "total_ex_gst"]].rename(
             columns={"invoice_date": "Date", "supplier_raw": "Supplier (as invoiced)",
                      "supplier": "Category", "total_ex_gst": "Total ex-GST $"})
-        st.dataframe(show, hide_index=True, width="stretch")
+        # Real date dtype so tapping the Date header sorts chronologically (not as text),
+        # shown in Australian DD/MM/YYYY; money right-aligned with a $ format.
+        show["Date"] = pd.to_datetime(show["Date"], errors="coerce")
+        show["Total ex-GST $"] = pd.to_numeric(show["Total ex-GST $"], errors="coerce")
+        st.dataframe(show, hide_index=True, width="stretch", column_config={
+            "Date": st.column_config.DateColumn("Date", format="DD/MM/YYYY"),
+            "Total ex-GST $": st.column_config.NumberColumn("Total ex-GST $", format="$%.2f"),
+        })
         with st.expander("🔍 View line items"):
             for _, r in view.iterrows():
                 st.markdown(f"**{r['invoice_date']} · {r['supplier_raw']}** → "
