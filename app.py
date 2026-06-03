@@ -504,8 +504,9 @@ with tab_inv:
             with st.spinner(f"Reading invoice ({len(pages)} page(s))…"):
                 try:
                     st.session_state["inv"] = extract_invoice(pages).model_dump()
-                    # keep the first page's original to file with the saved invoice (#7)
-                    st.session_state["inv_img"] = pages[0]
+                    # keep ALL page originals to file with the saved invoice (#7) so a
+                    # multi-page invoice can be fully re-read / audited later
+                    st.session_state["inv_img"] = list(pages)
                     st.session_state.pop("inv_shots", None)
                 except Exception as e:
                     st.error(f"Extraction failed: {e}")
@@ -546,10 +547,9 @@ with tab_inv:
                     r.pop("tub_type", None)
                 cleaned.append(r)
             _row = storage.save_invoice(supplier_raw, inv_date, total, cleaned)
-            _img = st.session_state.get("inv_img")
-            if _img:
-                storage.save_invoice_image(_row["saved_at"], _img[0],
-                                           _img[1] if len(_img) > 1 else "image/jpeg")
+            _imgs = st.session_state.get("inv_img")
+            if _imgs:
+                storage.save_invoice_image(_row["saved_at"], _imgs)
             st.session_state["flash"] = True
             st.session_state["flash_msg"] = f"Saved {canon} — ${total:,.2f}"
             st.session_state.pop("inv", None)
@@ -1536,16 +1536,22 @@ with tab_list:
                            for _, r in pv.iterrows()}
                 psel = st.selectbox("Invoice", list(plabels),
                                     format_func=lambda s: plabels[s], key="photo_sel")
-                _img = storage.load_invoice_image(psel)
-                if _img is None:
+                _imgs = storage.load_invoice_images(psel)
+                if not _imgs:
                     st.caption("No photo stored for this invoice "
                                "(only invoices added after this update keep their image).")
-                elif (_img[1] or "").startswith("image/"):
-                    st.image(_img[0], caption=plabels[psel], width="stretch")
                 else:
-                    st.download_button("⬇️ Download original (PDF)", _img[0], key="photo_dl",
-                                       file_name=f"invoice_{psel[:16].replace(':','-')}.pdf",
-                                       mime=_img[1] or "application/pdf")
+                    n = len(_imgs)
+                    for _i, (_b, _mt) in enumerate(_imgs, 1):
+                        _lbl = plabels[psel] if n == 1 else f"{plabels[psel]} — page {_i}/{n}"
+                        if (_mt or "").startswith("image/"):
+                            st.image(_b, caption=_lbl, width="stretch")
+                        else:
+                            st.download_button(
+                                f"⬇️ Download original (PDF){'' if n == 1 else f' — page {_i}'}",
+                                _b, key=f"photo_dl_{_i}",
+                                file_name=f"invoice_{psel[:16].replace(':','-')}_{_i}.pdf",
+                                mime=_mt or "application/pdf")
 
         # ---- Edit / fix a mis-scanned invoice (owner only) ----
         if owner:

@@ -152,13 +152,23 @@ def duplicate_groups(df):
     return out
 
 
-def save_invoice_image(saved_at, image_bytes, media_type="image/jpeg"):
-    """Keep the original photo/PDF of an invoice (audit / GST trail). Stored in a
-    SEPARATE store keyed by saved_at, so load_invoices() stays light."""
-    if not image_bytes:
+def save_invoice_image(saved_at, pages, media_type="image/jpeg"):
+    """Keep the original photo(s)/PDF of an invoice (audit / GST trail), in a SEPARATE
+    store keyed by saved_at so load_invoices() stays light.
+
+    `pages` may be a single bytes object (with media_type) or a list of
+    (bytes, media_type) tuples — ALL pages are kept under the one saved_at, stored as a
+    JSON array in image_b64. Older rows hold a single raw-base64 string; the loaders
+    below read both formats, so this needs no database migration."""
+    if isinstance(pages, (bytes, bytearray)):
+        norm = [(bytes(pages), media_type or "image/jpeg")]
+    else:
+        norm = [(b, mt or "image/jpeg") for (b, mt) in (pages or []) if b]
+    if not norm:
         return
-    row = {"saved_at": str(saved_at), "media_type": media_type or "image/jpeg",
-           "image_b64": base64.b64encode(image_bytes).decode("ascii")}
+    payload = json.dumps([{"media_type": mt, "b64": base64.b64encode(b).decode("ascii")}
+                          for b, mt in norm])
+    row = {"saved_at": str(saved_at), "media_type": norm[0][1], "image_b64": payload}
     if _use_supabase():
         try:
             _client().table("invoice_images").upsert(row, on_conflict="saved_at").execute()
@@ -172,29 +182,49 @@ def save_invoice_image(saved_at, image_bytes, media_type="image/jpeg"):
         df.to_csv(IMG_PATH, index=False)
 
 
-def load_invoice_image(saved_at):
-    """Return (bytes, media_type) for an invoice's stored original, or None."""
+def _image_row(saved_at):
+    """Raw stored row dict {media_type, image_b64} for an invoice, or None."""
     if _use_supabase():
         try:
             data = (_client().table("invoice_images").select("*")
                     .eq("saved_at", str(saved_at)).execute().data)
         except Exception:
             return None
-        if not data:
-            return None
-        r = data[0]
-    else:
-        if not os.path.exists(IMG_PATH):
-            return None
-        df = pd.read_csv(IMG_PATH)
-        m = df[df["saved_at"].astype(str) == str(saved_at)]
-        if m.empty:
-            return None
-        r = m.iloc[0].to_dict()
-    try:
-        return base64.b64decode(r["image_b64"]), (r.get("media_type") or "image/jpeg")
-    except Exception:
+        return data[0] if data else None
+    if not os.path.exists(IMG_PATH):
         return None
+    df = pd.read_csv(IMG_PATH)
+    m = df[df["saved_at"].astype(str) == str(saved_at)]
+    return m.iloc[0].to_dict() if not m.empty else None
+
+
+def load_invoice_images(saved_at):
+    """All stored pages as a list of (bytes, media_type), or []. Reads both the new
+    multi-page JSON format and the old single raw-base64 format (so existing invoices
+    keep working)."""
+    r = _image_row(saved_at)
+    if not r:
+        return []
+    raw = r.get("image_b64")
+    if not isinstance(raw, str) or not raw.strip():
+        return []
+    s = raw.strip()
+    if s.startswith("["):  # new format: JSON array of pages
+        try:
+            return [(base64.b64decode(p["b64"]), p.get("media_type") or "image/jpeg")
+                    for p in json.loads(s) if p.get("b64")]
+        except Exception:
+            return []
+    try:  # old format: a single raw-base64 image
+        return [(base64.b64decode(s), r.get("media_type") or "image/jpeg")]
+    except Exception:
+        return []
+
+
+def load_invoice_image(saved_at):
+    """First stored page as (bytes, media_type), or None (back-compat single-page view)."""
+    imgs = load_invoice_images(saved_at)
+    return imgs[0] if imgs else None
 
 
 def _delete_invoice_image(saved_at):
