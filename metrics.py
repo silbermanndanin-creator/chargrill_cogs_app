@@ -42,12 +42,13 @@ def explode_lines(df: pd.DataFrame) -> pd.DataFrame:
                 "description": it.get("description"),
                 "quantity": it.get("quantity"),
                 "unit": norm_unit(it.get("unit")),
+                "unit_price": it.get("unit_price"),  # printed per-unit price (per-kg when shown)
                 "amount": it.get("amount"),
                 # stored override (from review screen) else detect from description
                 "tub_type": it.get("tub_type") or config.tub_type(it.get("description")),
             })
     cols = ["supplier", "invoice_date", "iso_week", "month", "description",
-            "quantity", "unit", "amount", "tub_type"]
+            "quantity", "unit", "unit_price", "amount", "tub_type"]
     return pd.DataFrame(recs, columns=cols)
 
 
@@ -146,9 +147,33 @@ def pos_breakdown(pos_df, period_col, period_key):
     }
 
 
+def _group_price(g):
+    """Per-group (item × date) price summary as a Series {amount, qty, unit_price}.
+
+    Prefers the PRINTED per-line unit_price (quantity-weighted) whenever any line in
+    the group carries one — that is the authoritative figure for per-kg items, where
+    sum(amount)/sum(quantity) would otherwise give a misleading $/carton. Falls back
+    to sum(amount)/sum(quantity) when no printed price is present (e.g. older invoices
+    saved before unit_price was captured), so historical data is unchanged."""
+    q = pd.to_numeric(g["quantity"], errors="coerce")
+    a = pd.to_numeric(g["amount"], errors="coerce")
+    u = pd.to_numeric(g.get("unit_price"), errors="coerce") if "unit_price" in g \
+        else pd.Series(index=g.index, dtype=float)
+    tq = float(q[q > 0].sum()) if q.notna().any() else 0.0
+    ta = float(a.fillna(0).sum())
+    printed = u.notna() & (u > 0) & q.notna() & (q > 0)
+    if printed.any():
+        w = q[printed]
+        up = float((u[printed] * w).sum() / w.sum())  # qty-weighted printed price
+    else:
+        up = ta / tq if tq > 0 else ta  # legacy: derive from line total ÷ quantity
+    return pd.Series({"amount": ta, "qty": tq, "unit_price": up})
+
+
 def veggie_prices(lines):
-    """Long df [item, date, unit_price] — weighted unit price per tracked item per date,
-    from Veggies-supplier invoice lines. unit_price = sum(amount)/sum(quantity)."""
+    """Long df [item, date, unit_price] — unit price per tracked item per date, from
+    Veggies-supplier invoice lines. Uses the printed per-unit (per-kg) price when shown,
+    else sum(amount)/sum(quantity). See _group_price."""
     cols = ["item", "date", "unit_price"]
     if lines.empty:
         return pd.DataFrame(columns=cols)
@@ -159,11 +184,8 @@ def veggie_prices(lines):
     sub = sub[sub["item"].notna()].copy()
     if sub.empty:
         return pd.DataFrame(columns=cols)
-    sub["qty"] = pd.to_numeric(sub["quantity"], errors="coerce")
-    sub["amt"] = pd.to_numeric(sub["amount"], errors="coerce")
-    g = sub.groupby(["item", "invoice_date"]).agg(amt=("amt", "sum"), qty=("qty", "sum")).reset_index()
-    g["unit_price"] = g.apply(
-        lambda r: r["amt"] / r["qty"] if r["qty"] and r["qty"] > 0 else r["amt"], axis=1)
+    g = (sub.groupby(["item", "invoice_date"])[["quantity", "amount", "unit_price"]]
+         .apply(_group_price).reset_index())
     g = g.rename(columns={"invoice_date": "date"})
     return g[cols].sort_values(["item", "date"]).reset_index(drop=True)
 
@@ -247,11 +269,12 @@ def item_price_history(lines):
               & (sub["qnum"] > 0)]
     if sub.empty:
         return pd.DataFrame(columns=cols)
-    g = (sub.groupby(["supplier", "item", "invoice_date"])
-         .agg(amount=("anum", "sum"), qty=("qnum", "sum"),
-              description=("description", "first")).reset_index())
+    desc = (sub.groupby(["supplier", "item", "invoice_date"])["description"]
+            .first().reset_index())
+    g = (sub.groupby(["supplier", "item", "invoice_date"])[["quantity", "amount", "unit_price"]]
+         .apply(_group_price).reset_index())  # prefers printed per-unit (per-kg) price
+    g = g.merge(desc, on=["supplier", "item", "invoice_date"])
     g = g[g["qty"] > 0]
-    g["unit_price"] = g["amount"] / g["qty"]
     g = g.rename(columns={"invoice_date": "date"})
     return g[cols].sort_values(["supplier", "item", "date"]).reset_index(drop=True)
 

@@ -46,13 +46,24 @@ Rules:
 - supplier_name: the supplier/business name exactly as printed on the invoice.
 - invoice_date: the invoice date in ISO format YYYY-MM-DD. If only DD/MM/YYYY is shown, \
 convert it (Australian day-first order).
-- line_items: each product line with:
+- line_items: each product line. CAPTURE EVERY LINE. Some produce invoices (e.g. \
+St George) and seafood invoices (e.g. Blueseas) run to 30-60 lines across one or more \
+pages — read them top to bottom and include every product row. Never skip, merge, \
+summarise, or stop early; a missing line means an undercounted COGS. Each line has:
     - description: the product name.
-    - quantity: the numeric quantity ordered (e.g. 12, 4.5). Null if not shown.
+    - quantity: the numeric quantity billed (e.g. 12, 4.5). Null if not shown. \
+IMPORTANT: when the line is priced per kg, quantity is the KILOGRAM WEIGHT billed \
+(e.g. 15.0), NOT the number of cartons/boxes/pieces. If both a pack count and a kg \
+weight are shown, use the kg weight as the quantity and set unit to kg.
     - unit: the unit of measure, lowercased and normalised to one of: kg, ea, carton, \
 box, case, tray, bag, litre, dozen, tub. Map "each"/"unit"/"units" -> ea, "ctn" -> \
-carton, "kgs"/"kilo" -> kg, "tubs" -> tub. Record quantity and unit exactly as printed \
-(e.g. 240 ea) — do not convert between units. Null if not shown.
+carton, "kgs"/"kilo" -> kg, "tubs" -> tub. Use kg whenever the line is priced per kg. \
+Otherwise record the unit as printed — do not convert between units. Null if not shown.
+    - unit_price: the printed PRICE PER UNIT for this line. If the line shows a per-kg \
+price (e.g. "$12.50/kg", "12.50 P/KG", "@ 12.50 kg"), record THAT per-kg figure here \
+and set unit to kg — this is the number to prefer. If instead only a per-each/per-carton \
+price is printed, record that. Null if no per-unit price is printed (only a line total). \
+Record the price exactly as printed; do not compute or round it.
     - amount: the line total (ex-GST if the invoice lists ex-GST, otherwise the printed \
 line amount).
 - total_ex_gst: the invoice total EXCLUDING GST. Australian GST is 10%. If the invoice \
@@ -67,6 +78,7 @@ class LineItem(BaseModel):
     description: str
     quantity: Optional[float] = None
     unit: Optional[str] = None
+    unit_price: Optional[float] = None  # printed per-unit price; per-kg rate when shown
     amount: float
 
 
