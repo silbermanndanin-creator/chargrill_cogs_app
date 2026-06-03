@@ -5,6 +5,7 @@ openpyxl>=3.1   # read Payroll Setup.xlsx + build payroll & reconciliation Excel
 python-calamine>=0.2   # robust reader for Tyro location reports (Reconciliation tab)
 requests>=2.31
 pydantic>=2.0
+Pillow>=10.0   # resize/compress invoice & POS photos before upload (speed)
 plotly>=5.20
 python-docx>=1.1   # generate part-time variation letters (.docx) from the firm template
 supabase>=2.0   # only used in cloud mode (SUPABASE_URL + SUPABASE_KEY set); local uses CSV
