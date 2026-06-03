@@ -1473,10 +1473,23 @@ with tab_list:
         _alld = pd.to_datetime(df["invoice_date"], errors="coerce")
         _dmin = _alld.min()
         _dmax = _alld.max()
-        d_from = fc[2].date_input("From", key="invlist_from",
-                                  value=_dmin.date() if pd.notna(_dmin) else dt.date.today())
-        d_to = fc[3].date_input("To", key="invlist_to",
-                                value=_dmax.date() if pd.notna(_dmax) else dt.date.today())
+        _lo = _dmin.date() if pd.notna(_dmin) else dt.date.today()
+        _hi = _dmax.date() if pd.notna(_dmax) else dt.date.today()
+        # A keyed date_input ignores `value=` after its first render, so the To bound
+        # would otherwise stay frozen at the latest date that existed when the filter was
+        # first drawn — hiding any invoices added since. Initialise the range once, then
+        # keep To following newer invoices, but only when the user hadn't manually pulled
+        # the top bound in (so deliberate narrowing is still respected).
+        _prev_hi = st.session_state.get("_invlist_prev_hi")
+        if "invlist_from" not in st.session_state:
+            st.session_state["invlist_from"] = _lo
+        if "invlist_to" not in st.session_state:
+            st.session_state["invlist_to"] = _hi
+        elif _prev_hi is not None and _hi > _prev_hi and st.session_state["invlist_to"] == _prev_hi:
+            st.session_state["invlist_to"] = _hi
+        st.session_state["_invlist_prev_hi"] = _hi
+        d_from = fc[2].date_input("From", key="invlist_from")
+        d_to = fc[3].date_input("To", key="invlist_to")
 
         view = df if pick == "All categories" else df[df["supplier"] == pick]
         _vd = pd.to_datetime(view["invoice_date"], errors="coerce").dt.date
@@ -1484,7 +1497,8 @@ with tab_list:
         if q:
             view = view[view["supplier_raw"].astype(str).str.lower().str.contains(q, na=False)
                         | view["line_items"].astype(str).str.lower().str.contains(q, na=False)]
-        view = view.sort_values("invoice_date", ascending=False)
+        view = view.assign(_sortd=pd.to_datetime(view["invoice_date"], errors="coerce"))
+        view = view.sort_values(["_sortd", "saved_at"], ascending=False).drop(columns="_sortd")
         total = pd.to_numeric(view["total_ex_gst"], errors="coerce").sum()
         st.caption(f"{len(view)} invoice(s) · ${total:,.0f} ex-GST")
         show = view[["invoice_date", "supplier_raw", "supplier", "total_ex_gst"]].rename(
