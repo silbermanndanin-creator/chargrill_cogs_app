@@ -1885,13 +1885,34 @@ if tab_pack is not None:
                        "part cases). The app refills each drink to par, rounds the order "
                        "**up** to whole units, and groups it by the sheet's sections.")
 
+            # --- Public-holiday handling: auto-detect for the state, manual override ---
+            hc1, hc2 = st.columns([1, 2])
+            ph_state = hc1.selectbox("State", drinks.AU_STATES,
+                                     index=drinks.AU_STATES.index("NSW"),
+                                     key="drink_ph_state",
+                                     help="Used to detect public holidays in the coming week.")
+            detected, ph_name, ph_date = drinks.next_public_holiday(ph_state, dt.date.today(), days=7)
+            # When the auto-detected value changes between runs, follow it — but leave the
+            # user free to override the checkbox within the same detection state.
+            if st.session_state.get("_drink_ph_auto") != detected:
+                st.session_state["_drink_ph_auto"] = detected
+                st.session_state["drink_ph"] = detected
+            ph_on = hc2.checkbox("🎉 Public holiday in the coming week — order holiday quantities",
+                                 key="drink_ph")
+            if detected:
+                st.info(f"Auto-detected: **{ph_name}** on **{ph_date:%a %d %b}** "
+                        f"({ph_state}). Holiday quantities are on — untick to override.")
+            elif ph_on:
+                st.warning("Holiday quantities are **on** (manually). No public holiday "
+                           "detected in the next 7 days for this state.")
+
             dsaved = storage.load_drinks_counts()
             drows = []
             for it in drinks.DRINK_ITEMS:
                 drows.append({
                     "Item": it["item"],
                     "Section": it["section"],
-                    "Par": it["par"],
+                    "Par": drinks.par_for(it, ph_on),
                     "QTY on hand": float(dsaved.get(it["item"], 0.0) or 0),
                 })
             drink_df = pd.DataFrame(drows)
@@ -1901,7 +1922,8 @@ if tab_pack is not None:
                 column_config={
                     "Item": st.column_config.TextColumn(disabled=True),
                     "Section": st.column_config.TextColumn(disabled=True, width="small"),
-                    "Par": st.column_config.NumberColumn(disabled=True, width="small"),
+                    "Par": st.column_config.NumberColumn(
+                        "Par (PH)" if ph_on else "Par", disabled=True, width="small"),
                     "QTY on hand": st.column_config.NumberColumn(min_value=0.0, step=0.5)})
 
             dcounts = {}
@@ -1915,11 +1937,12 @@ if tab_pack is not None:
                 st.success("Counts saved.")
             dinfo.caption("Saved to the app so a reload on your phone won't wipe your count.")
 
-            dorder = drinks.build_order(dcounts)
+            dorder = drinks.build_order(dcounts, public_holiday=ph_on)
             n_drink = sum(len(v) for v in dorder.values())
 
             st.divider()
-            st.markdown("### 🧾 Drinks order to place")
+            st.markdown("### 🧾 Drinks order to place"
+                        + ("  ·  🎉 _public-holiday quantities_" if ph_on else ""))
             if n_drink == 0:
                 st.success("Nothing to order — everything's at or above par.")
             else:
@@ -1933,7 +1956,7 @@ if tab_pack is not None:
                                       for e in sitems]),
                         hide_index=True, width="stretch")
                 st.caption("Copy-ready (tap the ⧉ icon top-right):")
-                st.code(drinks.order_text(dorder), language=None)
+                st.code(drinks.order_text(dorder, public_holiday=ph_on), language=None)
 
 
 # ============ Daily digest tab (all roles; role-aware) ============
