@@ -118,18 +118,18 @@ def order_qty(weekly_use, on_hand, weeks=1.0):
     return max(0, math.ceil(float(weekly_use) * wk - oh))
 
 
-def build_order(counts, public_holiday=False, weeks=1.0):
+def build_order(counts, weeks=1.0):
     """Turn an {item: on_hand} map into the order, as a single flat list.
 
-    `weeks` scales the weekly usage to the delivery window (e.g. 1.7 weeks). When
-    public_holiday is True, each drink uses its ph_par weekly rate instead of par.
-    Returns [{"item", "weekly_use", "need", "on_hand", "order", "seq"}, ...] in CCEP
-    ordering-site order (by seq), only including items with order > 0.
+    `weeks` scales the weekly usage ('Qnty Needed') to the delivery window (e.g. 1.7
+    weeks). NB: a public holiday does not change the weekly rate — it just lengthens
+    the window, which `weeks` already captures. Returns [{"item", "weekly_use", "need",
+    "on_hand", "order", "seq"}, ...] in CCEP ordering-site order (by seq), order > 0 only.
     """
     counts = counts or {}
     out = []
     for row in DRINK_ITEMS:
-        weekly_use = par_for(row, public_holiday)
+        weekly_use = row["par"]
         oh = counts.get(row["item"])
         qty = order_qty(weekly_use, oh, weeks)
         if qty <= 0:
@@ -141,10 +141,9 @@ def build_order(counts, public_holiday=False, weeks=1.0):
     return out
 
 
-def order_text(order_list, public_holiday=False):
+def order_text(order_list):
     """Plain-text drinks order — one line per item, in CCEP site order."""
-    head = "Drinks order" + (" (PUBLIC HOLIDAY quantities)" if public_holiday else "")
-    lines = [head, ""]
+    lines = ["Drinks order", ""]
     if not order_list:
         lines.append("(nothing to order)")
         return "\n".join(lines)
