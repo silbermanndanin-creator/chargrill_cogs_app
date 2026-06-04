@@ -457,16 +457,16 @@ if st.button(_toggle_label, key="theme_toggle", help="Toggle light / dark mode")
 
 # Owner sees all tabs; chef sees only the cost/operations tabs.
 if owner:
-    (tab_dash, tab_inv, tab_pos, tab_lab, tab_veg, tab_list,
-     tab_recon, tab_temp, tab_rep, tab_order, tab_pack, tab_digest, tab_var) = st.tabs(
+    (tab_dash, tab_inv, tab_pos, tab_lab, tab_veg, tab_pack, tab_list,
+     tab_recon, tab_temp, tab_rep, tab_order, tab_digest, tab_var) = st.tabs(
         ["📊 Dashboard", "📸 Add invoice", "💰 Daily takings", "🧮 Labour",
-         "🥬 Veggie prices", "📋 Invoices", "🧾 Reconciliation", "🌡️ Temp records",
-         "📈 Reports", "🛒 Order pad", "📦 Ordering", "📨 Daily digest", "📝 Variations"])
+         "🥬 Veggie prices", "📦 Ordering", "📋 Invoices", "🧾 Reconciliation",
+         "🌡️ Temp records", "📈 Reports", "🛒 Order pad", "📨 Daily digest", "📝 Variations"])
 else:
-    (tab_dash, tab_inv, tab_veg, tab_list, tab_temp,
-     tab_order, tab_pack, tab_digest) = st.tabs(
-        ["📊 Dashboard", "📸 Add invoice", "🥬 Veggie prices", "📋 Invoices",
-         "🌡️ Temp records", "🛒 Order pad", "📦 Ordering", "📨 Daily digest"])
+    (tab_dash, tab_inv, tab_veg, tab_pack, tab_list, tab_temp,
+     tab_order, tab_digest) = st.tabs(
+        ["📊 Dashboard", "📸 Add invoice", "🥬 Veggie prices", "📦 Ordering", "📋 Invoices",
+         "🌡️ Temp records", "🛒 Order pad", "📨 Daily digest"])
     tab_pos = tab_lab = tab_recon = tab_rep = tab_var = None
 
 # ============ Add-invoice tab ============
