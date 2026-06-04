@@ -86,32 +86,56 @@ def par_for(item, public_holiday=False):
     return item["ph_par"] if public_holiday else item["par"]
 
 
-def order_qty(par, on_hand):
-    """Units to order to refill to par, rounded UP. Never negative."""
+def default_delivery(today, weekday=1):
+    """Next delivery date strictly after today for the given weekday (Mon=0..Sun=6).
+    Defaults to the next Tuesday (1)."""
+    ahead = (weekday - today.weekday()) % 7
+    return today + dt.timedelta(days=ahead or 7)
+
+
+def coverage(today, cover_until):
+    """(days, weeks) the order must cover — from today through cover_until, inclusive.
+    weeks = days / 7 since 'Qnty Needed' on the sheet is a per-week usage rate."""
+    days = max((cover_until - today).days + 1, 1)
+    return days, days / 7.0
+
+
+def order_qty(weekly_use, on_hand, weeks=1.0):
+    """Units to order, rounded UP, never negative.
+
+    weekly_use is the per-week usage ("Qnty Needed"). The order must cover `weeks`
+    of usage (the delivery window), less what's already on hand:
+        order = ceil(weekly_use * weeks - on_hand)
+    """
     try:
         oh = float(on_hand or 0)
     except (TypeError, ValueError):
         oh = 0.0
-    return max(0, math.ceil(float(par) - oh))
+    try:
+        wk = float(weeks)
+    except (TypeError, ValueError):
+        wk = 1.0
+    return max(0, math.ceil(float(weekly_use) * wk - oh))
 
 
-def build_order(counts, public_holiday=False):
+def build_order(counts, public_holiday=False, weeks=1.0):
     """Turn an {item: on_hand} map into the order, as a single flat list.
 
-    When public_holiday is True, each drink refills to its ph_par instead of par.
-    Returns [{"item", "par", "on_hand", "order"}, ...] in CCEP ordering-site order
-    (by seq), only including items with order > 0 — so you can follow the order
-    straight down the supplier site.
+    `weeks` scales the weekly usage to the delivery window (e.g. 1.7 weeks). When
+    public_holiday is True, each drink uses its ph_par weekly rate instead of par.
+    Returns [{"item", "weekly_use", "need", "on_hand", "order", "seq"}, ...] in CCEP
+    ordering-site order (by seq), only including items with order > 0.
     """
     counts = counts or {}
     out = []
     for row in DRINK_ITEMS:
-        par = par_for(row, public_holiday)
+        weekly_use = par_for(row, public_holiday)
         oh = counts.get(row["item"])
-        qty = order_qty(par, oh)
+        qty = order_qty(weekly_use, oh, weeks)
         if qty <= 0:
             continue
-        out.append({"item": row["item"], "par": par, "seq": row["seq"],
+        out.append({"item": row["item"], "weekly_use": weekly_use, "seq": row["seq"],
+                    "need": round(float(weekly_use) * float(weeks), 1),
                     "on_hand": float(oh or 0), "order": qty})
     out.sort(key=lambda e: e["seq"])
     return out

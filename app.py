@@ -2010,30 +2010,45 @@ if tab_pack is not None:
                         st.code(packaging.order_text_az(az), language=None)
 
         with sub_drink:
-            st.caption("Count the fridge/store and enter **QTY on hand** (halves OK for "
-                       "part cases). The app refills each drink to par, rounds the order "
-                       "**up** to whole units, and groups it by the sheet's sections.")
+            st.caption("'Qnty Needed' on the sheet is **per-week** usage. Set the delivery "
+                       "window below, count the fridge (**QTY on hand**, halves OK), and the "
+                       "app scales each drink to the window and rounds the order **up**.")
 
-            # --- Public-holiday handling: auto-detect for the state, manual override ---
+            # --- Delivery window: order placed today, lasts until a chosen date ---
+            _today = dt.date.today()
+            _def_deliv = drinks.default_delivery(_today)          # next Tuesday
+            _def_until = _def_deliv + dt.timedelta(days=6)        # the Monday after it
+            wc1, wc2 = st.columns(2)
+            deliv = wc1.date_input("Delivery date", value=_def_deliv, key="drink_deliv",
+                                   help="When this order arrives.")
+            until = wc2.date_input("Stock must last until", value=_def_until, key="drink_until",
+                                   help="Usually the day before the next delivery.")
+            cov_days, weeks = drinks.coverage(_today, until)
+            st.caption(f"📦 Ordering today (**{_today:%a %d %b}**) for **{deliv:%a %d %b}** "
+                       f"delivery, to last until **{until:%a %d %b}** — covering "
+                       f"**{cov_days} days (~{weeks:.1f} weeks)**. Weekly quantities are scaled "
+                       "to this window.")
+
+            # --- Public holidays anywhere IN the window: auto-detect, manual override ---
             hc1, hc2 = st.columns([1, 2])
             ph_state = hc1.selectbox("State", drinks.AU_STATES,
                                      index=drinks.AU_STATES.index("NSW"),
                                      key="drink_ph_state",
-                                     help="Used to detect public holidays in the coming week.")
-            detected, ph_name, ph_date = drinks.next_public_holiday(ph_state, dt.date.today(), days=7)
-            # When the auto-detected value changes between runs, follow it — but leave the
-            # user free to override the checkbox within the same detection state.
+                                     help="Used to detect public holidays in the delivery window.")
+            _phs = drinks.public_holidays_within(ph_state, _today, days=cov_days - 1)
+            detected = bool(_phs)
             if st.session_state.get("_drink_ph_auto") != detected:
                 st.session_state["_drink_ph_auto"] = detected
                 st.session_state["drink_ph"] = detected
-            ph_on = hc2.checkbox("🎉 Public holiday in the coming week — order holiday quantities",
+            ph_on = hc2.checkbox("🎉 Public holiday in this window — use holiday quantities",
                                  key="drink_ph")
             if detected:
-                st.info(f"Auto-detected: **{ph_name}** on **{ph_date:%a %d %b}** "
-                        f"({ph_state}). Holiday quantities are on — untick to override.")
+                _names = ", ".join(f"{n} ({d:%a %d %b})" for d, n in _phs)
+                st.info(f"Auto-detected in this window ({ph_state}): **{_names}**. "
+                        "Holiday quantities are on — untick to override.")
             elif ph_on:
                 st.warning("Holiday quantities are **on** (manually). No public holiday "
-                           "detected in the next 7 days for this state.")
+                           "detected in this window for this state.")
 
             dsaved = c_load_drinks_counts()
             # Section + par stay in the master list (drinks.DRINK_ITEMS) and drive the
@@ -2064,14 +2079,14 @@ if tab_pack is not None:
                 st.success("Counts saved.")
             dinfo.caption("Saved to the app so a reload on your phone won't wipe your count.")
 
-            dorder = drinks.build_order(dcounts, public_holiday=ph_on)
+            dorder = drinks.build_order(dcounts, public_holiday=ph_on, weeks=weeks)
             n_drink = len(dorder)
 
             st.divider()
-            st.markdown("### 🧾 Drinks order to place"
+            st.markdown(f"### 🧾 Drinks order to place  ·  _~{weeks:.1f} wk window_"
                         + ("  ·  🎉 _public-holiday quantities_" if ph_on else ""))
             if n_drink == 0:
-                st.success("Nothing to order — everything's at or above par.")
+                st.success("Nothing to order — on-hand already covers the whole window.")
             else:
                 st.caption("Listed in the Coca-Cola order-site sequence — follow it straight "
                            "down the supplier's 'Frequently Ordered' page.")
