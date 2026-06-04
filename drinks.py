@@ -29,49 +29,55 @@ SECTION_ORDER = [
     "Juice",
 ]
 
-# (item, par, ph_par, section) — order matches the sheet (rows 5-39).
+# (item, par, ph_par, section, seq)
+#   par/ph_par  : normal & public-holiday target quantities (from the sheet)
+#   section     : the sheet's grouping (kept for reference)
+#   seq         : position on the Coca-Cola (CCEP) ordering site's "Frequently Ordered"
+#                 page, so the produced order follows that site top-to-bottom for easy
+#                 add-to-cart. Site products we don't stock are simply not listed here.
 _ITEMS = [
     # --- 390ml cans (rows 5-9) ---
-    ("Coke 390ml",              5,  6, "390ml Cans"),
-    ("Coke Zero 390ml",         8, 10, "390ml Cans"),
-    ("Diet Coke 390ml",         2,  3, "390ml Cans"),
-    ("Sprite 390ml",            2,  3, "390ml Cans"),
-    ("Fanta 390ml",             2,  3, "390ml Cans"),
+    ("Coke 390ml",              5,  6, "390ml Cans",     2),
+    ("Coke Zero 390ml",         8, 10, "390ml Cans",     5),
+    ("Diet Coke 390ml",         2,  3, "390ml Cans",     8),
+    ("Sprite 390ml",            2,  3, "390ml Cans",    13),
+    ("Fanta 390ml",             2,  3, "390ml Cans",    16),
     # --- 600ml bottles + water (rows 11-21) ---
-    ("Coke 600ml",              6,  8, "600ml Bottles"),
-    ("Coke Zero 600ml",         7, 10, "600ml Bottles"),
-    ("Diet Coke 600ml",         2,  2, "600ml Bottles"),
-    ("Vanilla Coke Zero 600ml", 2,  2, "600ml Bottles"),
-    ("Fanta 600ml",             3,  3, "600ml Bottles"),
-    ("Sprite 600ml",            3,  3, "600ml Bottles"),
-    ("Sprite Zero 600ml",       2,  2, "600ml Bottles"),
-    ("Fanta Lemon 600ml",       2,  2, "600ml Bottles"),
-    ("Pasito 600ml",            2,  2, "600ml Bottles"),
-    ("Sparkling Water",         2,  3, "600ml Bottles"),
-    ("Water",                   7,  9, "600ml Bottles"),
+    ("Coke 600ml",              6,  8, "600ml Bottles",  1),
+    ("Coke Zero 600ml",         7, 10, "600ml Bottles",  4),
+    ("Diet Coke 600ml",         2,  2, "600ml Bottles",  7),
+    ("Vanilla Coke Zero 600ml", 2,  2, "600ml Bottles", 11),
+    ("Fanta 600ml",             3,  3, "600ml Bottles", 15),
+    ("Sprite 600ml",            3,  3, "600ml Bottles", 12),
+    ("Sprite Zero 600ml",       2,  2, "600ml Bottles", 14),
+    ("Fanta Lemon 600ml",       2,  2, "600ml Bottles", 17),
+    ("Pasito 600ml",            2,  2, "600ml Bottles", 20),
+    ("Sparkling Water",         2,  3, "600ml Bottles", 24),
+    ("Water",                   7,  9, "600ml Bottles", 21),
     # --- Fuze Tea (rows 23-25) ---
-    ("Peach Fuze Tea",          3,  3, "Fuze Tea"),
-    ("Lemon Fuze Tea",          2,  2, "Fuze Tea"),
-    ("Mango Fuze Tea",          3,  3, "Fuze Tea"),
+    ("Peach Fuze Tea",          3,  3, "Fuze Tea",      34),
+    ("Lemon Fuze Tea",          2,  2, "Fuze Tea",      33),
+    ("Mango Fuze Tea",          3,  3, "Fuze Tea",      35),
     # --- Powerade (rows 27-31) — no public-holiday uplift ---
-    ("Purple Powerade",         2,  2, "Powerade"),
-    ("Blue Powerade",           3,  3, "Powerade"),
-    ("Yellow Powerade",         2,  2, "Powerade"),
-    ("Red Powerade",            3,  3, "Powerade"),
-    ("Orange Powerade",         2,  2, "Powerade"),
+    ("Purple Powerade",         2,  2, "Powerade",      29),  # Blackcurrant
+    ("Blue Powerade",           3,  3, "Powerade",      26),  # Mt Blast
+    ("Yellow Powerade",         2,  2, "Powerade",      28),  # Lemon Lime
+    ("Red Powerade",            3,  3, "Powerade",      27),  # Berry Ice
+    ("Orange Powerade",         2,  2, "Powerade",      30),  # Gold Rush
     # --- large bottles (rows 34-36) ---
-    ("Coke 1.25L",              2,  2, "1.25L & 1.5L"),
-    ("Coke Zero 1.25L",         2,  3, "1.25L & 1.5L"),
-    ("Water 1.5L",              2,  2, "1.25L & 1.5L"),
-    # --- juice (rows 38-39) ---
-    ("Apple Juice",             2,  3, "Juice"),
-    ("Orange Juice",            2,  3, "Juice"),
+    ("Coke 1.25L",              2,  2, "1.25L & 1.5L",   3),
+    ("Coke Zero 1.25L",         2,  3, "1.25L & 1.5L",   6),
+    ("Water 1.5L",              2,  2, "1.25L & 1.5L",  22),
+    # --- juice (rows 38-39) — Keri ---
+    ("Apple Juice",             2,  3, "Juice",         32),
+    ("Orange Juice",            2,  3, "Juice",         31),
 ]
 
-# Public list of dicts, in sheet order.
+# Public list of dicts, in SHEET order (the counting grid follows the physical fridge).
+# The produced order is sorted into CCEP site order (seq) by build_order().
 DRINK_ITEMS = [
-    {"item": it, "par": par, "ph_par": ph_par, "section": sec}
-    for (it, par, ph_par, sec) in _ITEMS
+    {"item": it, "par": par, "ph_par": ph_par, "section": sec, "seq": seq}
+    for (it, par, ph_par, sec, seq) in _ITEMS
 ]
 
 
@@ -90,42 +96,37 @@ def order_qty(par, on_hand):
 
 
 def build_order(counts, public_holiday=False):
-    """Turn an {item: on_hand} map into the order, grouped by section.
+    """Turn an {item: on_hand} map into the order, as a single flat list.
 
     When public_holiday is True, each drink refills to its ph_par instead of par.
-    Returns {section: [{"item", "par", "on_hand", "order"}, ...]} in SECTION_ORDER,
-    only including items with order > 0 and dropping empty sections.
+    Returns [{"item", "par", "on_hand", "order"}, ...] in CCEP ordering-site order
+    (by seq), only including items with order > 0 — so you can follow the order
+    straight down the supplier site.
     """
     counts = counts or {}
-    out = {sec: [] for sec in SECTION_ORDER}
+    out = []
     for row in DRINK_ITEMS:
         par = par_for(row, public_holiday)
         oh = counts.get(row["item"])
         qty = order_qty(par, oh)
         if qty <= 0:
             continue
-        out.setdefault(row["section"], []).append(
-            {"item": row["item"], "par": par,
-             "on_hand": float(oh or 0), "order": qty})
-    return {sec: items for sec, items in out.items() if items}
+        out.append({"item": row["item"], "par": par, "seq": row["seq"],
+                    "on_hand": float(oh or 0), "order": qty})
+    out.sort(key=lambda e: e["seq"])
+    return out
 
 
-def order_text(order_by_section, public_holiday=False):
-    """Plain-text drinks order, grouped by section."""
+def order_text(order_list, public_holiday=False):
+    """Plain-text drinks order — one line per item, in CCEP site order."""
     head = "Drinks order" + (" (PUBLIC HOLIDAY quantities)" if public_holiday else "")
     lines = [head, ""]
-    if not order_by_section:
+    if not order_list:
         lines.append("(nothing to order)")
         return "\n".join(lines)
-    for sec in SECTION_ORDER:
-        items = order_by_section.get(sec)
-        if not items:
-            continue
-        lines.append(f"{sec}:")
-        for e in items:
-            lines.append(f"  {e['order']:g} x {e['item']}")
-        lines.append("")
-    return "\n".join(lines).rstrip()
+    for e in order_list:
+        lines.append(f"{e['order']:g} x {e['item']}")
+    return "\n".join(lines)
 
 
 def public_holidays_within(state, start, days=7):

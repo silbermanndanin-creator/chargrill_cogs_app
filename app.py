@@ -2065,7 +2065,7 @@ if tab_pack is not None:
             dinfo.caption("Saved to the app so a reload on your phone won't wipe your count.")
 
             dorder = drinks.build_order(dcounts, public_holiday=ph_on)
-            n_drink = sum(len(v) for v in dorder.values())
+            n_drink = len(dorder)
 
             st.divider()
             st.markdown("### 🧾 Drinks order to place"
@@ -2073,15 +2073,12 @@ if tab_pack is not None:
             if n_drink == 0:
                 st.success("Nothing to order — everything's at or above par.")
             else:
-                for sec in drinks.SECTION_ORDER:
-                    sitems = dorder.get(sec)
-                    if not sitems:
-                        continue
-                    st.markdown(f"**{sec}**")
-                    st.dataframe(
-                        pd.DataFrame([{"Order": f"{e['order']:g}", "Item": e["item"]}
-                                      for e in sitems]),
-                        hide_index=True, width="stretch")
+                st.caption("Listed in the Coca-Cola order-site sequence — follow it straight "
+                           "down the supplier's 'Frequently Ordered' page.")
+                st.dataframe(
+                    pd.DataFrame([{"Order": f"{e['order']:g}", "Item": e["item"]}
+                                  for e in dorder]),
+                    hide_index=True, width="stretch")
                 st.caption("Copy-ready (tap the ⧉ icon top-right):")
                 st.code(drinks.order_text(dorder, public_holiday=ph_on), language=None)
 
