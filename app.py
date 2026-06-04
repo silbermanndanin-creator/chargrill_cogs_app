@@ -1811,12 +1811,12 @@ if tab_pack is not None:
                        "🟢 BIOPAK Horizons (grouped by category) and 🟡 A-Z Packaging.")
 
             saved = storage.load_packaging_counts()
+            # Supplier + par are kept in the master list (packaging.PACKAGING_ITEMS) and drive
+            # the finalised split below — the count grid stays minimal: just item + on hand.
             rows = []
             for it in packaging.PACKAGING_ITEMS:
                 rows.append({
                     "Item": it["item"],
-                    "Supplier": "🟢 BIOPAK" if it["supplier"] == packaging.BIOPAK else "🟡 A-Z",
-                    "Par": it["par"],
                     "QTY on hand": float(saved.get(it["item"], 0.0) or 0),
                 })
             pack_df = pd.DataFrame(rows)
@@ -1825,8 +1825,6 @@ if tab_pack is not None:
                 pack_df, hide_index=True, width="stretch", key="pack_edit",
                 column_config={
                     "Item": st.column_config.TextColumn(disabled=True),
-                    "Supplier": st.column_config.TextColumn(disabled=True, width="small"),
-                    "Par": st.column_config.NumberColumn(disabled=True, width="small"),
                     "QTY on hand": st.column_config.NumberColumn(min_value=0.0, step=0.5)})
 
             # Recompute the order live from the edited on-hand column every rerun.
