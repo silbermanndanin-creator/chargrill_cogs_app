@@ -6,7 +6,8 @@ from pydantic import BaseModel
 from PIL import Image, ImageOps
 import anthropic
 
-MODEL = "claude-sonnet-4-6"  # swap to claude-opus-4-7 for hard handwritten dockets
+MODEL = "claude-sonnet-4-6"          # fast, strong default for the first read
+ESCALATE_MODEL = "claude-opus-4-8"   # most capable — re-reads shaky invoices for reliability
 
 # Claude downscales any image whose long edge exceeds ~1568px before reading it,
 # so uploading a full 12MP phone photo just wastes upload time for no accuracy gain.
@@ -105,12 +106,70 @@ def _content_blocks(b64: str, media_type: str) -> list:
     return [_doc_block(b64, media_type), {"type": "text", "text": "Extract this supplier invoice."}]
 
 
+def _line_sum(inv: dict) -> float:
+    """Sum of the line-item amounts (robust to nulls / bad values)."""
+    s = 0.0
+    for li in inv.get("line_items") or []:
+        try:
+            s += float(li.get("amount") or 0)
+        except (TypeError, ValueError):
+            pass
+    return round(s, 2)
+
+
+def reconciliation(inv: dict) -> dict:
+    """Do the line amounts add up to the invoice total?
+
+    Line amounts can be ex-GST OR GST-inclusive depending on the invoice, so a match to
+    the ex-GST total, the inc-GST total, or ex-GST x1.1 all count as reconciling (otherwise
+    every GST-inclusive invoice would false-alarm). Tolerance is 2% or $0.50, whichever is
+    larger, to allow rounding / freight. Returns {checkable, ok, line_sum, target, diff}.
+    """
+    s = _line_sum(inv)
+    targets = []
+    for key in ("total_ex_gst", "total_inc_gst"):
+        v = inv.get(key)
+        if v:
+            try:
+                targets.append(round(float(v), 2))
+            except (TypeError, ValueError):
+                pass
+    ex = inv.get("total_ex_gst")
+    if ex:
+        try:
+            targets.append(round(float(ex) * 1.10, 2))  # inc-GST lines vs an ex-GST total
+        except (TypeError, ValueError):
+            pass
+    if not targets or s <= 0:
+        return {"checkable": False, "ok": True, "line_sum": s, "target": None, "diff": 0.0}
+    target = min(targets, key=lambda t: abs(s - t))  # closest plausible total
+    diff = round(s - target, 2)
+    ok = abs(diff) <= max(0.50, 0.02 * target)
+    return {"checkable": True, "ok": ok, "line_sum": s, "target": target, "diff": diff}
+
+
+def _read_invoice(client, model, content) -> InvoiceData:
+    resp = client.messages.parse(
+        model=model,
+        max_tokens=4000,
+        system=[{"type": "text", "text": SYSTEM, "cache_control": {"type": "ephemeral"}}],
+        messages=[{"role": "user", "content": content}],
+        output_format=InvoiceData,
+    )
+    return resp.parsed_output
+
+
 def extract_invoice(pages, media_type: Optional[str] = None,
                     client: Optional[anthropic.Anthropic] = None) -> InvoiceData:
     """Extract ONE invoice from one or more pages/photos.
 
     `pages` may be a single bytes object (with media_type) or a list of
     (file_bytes, media_type) tuples — all pages are combined into one invoice.
+
+    Reliability: the first read uses Sonnet. If it comes back below 'high' confidence
+    OR its line items don't reconcile to the total, the SAME invoice is re-read on Opus
+    (the most capable model) and that result is preferred — so the hard invoices get the
+    strongest model while the easy ones stay fast.
     """
     client = client or anthropic.Anthropic()
     if isinstance(pages, (bytes, bytearray)):
@@ -125,14 +184,18 @@ def extract_invoice(pages, media_type: Optional[str] = None,
                     f"Extract this supplier invoice. It is provided as {n} page(s)/photo(s) — "
                     "treat them as ONE invoice and combine all line items across the pages. "
                     "Use the grand total from the final page if a running total spans pages."})
-    resp = client.messages.parse(
-        model=MODEL,
-        max_tokens=4000,
-        system=[{"type": "text", "text": SYSTEM, "cache_control": {"type": "ephemeral"}}],
-        messages=[{"role": "user", "content": content}],
-        output_format=InvoiceData,
-    )
-    return resp.parsed_output
+
+    data = _read_invoice(client, MODEL, content)
+    if data.confidence != "high" or not reconciliation(data.model_dump())["ok"]:
+        try:
+            strong = _read_invoice(client, ESCALATE_MODEL, content)
+            # Prefer the Opus read unless it reconciles worse than the first pass.
+            if reconciliation(strong.model_dump())["ok"] or \
+                    not reconciliation(data.model_dump())["ok"]:
+                data = strong
+        except Exception:
+            pass  # escalation failed (network/limit) -> keep the first read, never crash
+    return data
 
 
 # ---------------- POS end-of-day takings slip ----------------

@@ -13,6 +13,7 @@ import metrics
 import packaging_order as packaging  # NB: file is packaging_order.py — must NOT shadow the 'packaging' PyPI lib
 import drinks
 from extract import extract_invoice, extract_pos_slip
+import extract
 from lightspeed import get_revenue
 import payroll
 try:
@@ -642,6 +643,15 @@ with tab_inv:
         else:
             st.dataframe(li_df, hide_index=True, width="stretch")
             save_lines = inv.get("line_items", [])
+        # Reliability check: do the (possibly edited) line amounts add up to the total?
+        rec = extract.reconciliation({"line_items": save_lines, "total_ex_gst": total,
+                                      "total_inc_gst": inv.get("total_inc_gst")})
+        if rec["checkable"] and not rec["ok"]:
+            st.warning(f"⚠️ Lines add up to **${rec['line_sum']:,.2f}**, but the total is "
+                       f"**${rec['target']:,.2f}** (off by ${abs(rec['diff']):,.2f}). "
+                       "Check for a missed, duplicated, or misread line before saving.")
+        elif rec["checkable"]:
+            st.caption(f"✅ Lines reconcile with the total (${rec['line_sum']:,.2f}).")
         dup = storage.find_duplicate(config.canonicalize(supplier_raw), inv_date, float(total))
         dup_ok = True
         if dup is not None:
