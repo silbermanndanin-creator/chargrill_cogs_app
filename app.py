@@ -11,6 +11,7 @@ import config
 import storage
 import metrics
 import packaging
+import drinks
 from extract import extract_invoice, extract_pos_slip
 from lightspeed import get_revenue
 import payroll
@@ -1801,8 +1802,8 @@ if tab_order is not None:
 if tab_pack is not None:
     with tab_pack:
         st.markdown("#### 📦 Ordering")
-        # Packaging is the first ordering section; more (e.g. food) can be added as sub-tabs.
-        (sub_pack,) = st.tabs(["Packaging"])
+        # Packaging is the first ordering section; more can be added as sub-tabs.
+        sub_pack, sub_drink = st.tabs(["Packaging", "Drinks"])
         with sub_pack:
             st.caption("Count what's on the shelf and enter **QTY on hand** — you can use halves "
                        "(e.g. 2.5) for part-used boxes. The app refills each item to par, rounds "
@@ -1878,6 +1879,61 @@ if tab_pack is not None:
                             hide_index=True, width="stretch")
                         st.caption("Copy-ready (tap the ⧉ icon top-right):")
                         st.code(packaging.order_text_az(az), language=None)
+
+        with sub_drink:
+            st.caption("Count the fridge/store and enter **QTY on hand** (halves OK for "
+                       "part cases). The app refills each drink to par, rounds the order "
+                       "**up** to whole units, and groups it by the sheet's sections.")
+
+            dsaved = storage.load_drinks_counts()
+            drows = []
+            for it in drinks.DRINK_ITEMS:
+                drows.append({
+                    "Item": it["item"],
+                    "Section": it["section"],
+                    "Par": it["par"],
+                    "QTY on hand": float(dsaved.get(it["item"], 0.0) or 0),
+                })
+            drink_df = pd.DataFrame(drows)
+
+            dedit = st.data_editor(
+                drink_df, hide_index=True, width="stretch", key="drink_edit",
+                column_config={
+                    "Item": st.column_config.TextColumn(disabled=True),
+                    "Section": st.column_config.TextColumn(disabled=True, width="small"),
+                    "Par": st.column_config.NumberColumn(disabled=True, width="small"),
+                    "QTY on hand": st.column_config.NumberColumn(min_value=0.0, step=0.5)})
+
+            dcounts = {}
+            for _, r in dedit.iterrows():
+                v = pd.to_numeric(r["QTY on hand"], errors="coerce")
+                dcounts[r["Item"]] = 0.0 if pd.isna(v) else float(v)
+
+            dsave, dinfo = st.columns([1, 3])
+            if dsave.button("💾 Save counts", key="drink_save"):
+                storage.save_drinks_counts(dcounts)
+                st.success("Counts saved.")
+            dinfo.caption("Saved to the app so a reload on your phone won't wipe your count.")
+
+            dorder = drinks.build_order(dcounts)
+            n_drink = sum(len(v) for v in dorder.values())
+
+            st.divider()
+            st.markdown("### 🧾 Drinks order to place")
+            if n_drink == 0:
+                st.success("Nothing to order — everything's at or above par.")
+            else:
+                for sec in drinks.SECTION_ORDER:
+                    sitems = dorder.get(sec)
+                    if not sitems:
+                        continue
+                    st.markdown(f"**{sec}**")
+                    st.dataframe(
+                        pd.DataFrame([{"Order": f"{e['order']:g}", "Item": e["item"]}
+                                      for e in sitems]),
+                        hide_index=True, width="stretch")
+                st.caption("Copy-ready (tap the ⧉ icon top-right):")
+                st.code(drinks.order_text(dorder), language=None)
 
 
 # ============ Daily digest tab (all roles; role-aware) ============

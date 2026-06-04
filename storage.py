@@ -43,6 +43,8 @@ STOCK_ITEMS_PATH = os.path.join(DATA_DIR, "stock_items.csv")
 STOCK_ITEMS_COLUMNS = ["item", "supplier", "unit", "unit_price"]
 PACKAGING_PATH = os.path.join(DATA_DIR, "packaging_counts.csv")
 PACKAGING_COLUMNS = ["item", "on_hand", "updated_at"]
+DRINKS_PATH = os.path.join(DATA_DIR, "drinks_counts.csv")
+DRINKS_COLUMNS = ["item", "on_hand", "updated_at"]
 
 
 def iso_week_of(d: dt.date) -> str:
@@ -495,6 +497,56 @@ def save_packaging_counts(counts: dict):
     else:
         _ensure_csv(PACKAGING_PATH, PACKAGING_COLUMNS)
         pd.DataFrame(rows, columns=PACKAGING_COLUMNS).to_csv(PACKAGING_PATH, index=False)
+
+
+# ---------- drinks order pad (on-hand counts, item -> qty on hand) ----------
+def load_drinks_counts() -> dict:
+    """{item name: on-hand qty} — the last saved drinks stocktake."""
+    if _use_supabase():
+        try:
+            rows = _client().table("drinks_counts").select("*").execute().data or []
+        except Exception:
+            return {}
+    else:
+        _ensure_csv(DRINKS_PATH, DRINKS_COLUMNS)
+        df = pd.read_csv(DRINKS_PATH)
+        rows = df.to_dict("records") if not df.empty else []
+    out = {}
+    for r in rows:
+        it = str(r.get("item") or "").strip()
+        if not it:
+            continue
+        try:
+            out[it] = float(r.get("on_hand") or 0)
+        except (TypeError, ValueError):
+            out[it] = 0.0
+    return out
+
+
+def save_drinks_counts(counts: dict):
+    """Replace the whole drinks on-hand map. counts = {item: on_hand}."""
+    now = dt.datetime.now().isoformat(timespec="seconds")
+    rows, seen = [], set()
+    for it, oh in (counts or {}).items():
+        name = str(it or "").strip()
+        if not name or name.lower() in seen:
+            continue
+        seen.add(name.lower())
+        try:
+            val = round(float(oh or 0), 2)
+        except (TypeError, ValueError):
+            val = 0.0
+        rows.append({"item": name, "on_hand": val, "updated_at": now})
+    if _use_supabase():
+        try:
+            _client().table("drinks_counts").delete().neq("item", "").execute()
+            if rows:
+                _client().table("drinks_counts").insert(rows).execute()
+        except Exception:
+            pass  # table not created yet -> degrade silently
+    else:
+        _ensure_csv(DRINKS_PATH, DRINKS_COLUMNS)
+        pd.DataFrame(rows, columns=DRINKS_COLUMNS).to_csv(DRINKS_PATH, index=False)
 
 
 # ---------- weekly stocktake (closing stock $ value, for TRUE COGS) ----------

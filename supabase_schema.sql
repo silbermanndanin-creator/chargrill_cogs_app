@@ -124,6 +124,14 @@ create table if not exists packaging_counts (
     updated_at  text
 );
 
+-- Drinks order pad: on-hand counts from the latest drinks stocktake (same shape as
+-- packaging_counts; single supplier, no colour split).
+create table if not exists drinks_counts (
+    item        text primary key,
+    on_hand     numeric,
+    updated_at  text
+);
+
 -- Food Safety daily temperature records — one record per day, stored as a JSON blob
 -- (managers, all section temps, chicken cooks). Enables upsert on date.
 create table if not exists food_safety (
