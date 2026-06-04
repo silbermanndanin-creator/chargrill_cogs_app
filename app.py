@@ -10,7 +10,7 @@ import plotly.graph_objects as go
 import config
 import storage
 import metrics
-import packaging
+import packaging_order as packaging  # NB: file is packaging_order.py — must NOT shadow the 'packaging' PyPI lib
 import drinks
 from extract import extract_invoice, extract_pos_slip
 from lightspeed import get_revenue
