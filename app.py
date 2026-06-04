@@ -2014,20 +2014,32 @@ if tab_pack is not None:
                        "window below, count the fridge (**QTY on hand**, halves OK), and the "
                        "app scales each drink to the window and rounds the order **up**.")
 
-            # --- Delivery window: order placed today, lasts until a chosen date ---
+            # --- Delivery run. Normal cadence is two orders a week, each covering until
+            #     the next delivery: Mon order -> Wed delivery (last till Sun), and
+            #     Thu order -> Mon delivery (last till Tue). ---
             _today = dt.date.today()
-            _def_deliv = drinks.default_delivery(_today)          # next Tuesday
-            _def_until = _def_deliv + dt.timedelta(days=6)        # the Monday after it
-            wc1, wc2 = st.columns(2)
-            deliv = wc1.date_input("Delivery date", value=_def_deliv, key="drink_deliv",
-                                   help="When this order arrives.")
-            until = wc2.date_input("Stock must last until", value=_def_until, key="drink_until",
-                                   help="Usually the day before the next delivery.")
+            _runs = ["Mon order → Wed delivery  ·  last till Sun",
+                     "Thu order → Mon delivery  ·  last till Tue",
+                     "Custom dates"]
+            _def_run = 1 if _today.weekday() in (2, 3, 4) else 0  # Wed/Thu/Fri -> Thu run
+            run = st.radio("Which order run is this?", _runs, index=_def_run, key="drink_run")
+            if run == _runs[0]:            # Mon -> Wed delivery, last till Sun
+                deliv = drinks.default_delivery(_today, 2)        # Wednesday
+                until = deliv + dt.timedelta(days=4)              # the Sunday after
+            elif run == _runs[1]:          # Thu -> Mon delivery, last till Tue
+                deliv = drinks.default_delivery(_today, 0)        # Monday
+                until = deliv + dt.timedelta(days=1)              # the Tuesday after
+            else:                          # Custom
+                _cd = drinks.default_delivery(_today)
+                wc1, wc2 = st.columns(2)
+                deliv = wc1.date_input("Delivery date", value=_cd, key="drink_deliv",
+                                       help="When this order arrives.")
+                until = wc2.date_input("Stock must last until", value=_cd + dt.timedelta(days=6),
+                                       key="drink_until", help="Day before the next delivery.")
             cov_days, weeks = drinks.coverage(_today, until)
             st.caption(f"📦 Ordering today (**{_today:%a %d %b}**) for **{deliv:%a %d %b}** "
                        f"delivery, to last until **{until:%a %d %b}** — covering "
-                       f"**{cov_days} days (~{weeks:.1f} weeks)**. Weekly quantities are scaled "
-                       "to this window.")
+                       f"**{cov_days} days (~{weeks:.1f} weeks)**. Weekly quantities scale to this.")
 
             # --- Public holidays anywhere IN the window: auto-detect, manual override ---
             hc1, hc2 = st.columns([1, 2])
