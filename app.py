@@ -312,6 +312,112 @@ def dark(fig, h=320):
     return fig
 
 
+# ============ Cached data loaders (performance) ============
+# Streamlit reruns the WHOLE script on every interaction (tap, keystroke, tab switch),
+# and st.tabs runs every tab's body each time. Without caching that meant ~17 Supabase
+# round-trips + re-parsing every invoice on every rerun — the main source of lag.
+# These memoise the reads; any write calls bust_caches() so the UI still reflects saves.
+_CACHE_TTL = 600  # seconds — safety net; writes clear the cache immediately anyway
+
+
+def bust_caches():
+    """Drop all cached reads — call right after any save/update/delete."""
+    st.cache_data.clear()
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def c_load_invoices():
+    return storage.load_invoices()
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def c_explode_lines():
+    return metrics.explode_lines(c_load_invoices())
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def c_load_pos_days():
+    return storage.load_pos_days()
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def c_revenue_map(period_type):
+    return storage.revenue_map(period_type)
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def c_labour_for_period(mode, period_key):
+    return storage.labour_for_period(mode, period_key)
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def c_labour_cost_map_for(mode):
+    return storage.labour_cost_map_for(mode)
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def c_labour_map(period_type):
+    return storage.labour_map(period_type)
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def c_load_stock_items():
+    return storage.load_stock_items()
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def c_stock_value_map():
+    return storage.stock_value_map()
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def c_load_contracts():
+    return storage.load_contracts()
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def c_load_variation_events():
+    return storage.load_variation_events()
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def c_load_food_safety():
+    return storage.load_food_safety()
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def c_load_payroll_setup():
+    return storage.load_payroll_setup()
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def c_load_packaging_counts():
+    return storage.load_packaging_counts()
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def c_load_drinks_counts():
+    return storage.load_drinks_counts()
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def c_load_invoice_images(saved_at):
+    return storage.load_invoice_images(saved_at)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def c_lightspeed_revenue(start, end, token, business_id):
+    # Network call (up to 20s). Cached 5 min so it never blocks every rerun.
+    return get_revenue(start, end, token, business_id)
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def c_build_digest(day):
+    # build_digest re-loads invoices/POS/labour; cache it (busted on any write).
+    import digest as _digest
+    return _digest.build_digest(day)
+
+
 # ============ Sidebar: period + revenue ============
 with st.sidebar:
     st.markdown("### 🍗 Chargrill COGS")
@@ -347,9 +453,9 @@ with st.sidebar:
         p_col, p_type = "month", "month"
     st.caption(f"📆 Showing: **{period_label}**")
 
-    pos_df = storage.load_pos_days()
+    pos_df = c_load_pos_days()
     pos_map = metrics.pos_revenue_map(pos_df, p_col)
-    manual_map = storage.revenue_map(p_type)
+    manual_map = c_revenue_map(p_type)
 
     # Revenue: owner picks the source and sees the figure. Chef never sees revenue,
     # but we still compute it silently so COGS % / Labour % can be shown.
@@ -373,6 +479,7 @@ with st.sidebar:
             revenue = st.number_input(f"{mode} net sales $", min_value=0.0, step=1000.0, value=stored)
             if revenue > 0 and revenue != stored:
                 storage.set_revenue(p_type, period_key, revenue)
+                bust_caches()
                 manual_map[period_key] = revenue
         else:
             try:
@@ -380,7 +487,7 @@ with st.sidebar:
                 biz = st.secrets.get("LIGHTSPEED_BUSINESS_ID")
             except Exception:
                 token = biz = None
-            r = get_revenue(p_start, p_end, token, biz)
+            r = c_lightspeed_revenue(p_start, p_end, token, biz)
             revenue = float(r) if r else 0.0
             if r:
                 st.caption(f"🟢 Lightspeed: **${revenue:,.0f}** ex-GST for this {mode.lower()}.")
@@ -398,7 +505,7 @@ with st.sidebar:
     # ---- Labour ----
     # Hours feed the dashboard's BOH-hours card (visible to everyone). Gross wages
     # are owner-only and shown/edited here only in the owner view.
-    labour_cost, labour_hours, labour_foh, labour_boh = storage.labour_for_period(mode, period_key)
+    labour_cost, labour_hours, labour_foh, labour_boh = c_labour_for_period(mode, period_key)
     if owner:
         st.divider()
         st.markdown("**Labour (gross wages)**")
@@ -414,13 +521,14 @@ with st.sidebar:
                                      value=float(labour_hours), key="lab_hours")
                 if mc > 0 and (mc != labour_cost or mh != labour_hours):
                     storage.set_labour("week", period_key, mc, mh, labour_foh, labour_boh)
+                    bust_caches()
                     labour_cost, labour_hours = mc, mh
         else:
             if labour_cost:
                 st.caption(f"**${labour_cost:,.0f}** gross (sum of weeks in {period_label})")
             else:
                 st.caption("No labour logged this month — add weeks in **🧮 Labour**.")
-    labour_cost_map = storage.labour_cost_map_for(mode)
+    labour_cost_map = c_labour_cost_map_for(mode)
 
     # ---- Current role / switch user ----
     st.divider()
@@ -430,8 +538,8 @@ with st.sidebar:
             st.session_state.pop(_k, None)
         st.rerun()
 
-df = storage.load_invoices()
-lines = metrics.explode_lines(df)
+df = c_load_invoices()
+lines = c_explode_lines()
 
 st.markdown(f"""<div class="appbar">
   <div class="brand">
@@ -552,6 +660,7 @@ with tab_inv:
             _imgs = st.session_state.get("inv_img")
             if _imgs:
                 storage.save_invoice_image(_row["saved_at"], _imgs)
+            bust_caches()
             st.session_state["flash"] = True
             st.session_state["flash_msg"] = f"Saved {canon} — ${total:,.2f}"
             st.session_state.pop("inv", None)
@@ -600,6 +709,7 @@ if tab_pos is not None:
                     + (f"  ·  Bite ${pbite:,.2f}" if pbite else ""))
             if st.button("✅ Save day's takings", key="possave"):
                 storage.save_pos_day(pdate, ptot, pdd, pue, pbite, pcash)
+                bust_caches()
                 st.session_state["pflash"] = True
                 st.session_state["pflash_msg"] = f"Saved {pdate}: ${adj_ex:,.0f} ex-GST"
                 st.session_state.pop("pos", None)
@@ -647,7 +757,7 @@ if tab_lab is not None:
                    "full penalty rates for casuals) and feeds the week's gross wages into "
                    "Labour % / Prime cost % on the dashboard.")
 
-        setup = storage.load_payroll_setup()
+        setup = c_load_payroll_setup()
         with st.expander("⚙️ Payroll setup file" + ("" if setup else "  — REQUIRED"),
                          expanded=not setup):
             if setup:
@@ -660,6 +770,7 @@ if tab_lab is not None:
                 try:
                     payroll.load_setup_from_bytes(su.getvalue())  # validate it parses first
                     storage.save_payroll_setup(su.name, su.getvalue())
+                    bust_caches()
                     st.success("Setup saved.")
                     st.rerun()
                 except Exception as e:
@@ -793,6 +904,7 @@ if tab_lab is not None:
                 if st.button(f"✅ Save labour to {iso}", key="savelab"):
                     storage.set_labour("week", iso, out["total_gross"], out["total_hours"],
                                        foh_hours, boh_hours)
+                    bust_caches()
                     st.session_state.pop("pay", None)
                     st.session_state["lab_flash"] = iso
                     st.rerun()
@@ -969,6 +1081,7 @@ if tab_temp is not None:
                 if saved and not saved.get("_final", True) and _fs_due(tday):
                     saved = {**fsafe.merge_entry(tday, saved), "_final": True}
                     storage.save_food_safety(tday, saved)
+                    bust_caches()
                 base = saved if saved else fsafe.blank_entry(tday)
                 is_final = bool(saved) and saved.get("_final", True)
 
@@ -1016,10 +1129,12 @@ if tab_temp is not None:
                 b = st.columns(2)
                 if b[0].button("💾 Save progress (keep blanks)", key="ts_draft"):
                     storage.save_food_safety(tday, {**ent, "_final": False})
+                    bust_caches()
                     st.session_state["ts_flash"] = "📝 Progress saved — blanks kept for later."
                     st.rerun()
                 if b[1].button("✅ Finalise day (auto-fill blanks)", type="primary", key="ts_final"):
                     storage.save_food_safety(tday, {**fsafe.merge_entry(tday, ent), "_final": True})
+                    bust_caches()
                     st.session_state["ts_flash"] = "✅ Finalised — blanks auto-filled and saved to history."
                     st.rerun()
                 if st.session_state.get("ts_flash"):
@@ -1031,7 +1146,7 @@ if tab_temp is not None:
                                    file_name=f"Food Safety Temps - {tday:%d %b %Y}.xlsx", mime=XLMIME)
 
             else:  # History
-                hist = storage.load_food_safety()
+                hist = c_load_food_safety()
                 if hist.empty:
                     st.info("No saved records yet — enter a day under ✍️ Daily entry and save it.")
                 else:
@@ -1079,7 +1194,7 @@ with tab_dash:
     prime_pct = (prime_cost / revenue) if revenue > 0 else None
     pstat = config.prime_status(prime_pct) if prime_pct is not None else "amber"
     # Week-over-week & month-over-month labour change (independent of the view mode)
-    _wkmap = storage.labour_map("week")
+    _wkmap = c_labour_map("week")
     def _wk_cost(d):
         return _wkmap.get(storage.iso_week_of(d), {}).get("cost", 0.0)
     def _mo_cost(d):
@@ -1182,7 +1297,7 @@ with tab_dash:
                        "Blueseas (Broadline)": "🌊 Blueseas"}
     if mode == "Week":
         st.markdown("**📦 Weekly stocktake → true COGS**")
-        _items = [i for i in storage.load_stock_items() if i.get("supplier") in STOCK_SUPPLIERS]
+        _items = [i for i in c_load_stock_items() if i.get("supplier") in STOCK_SUPPLIERS]
 
         # 1) Manage the products counted (Baida / Veggies / Blueseas only)
         with st.expander(f"🧾 Stock items & prices ({len(_items)})", expanded=not _items):
@@ -1214,6 +1329,7 @@ with tab_dash:
             if _b[1].button("💾 Save stock items", key="stockitems_save"):
                 _keep = [r for r in _ie.to_dict("records") if r.get("supplier") in STOCK_SUPPLIERS]
                 storage.save_stock_items(_keep)
+                bust_caches()
                 st.session_state["stk_flash"] = True
                 st.rerun()
         if st.session_state.pop("stk_flash", None):
@@ -1248,12 +1364,13 @@ with tab_dash:
             st.markdown(f"**Closing stock value this week: ${_total:,.0f}**")
             if st.button("💾 Save this week's stocktake", type="primary", key="stock_save_wk"):
                 storage.set_stock_value(period_key, _total)
+                bust_caches()
                 st.session_state["stk_flash2"] = f"Saved ${_total:,.0f} closing stock for {period_key}."
                 st.rerun()
             if st.session_state.pop("stk_flash2", None):
                 st.success("Stocktake saved.")
 
-            _smap = storage.stock_value_map()
+            _smap = c_stock_value_map()
             _prev_wk = storage.iso_week_of(ref - dt.timedelta(days=7))
             _opening = _smap.get(_prev_wk)
             _close = _smap.get(period_key, _total)
@@ -1544,6 +1661,7 @@ with tab_list:
                     if st.button(f"Remove {len(grp)-1} duplicate(s), keep earliest", key=f"dedup{i}"):
                         for sa in grp["saved_at"].astype(str).tolist()[1:]:
                             storage.delete_invoice(sa)
+                        bust_caches()
                         st.session_state["del_flash"] = f"Removed {len(grp) - 1} duplicate(s)"
                         st.rerun()
 
@@ -1559,7 +1677,7 @@ with tab_list:
                            for _, r in pv.iterrows()}
                 psel = st.selectbox("Invoice", list(plabels),
                                     format_func=lambda s: plabels[s], key="photo_sel")
-                _imgs = storage.load_invoice_images(psel)
+                _imgs = c_load_invoice_images(psel)
                 if not _imgs:
                     st.caption("No photo stored for this invoice "
                                "(only invoices added after this update keep their image).")
@@ -1623,6 +1741,7 @@ with tab_list:
                                      or pd.notna(r.get("amount"))]
                         storage.update_invoice(esel, e_sup, e_date.isoformat(),
                                                float(e_total), new_items)
+                        bust_caches()
                         st.session_state["edit_flash"] = f"Updated: {e_date} · {e_sup}"
                         st.rerun()
 
@@ -1640,6 +1759,7 @@ with tab_list:
             confirm = st.checkbox("Yes, permanently delete this invoice", key="del_confirm")
             if st.button("Delete invoice", key="del_btn", disabled=not confirm):
                 storage.delete_invoice(chosen)
+                bust_caches()
                 st.session_state["del_flash"] = labels.get(chosen, "invoice")
                 st.rerun()
 
@@ -1675,7 +1795,7 @@ def _accountant_pack_xlsx(month_key, inv_df, pos_df):
     buf = io.BytesIO()
     inv = inv_df[inv_df["month"] == month_key] if not inv_df.empty else inv_df.iloc[0:0]
     pos = pos_df[pos_df["month"] == month_key] if not pos_df.empty else pos_df.iloc[0:0]
-    lab = storage.labour_map("week")
+    lab = c_labour_map("week")
     lab_rows = [{"ISO week": k, "Gross wages $": v["cost"], "Hours": v["hours"],
                  "FOH hours": v["foh"], "BOH hours": v["boh"]}
                 for k, v in sorted(lab.items()) if storage._iso_week_month(k) == month_key]
@@ -1810,7 +1930,7 @@ if tab_pack is not None:
                        "the order **up** to whole units, then splits it by supplier: "
                        "🟢 BIOPAK Horizons (grouped by category) and 🟡 A-Z Packaging.")
 
-            saved = storage.load_packaging_counts()
+            saved = c_load_packaging_counts()
             # Supplier + par are kept in the master list (packaging.PACKAGING_ITEMS) and drive
             # the finalised split below — the count grid stays minimal: just item + on hand.
             rows = []
@@ -1836,6 +1956,7 @@ if tab_pack is not None:
             csave, cinfo = st.columns([1, 3])
             if csave.button("💾 Save counts", key="pack_save"):
                 storage.save_packaging_counts(counts)
+                bust_caches()
                 st.success("Counts saved.")
             cinfo.caption("Saved to the app so a reload on your phone won't wipe your count.")
 
@@ -1904,7 +2025,7 @@ if tab_pack is not None:
                 st.warning("Holiday quantities are **on** (manually). No public holiday "
                            "detected in the next 7 days for this state.")
 
-            dsaved = storage.load_drinks_counts()
+            dsaved = c_load_drinks_counts()
             # Section + par stay in the master list (drinks.DRINK_ITEMS) and drive the
             # finalised order below — the count grid stays minimal: just item + on hand.
             drows = []
@@ -1929,6 +2050,7 @@ if tab_pack is not None:
             dsave, dinfo = st.columns([1, 3])
             if dsave.button("💾 Save counts", key="drink_save"):
                 storage.save_drinks_counts(dcounts)
+                bust_caches()
                 st.success("Counts saved.")
             dinfo.caption("Saved to the app so a reload on your phone won't wipe your count.")
 
@@ -1960,8 +2082,7 @@ if tab_digest is not None:
         st.markdown("#### 📨 Today's digest")
         st.caption("A snapshot you can glance at any time — the same summary is emailed each "
                    "morning once the email digest is set up.")
-        import digest as _digest
-        d = _digest.build_digest(dt.date.today())
+        d = c_build_digest(dt.date.today())
         gp = config.TOTAL_COGS_GREEN
         _cp = d["cogs_pct"]
         _cp_status = COLORS[config.total_status(_cp)] if _cp is not None else "#8b95a7"
@@ -2010,7 +2131,7 @@ if tab_var is not None:
                    "combine into one dated letter. **Letters are drafts — review and sign before issuing.**")
 
         # ---- Manage contracted patterns (stored in DB, not in git) ----
-        cmap = storage.load_contracts()
+        cmap = c_load_contracts()
         with st.expander(f"✏️ Part-time contracts ({len(cmap)} on file)", expanded=not cmap):
             st.caption("One row per employee + contracted day. Day = Mon/Tue/.../Sun; "
                        "times as 24h HH:MM. Edits are saved to your database.")
@@ -2035,6 +2156,7 @@ if tab_var is not None:
                     storage.delete_contract(emp)
                 for emp, days in new_map.items():
                     storage.save_contract(emp, days)
+                bust_caches()
                 st.session_state["var_flash"] = f"Saved contracts for {len(new_map)} employee(s)."
                 st.rerun()
         if not cmap:
@@ -2071,6 +2193,7 @@ if tab_var is not None:
                 st.dataframe(pd.DataFrame(vrows), hide_index=True, width="stretch")
                 if st.button("💾 Save this week's variations to file", type="primary", key="var_save"):
                     saved = storage.save_variation_events(vmap, wk_end)
+                    bust_caches()
                     st.session_state["var_flash"] = f"Saved {saved} variation event(s) to file."
                     st.rerun()
         if st.session_state.pop("var_flash", None):
@@ -2078,7 +2201,7 @@ if tab_var is not None:
 
         st.divider()
         st.markdown("**📄 Variation letters — recurring changes combined**")
-        allev = storage.load_variation_events()
+        allev = c_load_variation_events()
         if allev.empty:
             st.caption("No variations on file yet — save a week above to start building the history.")
         else:
