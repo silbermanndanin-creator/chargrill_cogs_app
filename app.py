@@ -1905,12 +1905,12 @@ if tab_pack is not None:
                            "detected in the next 7 days for this state.")
 
             dsaved = storage.load_drinks_counts()
+            # Section + par stay in the master list (drinks.DRINK_ITEMS) and drive the
+            # finalised order below — the count grid stays minimal: just item + on hand.
             drows = []
             for it in drinks.DRINK_ITEMS:
                 drows.append({
                     "Item": it["item"],
-                    "Section": it["section"],
-                    "Par": drinks.par_for(it, ph_on),
                     "QTY on hand": float(dsaved.get(it["item"], 0.0) or 0),
                 })
             drink_df = pd.DataFrame(drows)
@@ -1919,9 +1919,6 @@ if tab_pack is not None:
                 drink_df, hide_index=True, width="stretch", key="drink_edit",
                 column_config={
                     "Item": st.column_config.TextColumn(disabled=True),
-                    "Section": st.column_config.TextColumn(disabled=True, width="small"),
-                    "Par": st.column_config.NumberColumn(
-                        "Par (PH)" if ph_on else "Par", disabled=True, width="small"),
                     "QTY on hand": st.column_config.NumberColumn(min_value=0.0, step=0.5)})
 
             dcounts = {}
