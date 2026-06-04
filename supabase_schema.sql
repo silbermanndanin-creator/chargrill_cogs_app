@@ -116,6 +116,14 @@ create table if not exists stocktake (
     updated_at   text
 );
 
+-- Packaging order pad: on-hand counts from the latest packaging stocktake. The whole
+-- map is replaced on each save (one row per item). Order qty is derived in the app.
+create table if not exists packaging_counts (
+    item        text primary key,
+    on_hand     numeric,
+    updated_at  text
+);
+
 -- Food Safety daily temperature records — one record per day, stored as a JSON blob
 -- (managers, all section temps, chicken cooks). Enables upsert on date.
 create table if not exists food_safety (

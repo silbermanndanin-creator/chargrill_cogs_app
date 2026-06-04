@@ -41,6 +41,8 @@ CONTRACT_PATH = os.path.join(DATA_DIR, "contracts.csv")
 CONTRACT_COLUMNS = ["employee", "weekday", "start", "finish"]
 STOCK_ITEMS_PATH = os.path.join(DATA_DIR, "stock_items.csv")
 STOCK_ITEMS_COLUMNS = ["item", "supplier", "unit", "unit_price"]
+PACKAGING_PATH = os.path.join(DATA_DIR, "packaging_counts.csv")
+PACKAGING_COLUMNS = ["item", "on_hand", "updated_at"]
 
 
 def iso_week_of(d: dt.date) -> str:
@@ -443,6 +445,56 @@ def save_stock_items(items):
     else:
         _ensure_csv(STOCK_ITEMS_PATH, STOCK_ITEMS_COLUMNS)
         pd.DataFrame(rows, columns=STOCK_ITEMS_COLUMNS).to_csv(STOCK_ITEMS_PATH, index=False)
+
+
+# ---------- packaging order pad (on-hand counts, item -> qty on hand) ----------
+def load_packaging_counts() -> dict:
+    """{item name: on-hand qty} — the last saved packaging stocktake."""
+    if _use_supabase():
+        try:
+            rows = _client().table("packaging_counts").select("*").execute().data or []
+        except Exception:
+            return {}
+    else:
+        _ensure_csv(PACKAGING_PATH, PACKAGING_COLUMNS)
+        df = pd.read_csv(PACKAGING_PATH)
+        rows = df.to_dict("records") if not df.empty else []
+    out = {}
+    for r in rows:
+        it = str(r.get("item") or "").strip()
+        if not it:
+            continue
+        try:
+            out[it] = float(r.get("on_hand") or 0)
+        except (TypeError, ValueError):
+            out[it] = 0.0
+    return out
+
+
+def save_packaging_counts(counts: dict):
+    """Replace the whole packaging on-hand map. counts = {item: on_hand}."""
+    now = dt.datetime.now().isoformat(timespec="seconds")
+    rows, seen = [], set()
+    for it, oh in (counts or {}).items():
+        name = str(it or "").strip()
+        if not name or name.lower() in seen:
+            continue
+        seen.add(name.lower())
+        try:
+            val = round(float(oh or 0), 2)
+        except (TypeError, ValueError):
+            val = 0.0
+        rows.append({"item": name, "on_hand": val, "updated_at": now})
+    if _use_supabase():
+        try:
+            _client().table("packaging_counts").delete().neq("item", "").execute()
+            if rows:
+                _client().table("packaging_counts").insert(rows).execute()
+        except Exception:
+            pass  # table not created yet -> degrade silently
+    else:
+        _ensure_csv(PACKAGING_PATH, PACKAGING_COLUMNS)
+        pd.DataFrame(rows, columns=PACKAGING_COLUMNS).to_csv(PACKAGING_PATH, index=False)
 
 
 # ---------- weekly stocktake (closing stock $ value, for TRUE COGS) ----------

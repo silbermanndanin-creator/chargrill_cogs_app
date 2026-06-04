@@ -10,6 +10,7 @@ import plotly.graph_objects as go
 import config
 import storage
 import metrics
+import packaging
 from extract import extract_invoice, extract_pos_slip
 from lightspeed import get_revenue
 import payroll
@@ -456,15 +457,15 @@ if st.button(_toggle_label, key="theme_toggle", help="Toggle light / dark mode")
 # Owner sees all tabs; chef sees only the cost/operations tabs.
 if owner:
     (tab_dash, tab_inv, tab_pos, tab_lab, tab_veg, tab_list,
-     tab_recon, tab_temp, tab_rep, tab_order, tab_digest, tab_var) = st.tabs(
+     tab_recon, tab_temp, tab_rep, tab_order, tab_pack, tab_digest, tab_var) = st.tabs(
         ["📊 Dashboard", "📸 Add invoice", "💰 Daily takings", "🧮 Labour",
          "🥬 Veggie prices", "📋 Invoices", "🧾 Reconciliation", "🌡️ Temp records",
-         "📈 Reports", "🛒 Order pad", "📨 Daily digest", "📝 Variations"])
+         "📈 Reports", "🛒 Order pad", "📦 Ordering", "📨 Daily digest", "📝 Variations"])
 else:
     (tab_dash, tab_inv, tab_veg, tab_list, tab_temp,
-     tab_order, tab_digest) = st.tabs(
+     tab_order, tab_pack, tab_digest) = st.tabs(
         ["📊 Dashboard", "📸 Add invoice", "🥬 Veggie prices", "📋 Invoices",
-         "🌡️ Temp records", "🛒 Order pad", "📨 Daily digest"])
+         "🌡️ Temp records", "🛒 Order pad", "📦 Ordering", "📨 Daily digest"])
     tab_pos = tab_lab = tab_recon = tab_rep = tab_var = None
 
 # ============ Add-invoice tab ============
@@ -1794,6 +1795,89 @@ if tab_order is not None:
                                        for _, r in ordered.iterrows()))
                     st.download_button("⬇️ Download order list (.txt)", txt, key="order_dl",
                                        file_name=f"Order {osup}.txt", mime="text/plain")
+
+
+# ============ Ordering tab: packaging stocktake -> split supplier order (#9) ============
+if tab_pack is not None:
+    with tab_pack:
+        st.markdown("#### 📦 Ordering")
+        # Packaging is the first ordering section; more (e.g. food) can be added as sub-tabs.
+        (sub_pack,) = st.tabs(["Packaging"])
+        with sub_pack:
+            st.caption("Count what's on the shelf and enter **QTY on hand** — you can use halves "
+                       "(e.g. 2.5) for part-used boxes. The app refills each item to par, rounds "
+                       "the order **up** to whole units, then splits it by supplier: "
+                       "🟢 BIOPAK Horizons (grouped by category) and 🟡 A-Z Packaging.")
+
+            saved = storage.load_packaging_counts()
+            rows = []
+            for it in packaging.PACKAGING_ITEMS:
+                rows.append({
+                    "Item": it["item"],
+                    "Supplier": "🟢 BIOPAK" if it["supplier"] == packaging.BIOPAK else "🟡 A-Z",
+                    "Par": it["par"],
+                    "QTY on hand": float(saved.get(it["item"], 0.0) or 0),
+                })
+            pack_df = pd.DataFrame(rows)
+
+            pedit = st.data_editor(
+                pack_df, hide_index=True, width="stretch", key="pack_edit",
+                column_config={
+                    "Item": st.column_config.TextColumn(disabled=True),
+                    "Supplier": st.column_config.TextColumn(disabled=True, width="small"),
+                    "Par": st.column_config.NumberColumn(disabled=True, width="small"),
+                    "QTY on hand": st.column_config.NumberColumn(min_value=0.0, step=0.5)})
+
+            # Recompute the order live from the edited on-hand column every rerun.
+            counts = {}
+            for _, r in pedit.iterrows():
+                v = pd.to_numeric(r["QTY on hand"], errors="coerce")
+                counts[r["Item"]] = 0.0 if pd.isna(v) else float(v)
+
+            csave, cinfo = st.columns([1, 3])
+            if csave.button("💾 Save counts", key="pack_save"):
+                storage.save_packaging_counts(counts)
+                st.success("Counts saved.")
+            cinfo.caption("Saved to the app so a reload on your phone won't wipe your count.")
+
+            order = packaging.build_order(counts)
+            biopak, az = order[packaging.BIOPAK], order[packaging.AZ]
+            n_bio = sum(len(v) for v in biopak.values())
+            n_az = len(az)
+
+            st.divider()
+            st.markdown("### 🧾 Order to place")
+            if n_bio == 0 and n_az == 0:
+                st.success("Nothing to order — everything's at or above par.")
+            else:
+                oc1, oc2 = st.columns(2)
+                with oc1:
+                    st.markdown(f"#### 🟢 {packaging.BIOPAK}")
+                    if n_bio == 0:
+                        st.caption("Nothing to order.")
+                    else:
+                        for cat in packaging.BIOPAK_CATEGORY_ORDER:
+                            items = biopak.get(cat)
+                            if not items:
+                                continue
+                            st.markdown(f"**{cat}**")
+                            st.dataframe(
+                                pd.DataFrame([{"Order": f"{e['order']:g}", "Item": e["item"]}
+                                              for e in items]),
+                                hide_index=True, width="stretch")
+                        st.caption("Copy-ready (tap the ⧉ icon top-right):")
+                        st.code(packaging.order_text_biopak(biopak), language=None)
+                with oc2:
+                    st.markdown(f"#### 🟡 {packaging.AZ}")
+                    if n_az == 0:
+                        st.caption("Nothing to order.")
+                    else:
+                        st.dataframe(
+                            pd.DataFrame([{"Order": f"{e['order']:g}", "Item": e["item"]}
+                                          for e in az]),
+                            hide_index=True, width="stretch")
+                        st.caption("Copy-ready (tap the ⧉ icon top-right):")
+                        st.code(packaging.order_text_az(az), language=None)
 
 
 # ============ Daily digest tab (all roles; role-aware) ============
