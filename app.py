@@ -42,43 +42,43 @@ if "theme" not in st.session_state:
 THEME = st.session_state["theme"]
 
 _THEMES = {
-    "light": {
-        "bg": "#f8fafc", "surface": "#ffffff", "surface2": "#f1f5f9",
-        "border": "#e2e8f0", "border_hov": "#cbd5e1",
-        "text": "#0f172a", "muted": "#64748b",
-        "accent": "#0d9488", "accent2": "#0f766e",
+    "light": {  # warm stone / off-white
+        "bg": "#faf9f7", "surface": "#ffffff", "surface2": "#f5f5f4",
+        "border": "#e7e5e4", "border_hov": "#d6d3d1",
+        "text": "#1c1917", "muted": "#78716c",
+        "accent": "#d97706", "accent2": "#ea580c",
         "card_grad": "#ffffff",
-        "shadow_sm": "0 1px 2px rgba(15,23,42,.06),0 1px 3px rgba(15,23,42,.07)",
-        "shadow_md": "0 10px 25px rgba(15,23,42,.10),0 4px 10px rgba(15,23,42,.06)",
+        "shadow_sm": "0 1px 2px rgba(28,25,23,.06),0 1px 3px rgba(28,25,23,.07)",
+        "shadow_md": "0 10px 25px rgba(28,25,23,.10),0 4px 10px rgba(28,25,23,.06)",
         "pri_btn_text": "#ffffff",
     },
-    "dark": {  # true charcoal / slate-950
-        "bg": "#020617", "surface": "#0f172a", "surface2": "#1e293b",
-        "border": "#1e293b", "border_hov": "#334155",
-        "text": "#f1f5f9", "muted": "#94a3b8",
-        "accent": "#2dd4bf", "accent2": "#5eead4",
-        "card_grad": "linear-gradient(180deg,#0f172a,#0b1120)",
+    "dark": {  # warm charcoal / stone-950 + ember accent
+        "bg": "#0c0a09", "surface": "#1c1917", "surface2": "#292524",
+        "border": "#292524", "border_hov": "#44403c",
+        "text": "#fafaf9", "muted": "#a8a29e",
+        "accent": "#f59e0b", "accent2": "#fb923c",
+        "card_grad": "linear-gradient(180deg,#1c1917,#141110)",
         "shadow_sm": "0 1px 2px rgba(0,0,0,.4),0 1px 3px rgba(0,0,0,.5)",
         "shadow_md": "0 12px 30px rgba(0,0,0,.55),0 4px 10px rgba(0,0,0,.4)",
-        "pri_btn_text": "#04201c",
+        "pri_btn_text": "#1c1207",
     },
 }
 T = _THEMES[THEME]
 
-# Chart palette — deep navy / slate primaries, soft accent (teal) for totals.
+# Chart palette — warm ember / orange primaries, stone neutrals, amber accent.
 # High data-ink: no vertical gridlines, faint horizontal grid, soft-gray axes.
 _CHARTS = {
     "light": {
-        "navy": "#1e3a8a", "slate": "#64748b", "accent": "#0d9488",
-        "red": "#dc2626", "axis": "#cbd5e1", "grid": "rgba(100,116,139,.12)",
-        "font": "#475569", "muted": "#94a3b8", "tmpl": "plotly_white",
-        "seq": ["#1e3a8a", "#0d9488", "#64748b", "#7c3aed", "#d97706", "#dc2626", "#0891b2"],
+        "navy": "#c2410c", "slate": "#78716c", "accent": "#d97706",
+        "red": "#dc2626", "axis": "#d6d3d1", "grid": "rgba(120,113,108,.12)",
+        "font": "#57534e", "muted": "#a8a29e", "tmpl": "plotly_white",
+        "seq": ["#c2410c", "#d97706", "#ea580c", "#78716c", "#dc2626", "#b45309", "#f59e0b"],
     },
     "dark": {
-        "navy": "#60a5fa", "slate": "#94a3b8", "accent": "#2dd4bf",
-        "red": "#f87171", "axis": "#475569", "grid": "rgba(148,163,184,.12)",
-        "font": "#cbd5e1", "muted": "#94a3b8", "tmpl": "plotly_dark",
-        "seq": ["#60a5fa", "#2dd4bf", "#94a3b8", "#a78bfa", "#fbbf24", "#f87171", "#34d399"],
+        "navy": "#fb923c", "slate": "#a8a29e", "accent": "#f59e0b",
+        "red": "#f87171", "axis": "#44403c", "grid": "rgba(168,162,158,.12)",
+        "font": "#d6d3d1", "muted": "#a8a29e", "tmpl": "plotly_dark",
+        "seq": ["#f59e0b", "#fb923c", "#fbbf24", "#a8a29e", "#f87171", "#d97706", "#fcd34d"],
     },
 }
 C = _CHARTS[THEME]
@@ -546,11 +546,11 @@ st.markdown(f"""<div class="appbar">
   <div class="brand">
     <svg width="36" height="36" viewBox="0 0 34 34" fill="none" xmlns="http://www.w3.org/2000/svg">
       <rect width="34" height="34" rx="9" fill="url(#brandg)"/>
-      <rect x="9" y="18" width="3.6" height="7" rx="1.5" fill="#0b1f1b"/>
-      <rect x="15.2" y="13" width="3.6" height="12" rx="1.5" fill="#0b1f1b"/>
-      <rect x="21.4" y="9" width="3.6" height="16" rx="1.5" fill="#0b1f1b"/>
+      <rect x="9" y="18" width="3.6" height="7" rx="1.5" fill="#1c1207"/>
+      <rect x="15.2" y="13" width="3.6" height="12" rx="1.5" fill="#1c1207"/>
+      <rect x="21.4" y="9" width="3.6" height="16" rx="1.5" fill="#1c1207"/>
       <defs><linearGradient id="brandg" x1="0" y1="0" x2="34" y2="34" gradientUnits="userSpaceOnUse">
-        <stop stop-color="#2EC4B6"/><stop offset="1" stop-color="#5eead4"/></linearGradient></defs>
+        <stop stop-color="#f59e0b"/><stop offset="1" stop-color="#fb923c"/></linearGradient></defs>
     </svg>
     <div><div class="brand-name">Chargrill COGS</div>
     <div class="brand-sub">Cost &amp; labour intelligence</div></div>

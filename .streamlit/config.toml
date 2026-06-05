@@ -5,8 +5,8 @@
 # Streamlit limitation.
 [theme]
 base = "dark"
-primaryColor = "#2DD4BF"
-backgroundColor = "#020617"
-secondaryBackgroundColor = "#0F172A"
-textColor = "#F1F5F9"
+primaryColor = "#F59E0B"
+backgroundColor = "#0C0A09"
+secondaryBackgroundColor = "#1C1917"
+textColor = "#FAFAF9"
 font = "sans serif"
