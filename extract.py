@@ -3,7 +3,7 @@ import base64
 import io
 from typing import List, Optional
 from pydantic import BaseModel
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, ImageEnhance
 import anthropic
 
 MODEL = "claude-sonnet-4-6"          # fast, strong default for the first read
@@ -17,23 +17,24 @@ MAX_EDGE = 1568
 
 
 def _prep_image(file_bytes: bytes, media_type: str):
-    """Downscale + JPEG-compress a photo before upload. PDFs pass through unchanged.
+    """Clean up, downscale + JPEG-compress a photo before upload. PDFs pass through unchanged.
 
-    Returns (new_bytes, new_media_type). On any failure, returns the original
-    bytes/type so extraction never breaks because of image handling.
+    Phone invoice photos are often soft or unevenly lit, so we convert to grayscale (strips
+    colour noise / shadows) and boost contrast + sharpness to make faint digits legible,
+    then downscale to Claude's ~1568px working size. EXIF rotation is honoured first so
+    sideways photos read upright. On any failure, returns the original bytes/type so
+    extraction never breaks because of image handling.
     """
     if media_type == "application/pdf":
         return file_bytes, media_type
     try:
         img = Image.open(io.BytesIO(file_bytes))
-        img = ImageOps.exif_transpose(img)  # honour phone camera rotation
-        if img.mode != "RGB":
-            img = img.convert("RGB")  # flatten PNG alpha / greyscale -> RGB for JPEG
-        w, h = img.size
-        long_edge = max(w, h)
-        if long_edge > MAX_EDGE:
-            scale = MAX_EDGE / long_edge
-            img = img.resize((round(w * scale), round(h * scale)), Image.LANCZOS)
+        img = ImageOps.exif_transpose(img)            # honour phone camera rotation
+        img = img.convert("L")                        # grayscale: strip colour noise / shadows
+        img = ImageEnhance.Contrast(img).enhance(2.0)   # make soft/blurry digits pop
+        img = ImageEnhance.Sharpness(img).enhance(1.5)
+        if max(img.size) > MAX_EDGE:                   # downscale (Claude works at ~1568px)
+            img.thumbnail((MAX_EDGE, MAX_EDGE), Image.LANCZOS)  # preserves aspect ratio
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=85, optimize=True)
         return buf.getvalue(), "image/jpeg"
@@ -72,7 +73,12 @@ only shows a GST-inclusive total, compute ex-GST = inclusive_total / 1.1.
 - total_inc_gst and gst_amount: include if printed; otherwise leave null.
 - confidence: "high" if the image is clear and totals reconcile, "medium" if some fields \
 were inferred, "low" if the image is blurry/partial or numbers are hard to read.
-Return numbers as plain decimals (no currency symbols or thousands separators)."""
+Return numbers as plain decimals (no currency symbols or thousands separators).
+
+You are an expert OCR invoice parser extracting long multi-line documents.
+- Always cross-reference rows horizontally to prevent line-skip errors.
+- If a value looks blurry, use the surrounding line totals or subtotals to logically infer \
+whether a character is an '8' vs '3', or a '0' vs '6'."""
 
 
 class LineItem(BaseModel):
@@ -183,7 +189,10 @@ def extract_invoice(pages, media_type: Optional[str] = None,
     content.append({"type": "text", "text":
                     f"Extract this supplier invoice. It is provided as {n} page(s)/photo(s) — "
                     "treat them as ONE invoice and combine all line items across the pages. "
-                    "Use the grand total from the final page if a running total spans pages."})
+                    "Use the grand total from the final page if a running total spans pages. "
+                    "This can be a long invoice (20+ rows) photographed on a phone: trace "
+                    "horizontally across each row carefully, do not shift or skip lines, and map "
+                    "every line item's description, quantity, unit price and line total exactly."})
 
     data = _read_invoice(client, MODEL, content)
     if data.confidence != "high" or not reconciliation(data.model_dump())["ok"]:
@@ -195,7 +204,26 @@ def extract_invoice(pages, media_type: Optional[str] = None,
                 data = strong
         except Exception:
             pass  # escalation failed (network/limit) -> keep the first read, never crash
+    _verify_line_math(data)
     return data
+
+
+def _verify_line_math(data: InvoiceData) -> None:
+    """Deterministic safety net for line totals. Where a line has both a quantity and a
+    printed per-unit price, recompute amount = quantity x unit_price in Python rather than
+    trusting the model's arithmetic, so a single misread digit in the line-total column is
+    corrected from its parts. (The SYSTEM prompt normalises per-kg lines so quantity is the
+    kg weight and unit_price the per-kg rate, keeping this multiplication valid.) Mutates
+    `data` in place; the review screen still re-checks the totals before saving."""
+    for item in data.line_items:
+        if item.quantity is None or item.unit_price is None:
+            continue
+        try:
+            recomputed = round(float(item.quantity) * float(item.unit_price), 2)
+        except (TypeError, ValueError):
+            continue
+        if recomputed > 0 and abs((item.amount or 0) - recomputed) > 0.01:
+            item.amount = recomputed
 
 
 # ---------------- POS end-of-day takings slip ----------------
