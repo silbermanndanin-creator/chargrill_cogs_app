@@ -216,13 +216,13 @@ for _k in ("SUPABASE_URL", "SUPABASE_KEY"):
 # ============ Roles: chef (default) vs owner ============
 # The app opens in the restricted "chef" view. The owner taps the 🔒 box at the
 # bottom of the sidebar and enters the PIN to unlock revenue + wages + full tabs.
-# PIN comes from the OWNER_PIN secret/env; falls back to 4321 if unset.
+# PIN comes from the OWNER_PIN secret/env; falls back to 1811 if unset.
 def _owner_pin():
     try:
         p = st.secrets.get("OWNER_PIN")
     except Exception:
         p = None
-    return str(p or os.environ.get("OWNER_PIN") or "1111")
+    return str(p or os.environ.get("OWNER_PIN") or "1811")
 
 
 if "is_owner" not in st.session_state:
