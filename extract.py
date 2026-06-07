@@ -3,7 +3,7 @@ import base64
 import io
 from typing import List, Optional
 from pydantic import BaseModel
-from PIL import Image, ImageOps, ImageEnhance
+from PIL import Image, ImageOps, ImageEnhance, ImageFilter, ImageStat
 import anthropic
 
 MODEL = "claude-sonnet-4-6"          # fast, strong default for the first read
@@ -16,13 +16,52 @@ ESCALATE_MODEL = "claude-opus-4-8"   # most capable — re-reads shaky invoices 
 MAX_EDGE = 1568
 
 
+# 3x3 Laplacian (edge-detect) kernel. The variance of an image's Laplacian is a standard
+# proxy for focus: lots of strong edges -> sharp -> high variance; a blurry photo is smooth
+# -> low variance. scale=1 because the kernel sums to zero.
+_LAPLACIAN = ImageFilter.Kernel((3, 3), [0, 1, 0, 1, -4, 1, 0, 1, 0], scale=1)
+
+
+def _quality_stats(gray):
+    """(contrast, sharpness) of a grayscale image, measured on a centre crop so the page
+    background/border doesn't skew it. contrast = stddev of luminance (low = dim/washed-out);
+    sharpness = variance of the Laplacian (low = out of focus)."""
+    w, h = gray.size
+    box = (int(w * 0.1), int(h * 0.1), int(w * 0.9), int(h * 0.9))
+    c = gray.crop(box) if (box[2] > box[0] and box[3] > box[1]) else gray
+    return ImageStat.Stat(c).stddev[0], ImageStat.Stat(c.filter(_LAPLACIAN)).var[0]
+
+
+def _auto_enhance(img):
+    """Adaptively clean a grayscale photo. Every image gets a light, safe histogram stretch
+    and a threshold-gated sharpen; a STRONGER contrast/sharpen boost is added only when the
+    photo measures as genuinely dim or soft. So a crisp, well-lit invoice comes through
+    almost untouched (we don't crush faint print), while a blurry phone snap gets rescued.
+    Thresholds are heuristics tuned for downscaled phone photos of A4/A5 invoices."""
+    try:
+        contrast, sharpness = _quality_stats(img)
+    except Exception:
+        contrast, sharpness = 100.0, 10000.0  # measurement failed -> assume good, enhance gently
+    # Always: gentle histogram stretch (clips 0.5% tails). Rescues dull photos; ~no-op on good ones.
+    img = ImageOps.autocontrast(img, cutoff=0.5)
+    # Extra linear contrast ONLY for flat/dim images.
+    if contrast < 40:
+        img = ImageEnhance.Contrast(img).enhance(1.6)
+    elif contrast < 55:
+        img = ImageEnhance.Contrast(img).enhance(1.25)
+    # Sharpen harder when soft, lighter when already sharp. threshold=3 keeps it off flat
+    # paper so it doesn't amplify scanner/sensor noise.
+    pct = 170 if sharpness < 200 else 110 if sharpness < 600 else 70
+    return img.filter(ImageFilter.UnsharpMask(radius=2, percent=pct, threshold=3))
+
+
 def _prep_image(file_bytes: bytes, media_type: str):
     """Clean up, downscale + JPEG-compress a photo before upload. PDFs pass through unchanged.
 
-    Phone invoice photos are often soft or unevenly lit, so we convert to grayscale (strips
-    colour noise / shadows) and boost contrast + sharpness to make faint digits legible,
-    then downscale to Claude's ~1568px working size. EXIF rotation is honoured first so
-    sideways photos read upright. On any failure, returns the original bytes/type so
+    Phone invoice photos are often soft or unevenly lit, so we convert to grayscale, downscale
+    to Claude's ~1568px working size, then run an ADAPTIVE enhance (see _auto_enhance) that only
+    boosts dim/blurry shots hard and leaves clean ones near-original. EXIF rotation is honoured
+    first so sideways photos read upright. On any failure, returns the original bytes/type so
     extraction never breaks because of image handling.
     """
     if media_type == "application/pdf":
@@ -31,10 +70,9 @@ def _prep_image(file_bytes: bytes, media_type: str):
         img = Image.open(io.BytesIO(file_bytes))
         img = ImageOps.exif_transpose(img)            # honour phone camera rotation
         img = img.convert("L")                        # grayscale: strip colour noise / shadows
-        img = ImageEnhance.Contrast(img).enhance(2.0)   # make soft/blurry digits pop
-        img = ImageEnhance.Sharpness(img).enhance(1.5)
-        if max(img.size) > MAX_EDGE:                   # downscale (Claude works at ~1568px)
+        if max(img.size) > MAX_EDGE:                   # downscale first (Claude works at ~1568px)
             img.thumbnail((MAX_EDGE, MAX_EDGE), Image.LANCZOS)  # preserves aspect ratio
+        img = _auto_enhance(img)                       # measure, then enhance to suit the photo
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=85, optimize=True)
         return buf.getvalue(), "image/jpeg"
