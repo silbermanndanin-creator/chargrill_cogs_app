@@ -1918,6 +1918,25 @@ if tab_track is not None:
                                                        if n_changed else "No changes to save.")
                 st.rerun()
 
+            # ---- Invoices received this week (quick price check) ----
+            wk_inv = df[df["iso_week"].astype(str) == str(sel_week)].copy()
+            with st.expander(f"🧾 Invoices received this week ({len(wk_inv)})", expanded=True):
+                if wk_inv.empty:
+                    st.caption("No invoices recorded for this week yet.")
+                else:
+                    wk_inv["_d"] = pd.to_datetime(wk_inv["invoice_date"], errors="coerce")
+                    wk_inv["_t"] = pd.to_numeric(wk_inv["total_ex_gst"], errors="coerce")
+                    wk_inv = wk_inv.sort_values(["supplier", "_d"])
+                    st.caption(f"{len(wk_inv)} invoice(s) · ${wk_inv['_t'].sum():,.2f} ex-GST — "
+                               "tick each against the paper copy.")
+                    recv = wk_inv[["_d", "supplier_raw", "supplier", "_t"]].rename(columns={
+                        "_d": "Date", "supplier_raw": "Supplier (as invoiced)",
+                        "supplier": "Category", "_t": "Total ex-GST $"})
+                    st.dataframe(recv, hide_index=True, width="stretch", column_config={
+                        "Date": st.column_config.DateColumn("Date", format="DD/MM/YYYY"),
+                        "Total ex-GST $": st.column_config.NumberColumn("Total ex-GST $", format="$%.2f"),
+                    })
+
             with st.expander("🧠 Learned supplier patterns (from your invoice history)"):
                 cad_rows = [{
                     "Supplier": sup,
