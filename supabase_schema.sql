@@ -140,6 +140,18 @@ create table if not exists food_safety (
     saved_at  text
 );
 
+-- Invoice tracker ticks: the owner's weekly confirmation that a supplier's invoices
+-- are all uploaded ('confirmed'), or that the supplier isn't delivering this week
+-- ('skipped'), so the completeness check doesn't flag it. One row per ISO week+supplier.
+create table if not exists invoice_checks (
+    period_key  text,                            -- 'YYYY-Www'
+    supplier    text,                            -- canonical category (config.SUPPLIERS)
+    state       text,                            -- 'confirmed' | 'skipped'
+    note        text,
+    updated_at  text,
+    primary key (period_key, supplier)           -- enables upsert on (period_key, supplier)
+);
+
 -- This app runs server-side on Streamlit Cloud and connects with the service_role
 -- key, so Row Level Security is not required. If you prefer to enable RLS, add
 -- policies that allow the service role full access.

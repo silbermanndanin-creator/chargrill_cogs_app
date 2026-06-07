@@ -1,6 +1,7 @@
 """Aggregation helpers for the dashboard. Pure functions over the invoices DataFrame."""
 import re
 import json
+import datetime as dt
 import pandas as pd
 import config
 
@@ -447,3 +448,151 @@ def baida_tubs(lines, period_col, period_key):
     out["total_chickens"] = sum(out[t]["chickens"] for t in config.TUB_TYPES)
     out["tub_deposit"] = deposit
     return out
+
+
+# ============ Invoice completeness tracker (learned supplier cadence) ============
+# These power the owner's weekly "have all this week's invoices been uploaded?" check.
+# The cadence is LEARNED from the invoice history: how often each supplier delivers,
+# on which weekdays, and how regular they are — so a week with a missing delivery from
+# a normally-weekly supplier gets flagged, while genuinely occasional suppliers don't nag.
+WEEKDAY_ABBR = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+
+def _week_to_monday(iso_week):
+    """'YYYY-Www' -> the date of that ISO week's Monday, or None."""
+    try:
+        y, w = str(iso_week).split("-W")
+        return dt.date.fromisocalendar(int(y), int(w), 1)
+    except Exception:
+        return None
+
+
+def _iso_week_str(d):
+    y, w, _ = d.isocalendar()
+    return f"{y}-W{w:02d}"
+
+
+def weekdays_label(weekdays):
+    """[0,2,4] -> 'Mon, Wed, Fri'."""
+    wds = [w for w in (weekdays or []) if isinstance(w, int) and 0 <= w <= 6]
+    return ", ".join(WEEKDAY_ABBR[w] for w in sorted(wds)) if wds else "—"
+
+
+def supplier_cadence(df, recent_weeks=12, today=None):
+    """Learn each supplier's delivery pattern from invoice history.
+
+    Returns {supplier: {per_week, weekdays, weeks_active, span_weeks, presence,
+                        recent_presence, regular, last_date, last_week, n_invoices}}.
+      per_week        — typical invoices per active week (>=1, rounded)
+      weekdays        — list of weekday ints (0=Mon) they usually deliver on
+      recent_presence — fraction of the last `recent_weeks` completed weeks with a delivery
+      regular         — True when they normally deliver every week (so a gap = 'missing')
+    """
+    today = today or dt.date.today()
+    out = {}
+    if df is None or df.empty:
+        return out
+    d = df.copy()
+    d["_date"] = pd.to_datetime(d["invoice_date"], errors="coerce")
+    d = d[d["_date"].notna()]
+    if d.empty:
+        return out
+    cur_monday = today - dt.timedelta(days=today.weekday())
+    recent_keys = {_iso_week_str(cur_monday - dt.timedelta(weeks=i))
+                   for i in range(1, recent_weeks + 1)}
+    for sup, g in d.groupby("supplier"):
+        weeks = sorted({w for w in g["iso_week"].dropna().astype(str)})
+        if not weeks:
+            continue
+        weeks_active = len(weeks)
+        n_invoices = int(len(g))
+        first_mon, last_mon = _week_to_monday(weeks[0]), _week_to_monday(weeks[-1])
+        if first_mon and last_mon:
+            span_weeks = int((last_mon - first_mon).days // 7) + 1
+        else:
+            span_weeks = weeks_active
+        presence = weeks_active / span_weeks if span_weeks else 0.0
+        recent_hits = len(recent_keys & set(weeks))
+        recent_presence = recent_hits / recent_weeks if recent_weeks else 0.0
+        # Typical weekdays: those carrying a meaningful share of this supplier's deliveries.
+        wd_counts = g["_date"].dt.weekday.value_counts().to_dict()
+        thresh = max(1, 0.3 * weeks_active)
+        typical_wd = sorted([int(wd) for wd, c in wd_counts.items() if c >= thresh])
+        if not typical_wd and wd_counts:
+            typical_wd = [int(max(wd_counts, key=wd_counts.get))]
+        # Regular = delivers most recent weeks, or a strong all-time cadence with history.
+        regular = recent_presence >= 0.5 or (presence >= 0.6 and weeks_active >= 3)
+        out[sup] = {
+            "per_week": max(1, round(n_invoices / weeks_active)),
+            "weekdays": typical_wd,
+            "weeks_active": weeks_active,
+            "span_weeks": span_weeks,
+            "presence": round(presence, 2),
+            "recent_presence": round(recent_presence, 2),
+            "regular": bool(regular),
+            "last_date": str(g["_date"].max().date()),
+            "last_week": weeks[-1],
+            "n_invoices": n_invoices,
+        }
+    return out
+
+
+def weekly_invoice_status(df, iso_week, today=None, cadence=None):
+    """Per-supplier upload status for one ISO week, used by the Invoice tracker.
+
+    For each supplier with history (plus any that delivered this week), returns the
+    expected vs received count and an AUTO status:
+      recorded — received at least as many invoices as expected (and >=1)
+      partial  — some received but fewer than the supplier's usual count
+      missing  — a normally-regular supplier with nothing this week, past their usual day
+      due      — regular supplier, none yet, but their usual delivery day hasn't passed
+      upcoming — a future week
+      none     — occasional supplier with nothing this week (not flagged)
+    The owner's manual tick ('confirmed'/'skipped') is applied in the UI on top of this.
+    Rows are returned unsorted; the caller orders them.
+    """
+    today = today or dt.date.today()
+    cad = cadence if cadence is not None else supplier_cadence(df, today=today)
+    monday = _week_to_monday(iso_week)
+    sunday = (monday + dt.timedelta(days=6)) if monday else None
+    cur_monday = today - dt.timedelta(days=today.weekday())
+
+    recv_count, recv_amt = {}, {}
+    if df is not None and not df.empty:
+        wk = df[df["iso_week"].astype(str) == str(iso_week)]
+        if not wk.empty:
+            recv_count = wk.groupby("supplier").size().to_dict()
+            recv_amt = (wk.assign(_t=pd.to_numeric(wk["total_ex_gst"], errors="coerce"))
+                        .groupby("supplier")["_t"].sum().to_dict())
+
+    week_in_future = bool(monday and monday > cur_monday)
+    week_past = bool(sunday and sunday < today)
+    rows = []
+    for sup in sorted(set(cad) | set(recv_count)):
+        c = cad.get(sup, {})
+        regular = bool(c.get("regular"))
+        expected = int(c.get("per_week", 1)) if regular else 0
+        received = int(recv_count.get(sup, 0))
+        amount = float(recv_amt.get(sup, 0.0) or 0.0)
+        weekdays = c.get("weekdays", [])
+        last_wd = max(weekdays) if weekdays else 6
+        if received >= max(1, expected):
+            status = "recorded"
+        elif received > 0:
+            status = "partial"
+        elif regular:
+            if week_in_future:
+                status = "upcoming"
+            elif week_past or today.weekday() > last_wd:
+                status = "missing"
+            else:
+                status = "due"
+        else:
+            status = "none"
+        rows.append({
+            "supplier": sup, "expected": expected, "received": received,
+            "amount": round(amount, 2), "regular": regular,
+            "weekdays": weekdays, "weekdays_label": weekdays_label(weekdays),
+            "last_date": c.get("last_date"), "status": status,
+        })
+    return rows

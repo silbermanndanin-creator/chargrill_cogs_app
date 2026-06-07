@@ -7,6 +7,10 @@ It also tracks **labour**: upload the weekly **Tanda shift CSV** and the app com
 award-compliant gross wages (Fast Food Industry Award 2020) and the combined **prime
 cost %** (COGS + labour) against a 68% green / 72% red band.
 
+An **Invoice tracker** (owner) learns each supplier's delivery cadence from history and
+flags any week missing an invoice you'd normally have by now, so the COGS picture stays
+complete — tick a supplier **All in**, or **Not coming** when they're not delivering.
+
 Targets are pre-loaded from the Jun 2025–Apr 2026 P&L actuals (see `config.py`).
 
 ## Files

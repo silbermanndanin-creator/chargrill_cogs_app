@@ -406,6 +406,16 @@ def c_load_invoice_images(saved_at):
     return storage.load_invoice_images(saved_at)
 
 
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def c_supplier_cadence():
+    return metrics.supplier_cadence(c_load_invoices())
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def c_invoice_checks(period_key):
+    return storage.invoice_checks_for(period_key)
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def c_lightspeed_revenue(start, end, token, business_id):
     # Network call (up to 20s). Cached 5 min so it never blocks every rerun.
@@ -566,17 +576,18 @@ if st.button(_toggle_label, key="theme_toggle", help="Toggle light / dark mode")
 
 # Owner sees all tabs; chef sees only the cost/operations tabs.
 if owner:
-    (tab_dash, tab_inv, tab_pos, tab_lab, tab_veg, tab_pack, tab_list,
+    (tab_dash, tab_inv, tab_pos, tab_lab, tab_veg, tab_pack, tab_list, tab_track,
      tab_recon, tab_temp, tab_rep, tab_order, tab_digest, tab_var) = st.tabs(
         ["📊 Dashboard", "📸 Add invoice", "💰 Daily takings", "🧮 Labour",
-         "🥬 Veggie prices", "📦 Ordering", "📋 Invoices", "🧾 Reconciliation",
-         "🌡️ Temp records", "📈 Reports", "🛒 Order pad", "📨 Daily digest", "📝 Variations"])
+         "🥬 Veggie prices", "📦 Ordering", "📋 Invoices", "✅ Invoice tracker",
+         "🧾 Reconciliation", "🌡️ Temp records", "📈 Reports", "🛒 Order pad",
+         "📨 Daily digest", "📝 Variations"])
 else:
     (tab_dash, tab_inv, tab_veg, tab_pack, tab_list, tab_temp,
      tab_order, tab_digest) = st.tabs(
         ["📊 Dashboard", "📸 Add invoice", "🥬 Veggie prices", "📦 Ordering", "📋 Invoices",
          "🌡️ Temp records", "🛒 Order pad", "📨 Daily digest"])
-    tab_pos = tab_lab = tab_recon = tab_rep = tab_var = None
+    tab_pos = tab_lab = tab_recon = tab_rep = tab_var = tab_track = None
 
 # ============ Add-invoice tab ============
 with tab_inv:
@@ -1181,6 +1192,19 @@ if tab_temp is not None:
 with tab_dash:
     st.markdown(f"<div class='hdr'>🍗 {period_label}</div>", unsafe_allow_html=True)
 
+    # ---- Missing-invoice nudge (owner, week view) ----
+    # Surfaces suppliers that normally deliver by now but have no invoice this week, so
+    # COGS isn't understated by a forgotten upload. Full checklist lives in ✅ Invoice tracker.
+    if owner and mode == "Week" and not df.empty:
+        _checks = c_invoice_checks(period_key)
+        _trk = metrics.weekly_invoice_status(df, period_key, cadence=c_supplier_cadence())
+        _miss = [r["supplier"] for r in _trk
+                 if r["status"] == "missing"
+                 and _checks.get(r["supplier"], {}).get("state", "") not in ("confirmed", "skipped")]
+        if _miss:
+            st.warning(f"🔴 Possibly missing this week: **{', '.join(_miss)}** — "
+                       "check **✅ Invoice tracker** to upload or mark them not coming.")
+
     spend_by, deliveries = (metrics.spend_and_deliveries(df, p_col, period_key)
                             if not df.empty else (pd.Series(dtype=float), pd.Series(dtype=int)))
     qty = metrics.qty_by_supplier_unit(lines, p_col, period_key)
@@ -1772,6 +1796,141 @@ with tab_list:
                 bust_caches()
                 st.session_state["del_flash"] = labels.get(chosen, "invoice")
                 st.rerun()
+
+
+# ============ Invoice tracker tab (owner): weekly upload completeness ============
+if tab_track is not None:
+    with tab_track:
+        st.markdown("#### ✅ Invoice tracker — is every supplier's invoice uploaded?")
+        st.caption("Learns each supplier's normal delivery pattern from your history, then "
+                   "flags any week missing an invoice you'd usually have by now. Tick "
+                   "**All in** once a supplier's done, or **Not coming** when they aren't "
+                   "delivering that week.")
+        if st.session_state.pop("track_flash", None):
+            st.success(st.session_state.pop("track_flash_msg", "Saved."))
+
+        cadence = c_supplier_cadence()
+        if df.empty or not cadence:
+            st.info("No invoice history yet — add invoices in **📸 Add invoice** and the "
+                    "tracker will start learning each supplier's delivery pattern.")
+        else:
+            today = dt.date.today()
+            cur_week = storage.iso_week_of(today)
+            hist_weeks = {str(w) for w in df["iso_week"].dropna()}
+            recent = {storage.iso_week_of(today - dt.timedelta(weeks=i)) for i in range(12)}
+            default_wk = period_key if (mode == "Week") else cur_week
+            week_opts = sorted(hist_weeks | recent | {default_wk}, reverse=True)
+
+            def _wk_label(wk):
+                mon = metrics._week_to_monday(wk)
+                if not mon:
+                    return wk
+                sun = mon + dt.timedelta(days=6)
+                tag = " · this week" if wk == cur_week else ""
+                return f"{wk} ({mon:%d %b} – {sun:%d %b}){tag}"
+
+            sel_week = st.selectbox("Week", week_opts, index=week_opts.index(default_wk),
+                                    format_func=_wk_label, key="track_week")
+
+            checks = c_invoice_checks(sel_week)
+            rows = metrics.weekly_invoice_status(df, sel_week, today=today, cadence=cadence)
+
+            # (emoji, label, sort rank) per effective status — missing surfaces first.
+            EFFECT = {
+                "missing":   ("🔴", "Missing", 0),
+                "partial":   ("🟡", "Partial", 1),
+                "due":       ("⏳", "Due", 2),
+                "confirmed": ("☑️", "Confirmed in", 3),
+                "recorded":  ("✅", "Recorded", 4),
+                "upcoming":  ("⚪", "Upcoming", 5),
+                "skipped":   ("🚫", "Not coming", 6),
+                "none":      ("·", "Occasional", 7),
+            }
+            enriched = []
+            for r in rows:
+                state = checks.get(r["supplier"], {}).get("state", "")
+                if state == "skipped":
+                    eff = "skipped"
+                elif state == "confirmed":
+                    eff = "recorded" if r["received"] else "confirmed"
+                else:
+                    eff = r["status"]
+                enriched.append(dict(r, state=state, effective=eff))
+
+            n_missing = sum(1 for r in enriched if r["effective"] == "missing")
+            n_due = sum(1 for r in enriched if r["effective"] == "due")
+            n_expected = sum(1 for r in enriched if r["regular"] or r["received"])
+            n_done = sum(1 for r in enriched if r["effective"] in ("recorded", "confirmed"))
+
+            cA, cB, cC = st.columns(3)
+            cA.metric("Recorded", f"{n_done}/{n_expected}")
+            cB.metric("Missing", n_missing)
+            cC.metric("Due (not yet)", n_due)
+
+            if n_missing:
+                miss = [r["supplier"] for r in enriched if r["effective"] == "missing"]
+                st.error("🔴 **Missing this week:** " + ", ".join(miss) +
+                         " — upload these, or mark **Not coming** below.")
+            elif n_due:
+                st.info("⏳ Still expected: " + ", ".join(
+                    r["supplier"] for r in enriched if r["effective"] == "due"))
+            else:
+                st.success("✅ All expected suppliers for this week are accounted for.")
+
+            order = sorted(enriched, key=lambda r: (EFFECT[r["effective"]][2], r["supplier"]))
+            disp = pd.DataFrame([{
+                "Status": f"{EFFECT[r['effective']][0]} {EFFECT[r['effective']][1]}",
+                "Supplier": r["supplier"],
+                "Typically": (f"{r['expected']}×/wk · {r['weekdays_label']}"
+                              if r["regular"] else "occasional"),
+                "Received": r["received"],
+                "$ ex-GST": r["amount"],
+                "Last delivery": r["last_date"] or "—",
+                "Your check": ("✓ All in" if r["state"] == "confirmed"
+                               else "🚫 Not coming" if r["state"] == "skipped" else "—"),
+            } for r in order])
+            edited = st.data_editor(
+                disp, hide_index=True, width="stretch", key=f"track_editor_{sel_week}",
+                column_config={
+                    "Status": st.column_config.TextColumn("Status", disabled=True),
+                    "Supplier": st.column_config.TextColumn("Supplier", disabled=True),
+                    "Typically": st.column_config.TextColumn("Typically", disabled=True),
+                    "Received": st.column_config.NumberColumn("Received", disabled=True),
+                    "$ ex-GST": st.column_config.NumberColumn("$ ex-GST", format="$%.2f", disabled=True),
+                    "Last delivery": st.column_config.TextColumn("Last delivery", disabled=True),
+                    "Your check": st.column_config.SelectboxColumn(
+                        "Your check", options=["—", "✓ All in", "🚫 Not coming"], required=True),
+                })
+            if st.button("💾 Save checklist", type="primary", key="track_save"):
+                label_to_state = {"✓ All in": "confirmed", "🚫 Not coming": "skipped", "—": ""}
+                n_changed = 0
+                for _, er in edited.iterrows():
+                    sup = er["Supplier"]
+                    new_state = label_to_state.get(er["Your check"], "")
+                    if new_state != checks.get(sup, {}).get("state", ""):
+                        storage.set_invoice_check(sel_week, sup, new_state)
+                        n_changed += 1
+                bust_caches()
+                st.session_state["track_flash"] = True
+                st.session_state["track_flash_msg"] = (f"Updated {n_changed} supplier(s)."
+                                                       if n_changed else "No changes to save.")
+                st.rerun()
+
+            with st.expander("🧠 Learned supplier patterns (from your invoice history)"):
+                cad_rows = [{
+                    "Supplier": sup,
+                    "Pattern": "Weekly" if c["regular"] else "Occasional",
+                    "Per week": c["per_week"],
+                    "Usual days": metrics.weekdays_label(c["weekdays"]),
+                    "Weeks seen": c["weeks_active"],
+                    "Recent presence": f"{c['recent_presence']*100:.0f}%",
+                    "Last delivery": c["last_date"],
+                } for sup, c in sorted(cadence.items(),
+                                       key=lambda kv: (not kv[1]["regular"], kv[0]))]
+                st.dataframe(pd.DataFrame(cad_rows), hide_index=True, width="stretch")
+                st.caption("“Weekly” suppliers get flagged when a week is missing their invoice. "
+                           "“Recent presence” = how many of the last 12 weeks had a delivery — "
+                           "the tracker leans on this to decide what to expect each week.")
 
 
 # ============ Reports tab (owner): BAS/GST + accountant pack ============

@@ -45,6 +45,8 @@ PACKAGING_PATH = os.path.join(DATA_DIR, "packaging_counts.csv")
 PACKAGING_COLUMNS = ["item", "on_hand", "updated_at"]
 DRINKS_PATH = os.path.join(DATA_DIR, "drinks_counts.csv")
 DRINKS_COLUMNS = ["item", "on_hand", "updated_at"]
+CHECKS_PATH = os.path.join(DATA_DIR, "invoice_checks.csv")
+CHECKS_COLUMNS = ["period_key", "supplier", "state", "note", "updated_at"]
 
 
 def iso_week_of(d: dt.date) -> str:
@@ -547,6 +549,74 @@ def save_drinks_counts(counts: dict):
     else:
         _ensure_csv(DRINKS_PATH, DRINKS_COLUMNS)
         pd.DataFrame(rows, columns=DRINKS_COLUMNS).to_csv(DRINKS_PATH, index=False)
+
+
+# ---------- invoice tracker ticks (owner's weekly "all invoices in" confirmation) ----------
+# One row per (ISO week, supplier). state = 'confirmed' (owner ticked this supplier's
+# deliveries as all uploaded for the week) or 'skipped' (supplier not coming this week,
+# so don't flag it as missing). A falsy state removes the tick (back to auto detection).
+def set_invoice_check(period_key: str, supplier: str, state: str, note: str = ""):
+    pk, sup = str(period_key), str(supplier)
+    if not state:
+        return _delete_invoice_check(pk, sup)
+    row = {"period_key": pk, "supplier": sup, "state": str(state),
+           "note": str(note or ""),
+           "updated_at": dt.datetime.now().isoformat(timespec="seconds")}
+    if _use_supabase():
+        try:
+            _client().table("invoice_checks").upsert(
+                row, on_conflict="period_key,supplier").execute()
+        except Exception:
+            pass  # invoice_checks table not created yet -> degrade silently
+    else:
+        _ensure_csv(CHECKS_PATH, CHECKS_COLUMNS)
+        df = pd.read_csv(CHECKS_PATH)
+        if not df.empty:
+            df = df[~((df["period_key"].astype(str) == pk)
+                      & (df["supplier"].astype(str) == sup))]
+        df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+        df.to_csv(CHECKS_PATH, index=False)
+    return row
+
+
+def _delete_invoice_check(period_key: str, supplier: str):
+    pk, sup = str(period_key), str(supplier)
+    if _use_supabase():
+        try:
+            (_client().table("invoice_checks").delete()
+             .eq("period_key", pk).eq("supplier", sup).execute())
+        except Exception:
+            pass
+    elif os.path.exists(CHECKS_PATH):
+        df = pd.read_csv(CHECKS_PATH)
+        df = df[~((df["period_key"].astype(str) == pk)
+                  & (df["supplier"].astype(str) == sup))]
+        df.to_csv(CHECKS_PATH, index=False)
+
+
+def invoice_checks_for(period_key: str) -> dict:
+    """{supplier: {'state','note','updated_at'}} of the owner's ticks for one ISO week."""
+    pk = str(period_key)
+    if _use_supabase():
+        try:
+            rows = (_client().table("invoice_checks").select("*")
+                    .eq("period_key", pk).execute().data) or []
+        except Exception:
+            return {}
+    else:
+        _ensure_csv(CHECKS_PATH, CHECKS_COLUMNS)
+        df = pd.read_csv(CHECKS_PATH)
+        rows = (df[df["period_key"].astype(str) == pk].to_dict("records")
+                if not df.empty else [])
+    def _txt(v):
+        return "" if v is None or (isinstance(v, float) and pd.isna(v)) else str(v)
+    out = {}
+    for r in rows:
+        sup = _txt(r.get("supplier")).strip()
+        if sup:
+            out[sup] = {"state": _txt(r.get("state")), "note": _txt(r.get("note")),
+                        "updated_at": r.get("updated_at")}
+    return out
 
 
 # ---------- weekly stocktake (closing stock $ value, for TRUE COGS) ----------
