@@ -599,6 +599,8 @@ with tab_inv:
 
     pages = []  # list of (bytes, media_type) making up ONE invoice
     if src == "Take photo":
+        st.info("💡 **Focus tip:** if the text looks blurry, pull the camera back to "
+                "30–40 cm — don't get too close. Fill the frame with the invoice and keep it flat.")
         shots = st.session_state.setdefault("inv_shots", [])
         cam = st.camera_input(f"Photograph page {len(shots) + 1}", key=f"invcam{len(shots)}")
         if cam is not None:
