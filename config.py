@@ -44,6 +44,10 @@ SUPPLIERS = {
     # Non-food supplier: excluded from food-COGS % (cogs=False) but still counted in
     # BAS (bas_summary sums all invoice spend regardless of category).
     "Lotus Commercial": {"aliases": ["lotus commercial", "lotus"], "cogs": False},
+    # Drinks for resale (Coca Cola Amatil). cogs=False so it doesn't distort the
+    # food-calibrated COGS % band — still tracked + counted in BAS. Flip cogs to True
+    # to fold beverages into the COGS % figure.
+    "Drinks":    {"aliases": ["coca cola", "coca-cola", "ccamatil", "amatil"], "cogs": False},
     "Blueseas (Broadline)": {"aliases": ["blueseas", "blue seas"],
                              "green_pct": 0.098, "red_pct": 0.102},
     "Other":     {"aliases": []},
