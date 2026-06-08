@@ -1023,11 +1023,38 @@ if tab_lab is not None:
                                + ", ".join(out["unmatched"]))
 
                 results = out["results"]
-                # Defensive: a single odd row shouldn't blank the whole tab. Build/show the
-                # preview tables inside a guard; the download + save below still render.
                 def _hr(r, k):
                     return float((r.get("hrs") or {}).get(k, 0) or 0)
+
+                # Key actions FIRST so they're always reachable on mobile (above the tall
+                # preview tables): download the report, then save the week's labour.
                 try:
+                    _xlsx = payroll.build_workbook(results, out["week_ending"])
+                    st.download_button(
+                        "⬇️ Download full Excel report", _xlsx,
+                        file_name=f"Payroll_WeekEnding_{wk_end.strftime('%Y-%m-%d')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                except Exception as e:
+                    st.error(f"Couldn't build the Excel report: {e}")
+
+                foh_hours = round(sum(_hr(r, "total") for r in results
+                                      if str(r.get("section") or "").upper() == "FOH"), 2)
+                boh_hours = round(sum(_hr(r, "total") for r in results
+                                      if str(r.get("section") or "").upper() == "BOH"), 2)
+                st.caption(f"Save sets labour for **{iso}** — gross **${out['total_gross']:,.0f}**, "
+                           f"{out['total_hours']:g} hrs → feeds Labour % / Prime cost %.")
+                if st.button(f"✅ Save labour to {iso}", type="primary", key="savelab"):
+                    storage.set_labour("week", iso, out["total_gross"], out["total_hours"],
+                                       foh_hours, boh_hours)
+                    bust_caches()
+                    st.session_state.pop("pay", None)
+                    st.session_state["lab_flash"] = iso
+                    st.rerun()
+
+                # Detailed breakdown LAST, collapsed, so the tall tables never bury the
+                # download/save buttons above them on a phone.
+                with st.expander("📋 Detailed breakdown (Summary / Casual / By section / Daily)"):
+                  try:
                     summary_df = pd.DataFrame([{
                         "Employee": r["name"], "Type": r["emp_type"], "Section": r.get("section", ""),
                         "Worked Hrs": round(_hr(r, "total"), 2),
@@ -1067,7 +1094,6 @@ if tab_lab is not None:
                         "Daily OT": round(day.get("daily_ot1", 0) + day.get("daily_ot2", 0), 2),
                         "Late Night": round(day["late_night"], 2), "Section": r.get("section", "")}
                         for r in results for day in (r.get("day_rows") or [])])
-
                     bd = st.tabs(["Summary", "Casual detail", "By section", "Daily"])
                     with bd[0]:
                         st.dataframe(summary_df, hide_index=True, width="stretch")
@@ -1080,33 +1106,8 @@ if tab_lab is not None:
                         st.dataframe(section_df, hide_index=True, width="stretch")
                     with bd[3]:
                         st.dataframe(daily_df, hide_index=True, width="stretch")
-                except Exception as e:
-                    st.warning(f"Couldn't render the preview tables: {e}. The Excel download "
-                               "and Save below still work.")
-
-                try:
-                    _xlsx = payroll.build_workbook(results, out["week_ending"])
-                    st.download_button(
-                        "⬇️ Download full Excel report", _xlsx,
-                        file_name=f"Payroll_WeekEnding_{wk_end.strftime('%Y-%m-%d')}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-                except Exception as e:
-                    st.error(f"Couldn't build the Excel report: {e}")
-
-                st.divider()
-                st.caption(f"Save sets labour for **{iso}** — gross **${out['total_gross']:,.0f}**, "
-                           f"{out['total_hours']:g} hrs → feeds Labour % / Prime cost %.")
-                foh_hours = round(sum(r["hrs"]["total"] for r in results
-                                      if str(r["section"]).upper() == "FOH"), 2)
-                boh_hours = round(sum(r["hrs"]["total"] for r in results
-                                      if str(r["section"]).upper() == "BOH"), 2)
-                if st.button(f"✅ Save labour to {iso}", key="savelab"):
-                    storage.set_labour("week", iso, out["total_gross"], out["total_hours"],
-                                       foh_hours, boh_hours)
-                    bust_caches()
-                    st.session_state.pop("pay", None)
-                    st.session_state["lab_flash"] = iso
-                    st.rerun()
+                  except Exception as e:
+                    st.warning(f"Couldn't render the preview tables: {e}")
             if st.session_state.pop("lab_flash", None):
                 st.success("Labour saved — check the Dashboard's Prime Cost section.")
 
