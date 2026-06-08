@@ -15,7 +15,7 @@ import json
 import os
 
 # The owner's "Variation letters" Drive folder (from the shared URL). Overridable via secret.
-DEFAULT_FOLDER_ID = "1RtRBtdeiLLx_7dTJLkrZnJnOPYRWAnNc"
+DEFAULT_FOLDER_ID = "14VyS0AdH2EUf3pZBAMAuuXOEsfs0Y9Nq"
 # Full Drive scope: 'drive.file' only sees files the app itself created, so it can't write
 # into a folder the owner created and shared (it 404s on the folder). 'drive' lets the
 # service account write into any folder shared with it as Editor.
