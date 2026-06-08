@@ -630,13 +630,14 @@ def set_employee_override(employee, employment_type="", section="", flat_rate=No
         return
     row = {"employee": emp, "employment_type": str(employment_type or ""),
            "section": str(section or ""),
-           "flat_rate": ("" if flat_rate in (None, "") else round(float(flat_rate), 2)),
+           # NULL (not "") when absent — flat_rate is a NUMERIC column; "" would be rejected.
+           "flat_rate": (None if flat_rate in (None, "") else round(float(flat_rate), 2)),
            "updated_at": dt.datetime.now().isoformat(timespec="seconds")}
     if _use_supabase():
         try:
             _client().table("employee_overrides").upsert(row, on_conflict="employee").execute()
-        except Exception:
-            pass  # table not created yet -> degrade
+        except Exception as e:
+            return str(e)  # surfaced by the caller (missing table, type mismatch, etc.)
     else:
         _ensure_csv(EMP_OVR_PATH, EMP_OVR_COLUMNS)
         df = pd.read_csv(EMP_OVR_PATH)
@@ -644,6 +645,7 @@ def set_employee_override(employee, employment_type="", section="", flat_rate=No
             df = df[df["employee"].astype(str) != emp]
         df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
         df.to_csv(EMP_OVR_PATH, index=False)
+    return None
 
 
 def delete_employee_override(employee):
