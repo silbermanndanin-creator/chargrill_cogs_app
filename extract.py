@@ -104,8 +104,12 @@ price (e.g. "$12.50/kg", "12.50 P/KG", "@ 12.50 kg"), record THAT per-kg figure 
 and set unit to kg — this is the number to prefer. If instead only a per-each/per-carton \
 price is printed, record that. Null if no per-unit price is printed (only a line total). \
 Record the price exactly as printed; do not compute or round it.
-    - amount: the line total (ex-GST if the invoice lists ex-GST, otherwise the printed \
-line amount).
+    - amount: the line total AS PRINTED in the amount/total column. This is the NET amount \
+AFTER any line discount — record it exactly as printed; do NOT add the discount back. \
+(ex-GST if the invoice lists ex-GST, otherwise the printed line amount.)
+    - discount: the per-line discount shown for this line (the discount column), as a POSITIVE \
+number. Many distributors (e.g. St George) discount every line, so amount = quantity x \
+unit_price - discount. Null or 0 when there is no discount column or no discount on the line.
 - total_ex_gst: the invoice total EXCLUDING GST. Australian GST is 10%. If the invoice \
 only shows a GST-inclusive total, compute ex-GST = inclusive_total / 1.1.
 - total_inc_gst and gst_amount: include if printed; otherwise leave null.
@@ -124,6 +128,7 @@ class LineItem(BaseModel):
     quantity: Optional[float] = None
     unit: Optional[str] = None
     unit_price: Optional[float] = None  # printed per-unit price; per-kg rate when shown
+    discount: Optional[float] = None    # per-line discount (positive $); amount is already net of it
     amount: float
 
 
@@ -287,21 +292,35 @@ def extract_invoice(pages, media_type: Optional[str] = None,
 
 
 def _verify_line_math(data: InvoiceData) -> None:
-    """Deterministic safety net for line totals. Where a line has both a quantity and a
-    printed per-unit price, recompute amount = quantity x unit_price in Python rather than
-    trusting the model's arithmetic, so a single misread digit in the line-total column is
-    corrected from its parts. (The SYSTEM prompt normalises per-kg lines so quantity is the
-    kg weight and unit_price the per-kg rate, keeping this multiplication valid.) Mutates
-    `data` in place; the review screen still re-checks the totals before saving."""
+    """Deterministic safety net for a MISREAD line total — but only when it actually helps.
+
+    Where a line has a quantity and a printed per-unit price, the expected net amount is
+    quantity x unit_price - discount. We only overwrite the printed amount with that figure
+    when doing so brings the line sum CLOSER to the invoice total. So an invoice that already
+    reconciles is left exactly as printed — crucially including invoices with per-line
+    discounts (St George etc.), where amount = qty x unit_price - discount and a naive
+    qty x unit_price would wrongly add every discount back. Mutates `data` in place."""
+    base = reconciliation(data.model_dump())
+    if not base["checkable"] or base["ok"]:
+        return  # already adds up (or no total to check) -> trust the printed line amounts
+    fixed = []  # (item, old_amount, new_amount)
     for item in data.line_items:
         if item.quantity is None or item.unit_price is None:
             continue
         try:
-            recomputed = round(float(item.quantity) * float(item.unit_price), 2)
+            disc = float(item.discount or 0)
+            recomputed = round(float(item.quantity) * float(item.unit_price) - disc, 2)
         except (TypeError, ValueError):
             continue
         if recomputed > 0 and abs((item.amount or 0) - recomputed) > 0.01:
-            item.amount = recomputed
+            fixed.append((item, item.amount, recomputed))
+    if not fixed:
+        return
+    for item, _old, new in fixed:
+        item.amount = new
+    if abs(reconciliation(data.model_dump())["diff"]) > abs(base["diff"]):
+        for item, old, _new in fixed:  # corrections didn't help -> revert, leave as printed
+            item.amount = old
 
 
 # ---------------- POS end-of-day takings slip ----------------
