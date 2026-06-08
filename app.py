@@ -2676,5 +2676,12 @@ if tab_var is not None:
                     if fail:
                         st.error("Some didn't save — " + "; ".join(fail))
             elif not drive_on:
-                st.caption("💡 Connect Google Drive to save letters straight to your Drive folder "
-                           "(needs a one-time service-account setup — ask me to walk you through it).")
+                _has = "GDRIVE_SERVICE_ACCOUNT" in _secret_names()
+                if _has:
+                    st.warning("☁️ Google Drive key **is** in Secrets but not loaded yet — "
+                               "**reboot the app** (Manage app → ⋮ → Reboot) to pick it up, then "
+                               "the **Save to Drive** buttons will appear.")
+                else:
+                    st.caption("💡 Google Drive not connected. Add **GDRIVE_SERVICE_ACCOUNT** "
+                               f"(the service-account key) in Secrets. Secret names seen now: "
+                               f"**{', '.join(_secret_names()) or 'none'}**.")
