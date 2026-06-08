@@ -907,6 +907,7 @@ if tab_lab is not None:
                                                   key="emp_class_ed_plain")
                     if st.button("💾 Save classifications", type="primary", key="emp_class_save"):
                         n = 0
+                        want = {}
                         for _, r in class_ed.iterrows():
                             nm = r["Employee"]
                             cls = str(r["Classification"]).strip()
@@ -914,20 +915,32 @@ if tab_lab is not None:
                             b = base.get(nm, {})
                             if cls != b.get("employment_type") or sec != (b.get("section") or ""):
                                 storage.set_employee_override(nm, employment_type=cls, section=sec)
+                                want[nm] = cls
                                 n += 1
                             else:
                                 storage.delete_employee_override(nm)  # back to the sheet's value
                         bust_caches()
-                        # Recompute this week's pay immediately if a CSV is already loaded.
-                        _cb = st.session_state.get("shift_csv_bytes")
-                        if _cb:
-                            try:
-                                st.session_state["pay"] = payroll.process_shift_csv(
-                                    _cb, setup[1], overrides=storage.employee_overrides())
-                            except Exception:
-                                pass
-                        st.success(f"Saved — {n} override(s) active.")
-                        st.rerun()
+                        # Verify it actually persisted — a missing Supabase table fails silently.
+                        saved = storage.employee_overrides()
+                        missing = [nm for nm, c in want.items()
+                                   if saved.get(nm, {}).get("employment_type") != c]
+                        if missing:
+                            st.error("Couldn't save the change — the **employee_overrides** table "
+                                     "doesn't exist in Supabase yet. In your app → Manage app → "
+                                     "Settings → run the `employee_overrides` block from "
+                                     "`supabase_schema.sql` in the Supabase SQL editor, then try again.")
+                        else:
+                            # Recompute this week's pay immediately if a CSV is already loaded.
+                            _cb = st.session_state.get("shift_csv_bytes")
+                            if _cb:
+                                try:
+                                    st.session_state["pay"] = payroll.process_shift_csv(
+                                        _cb, setup[1], overrides=saved)
+                                except Exception:
+                                    pass
+                            st.success(f"Saved — {n} override(s) active. "
+                                       "Re-download the report to see the change.")
+                            st.rerun()
 
             st.markdown("##### Upload this week's Tanda shift CSV")
             csvf = st.file_uploader("Tanda shift report (CSV)", type=["csv"], key="shiftcsv")
