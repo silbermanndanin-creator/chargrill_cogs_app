@@ -880,20 +880,31 @@ if tab_lab is not None:
                     st.error(f"Couldn't read employees from the setup file: {e}")
                 if emps:
                     base = {e["name"]: e for e in emps}
+                    # Section options must include every value already present, else a
+                    # non-standard section (or trailing space) makes the selectbox column
+                    # raise and blanks the rest of the tab.
+                    sec_opts = sorted({(e.get("section") or "") for e in emps}
+                                      | {(v.get("section") or "") for v in ovr.values()}
+                                      | {"FOH", "BOH", ""})
                     class_df = pd.DataFrame([{
                         "Employee": e["name"],
                         "Classification": (ovr.get(e["name"], {}).get("employment_type")
                                            or e["employment_type"]),
                         "Section": (ovr.get(e["name"], {}).get("section") or e["section"] or ""),
                     } for e in emps])
-                    class_ed = st.data_editor(
-                        class_df, hide_index=True, width="stretch", key="emp_class_ed",
-                        column_config={
-                            "Employee": st.column_config.TextColumn(disabled=True),
-                            "Classification": st.column_config.SelectboxColumn(
-                                options=["Full-Time", "Part-Time", "Casual"], required=True),
-                            "Section": st.column_config.SelectboxColumn(
-                                options=["FOH", "BOH", ""], required=False)})
+                    cfg = {
+                        "Employee": st.column_config.TextColumn(disabled=True),
+                        "Classification": st.column_config.SelectboxColumn(
+                            options=["Full-Time", "Part-Time", "Casual"], required=True),
+                        "Section": st.column_config.SelectboxColumn(options=sec_opts, required=False)}
+                    try:
+                        class_ed = st.data_editor(class_df, hide_index=True, width="stretch",
+                                                  key="emp_class_ed", column_config=cfg)
+                    except Exception:
+                        # Never let an odd cell value blank the rest of the tab — fall back to
+                        # a plain editable grid (free-text) that can't reject values.
+                        class_ed = st.data_editor(class_df, hide_index=True, width="stretch",
+                                                  key="emp_class_ed_plain")
                     if st.button("💾 Save classifications", type="primary", key="emp_class_save"):
                         n = 0
                         for _, r in class_ed.iterrows():
