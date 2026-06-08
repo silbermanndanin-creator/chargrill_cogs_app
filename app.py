@@ -454,6 +454,11 @@ def c_employee_overrides():
     return storage.employee_overrides()
 
 
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def c_load_shift_csv():
+    return storage.load_shift_csv()
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def c_lightspeed_revenue(start, end, token, business_id):
     # Network call (up to 20s). Cached 5 min so it never blocks every rerun.
@@ -950,9 +955,17 @@ if tab_lab is not None:
             if csvf is not None and st.button("Calculate award pay", type="primary", key="calcpay"):
                 with st.spinner("Crunching the award…"):
                     try:
-                        st.session_state["shift_csv_bytes"] = csvf.getvalue()  # reused by Variations tab
+                        _cb = csvf.getvalue()
+                        st.session_state["shift_csv_bytes"] = _cb  # reused by Variations tab
                         st.session_state["pay"] = payroll.process_shift_csv(
-                            csvf.getvalue(), setup[1], overrides=ovr)
+                            _cb, setup[1], overrides=ovr)
+                        # Persist so Variations can reuse it even after a reboot/new session.
+                        try:
+                            _we = str(pd.to_datetime(st.session_state["pay"]["week_ending"]).date())
+                        except Exception:
+                            _we = ""
+                        storage.save_shift_csv(getattr(csvf, "name", "shift.csv"), _cb, _we)
+                        bust_caches()
                     except Exception as e:
                         st.error(f"Processing failed: {e}")
                         st.session_state.pop("pay", None)
@@ -2543,14 +2556,24 @@ if tab_var is not None:
         if not cmap:
             st.info("Add your part-time contracts above to start detecting variations.")
 
+        # Reuse the Labour CSV: session first, then the persisted copy (survives reboots).
         csv_bytes = st.session_state.get("shift_csv_bytes")
+        _src = "this session's 🧮 Labour upload"
         if csv_bytes is None:
-            vf = st.file_uploader("This week's Tanda shift CSV", type=["csv"], key="var_csv")
-            if vf is not None:
-                csv_bytes = vf.getvalue()
+            _saved = c_load_shift_csv()
+            if _saved:
+                csv_bytes = _saved[1]
                 st.session_state["shift_csv_bytes"] = csv_bytes
-        else:
-            st.caption("Using the Tanda CSV from the 🧮 Labour tab (or upload a different one there).")
+                _we = _saved[2]
+                _src = f"the saved 🧮 Labour CSV{f' (week ending {_we})' if _we else ''}"
+        if csv_bytes is not None:
+            st.caption(f"Using {_src}. Upload below to use a different week.")
+        vf = st.file_uploader("Use a different Tanda shift CSV (optional)"
+                              if csv_bytes is not None else "This week's Tanda shift CSV",
+                              type=["csv"], key="var_csv")
+        if vf is not None:
+            csv_bytes = vf.getvalue()
+            st.session_state["shift_csv_bytes"] = csv_bytes
 
         if csv_bytes:
             try:

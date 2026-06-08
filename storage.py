@@ -21,6 +21,7 @@ REV_PATH = os.path.join(DATA_DIR, "revenue.csv")
 POS_PATH = os.path.join(DATA_DIR, "pos_days.csv")
 LABOUR_PATH = os.path.join(DATA_DIR, "labour.csv")
 PAYROLL_SETUP_PATH = os.path.join(DATA_DIR, "payroll_setup.xlsx")
+SHIFT_CSV_PATH = os.path.join(DATA_DIR, "shift_csv.csv")
 COLUMNS = ["saved_at", "supplier_raw", "supplier", "invoice_date",
            "total_ex_gst", "iso_week", "month", "line_items"]
 REV_COLUMNS = ["period_type", "period_key", "revenue", "updated_at"]
@@ -853,6 +854,49 @@ def load_payroll_setup():
         b = f.read()
     ts = dt.datetime.fromtimestamp(os.path.getmtime(PAYROLL_SETUP_PATH)).isoformat(timespec="seconds")
     return ("payroll_setup.xlsx", b, ts)
+
+
+# ---------- latest weekly Tanda shift CSV (so Variations reuses the Labour upload) ----------
+# Single latest row (id=1), like payroll_setup. Persisted so the Variations tab can reuse
+# the shift CSV uploaded in the Labour tab even after a redeploy/new session. Personal data
+# — lives only in the DB / local data dir, never in git.
+def save_shift_csv(filename: str, csv_bytes: bytes, week_ending: str = ""):
+    if _use_supabase():
+        row = {"id": 1, "filename": str(filename or "shift.csv"),
+               "csv_b64": base64.b64encode(csv_bytes).decode("ascii"),
+               "week_ending": str(week_ending or ""),
+               "uploaded_at": dt.datetime.now().isoformat(timespec="seconds")}
+        try:
+            _client().table("shift_csv").upsert(row, on_conflict="id").execute()
+        except Exception:
+            pass  # shift_csv table not created yet -> degrade (session reuse still works)
+    else:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        with open(SHIFT_CSV_PATH, "wb") as f:
+            f.write(csv_bytes)
+
+
+def load_shift_csv():
+    """Return (filename, csv_bytes, week_ending, uploaded_at) or None if none saved yet."""
+    if _use_supabase():
+        try:
+            data = _client().table("shift_csv").select("*").eq("id", 1).execute().data
+        except Exception:
+            return None  # table not created yet -> degrade
+        if not data:
+            return None
+        r = data[0]
+        try:
+            b = base64.b64decode(r["csv_b64"])
+        except Exception:
+            return None
+        return (r.get("filename") or "shift.csv", b, r.get("week_ending") or "", r.get("uploaded_at"))
+    if not os.path.exists(SHIFT_CSV_PATH):
+        return None
+    with open(SHIFT_CSV_PATH, "rb") as f:
+        b = f.read()
+    ts = dt.datetime.fromtimestamp(os.path.getmtime(SHIFT_CSV_PATH)).isoformat(timespec="seconds")
+    return ("shift.csv", b, "", ts)
 
 
 # ---------- POS daily takings (one finalised end-of-day slip per date) ----------
