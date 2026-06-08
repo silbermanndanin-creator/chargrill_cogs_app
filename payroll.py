@@ -444,12 +444,35 @@ def process_shift_csv(csv_bytes, setup_bytes):
     return process_shifts(shift_df, emp_df, rates, public_holidays)
 
 
-def apply_leave(out, leave):
+def apply_leave(out, leave, roster=None):
     """Add annual/sick leave (paid at the flat rate) to FT/PT employees and refresh
     the totals. `leave` = {employee_name: {'al': hours, 'sl': hours}}. Idempotent —
     each call recomputes gross from base (flat pay + top-up), so it can run on every
-    rerun. Casuals accrue no paid leave and are left unchanged."""
-    for r in out["results"]:
+    rerun. Casuals accrue no paid leave and are left unchanged.
+
+    `roster` (optional) = list of FT/PT setup rows (see permanent_roster). When given,
+    an employee who didn't work this week (so isn't in the shift CSV results) but has
+    leave entered — e.g. someone on annual leave the whole week — gets a synthesised
+    zero-worked row so their leave pay still lands in the totals and report. Synthesised
+    rows with no leave are dropped again, so absentees only appear once they're paid leave."""
+    results = out["results"]
+    by_name = {r["name"]: r for r in results}
+    if roster:
+        for m in roster:
+            nm = m["name"]
+            lv = leave.get(nm, {}) or {}
+            has_leave = (float(lv.get("al", 0) or 0) + float(lv.get("sl", 0) or 0)) > 0
+            if nm not in by_name and has_leave:
+                row = {
+                    "name": nm, "emp_type": m["emp_type"], "section": m["section"],
+                    "flat_rate": float(m.get("flat_rate", 0) or 0),
+                    "hrs": {"total": 0.0}, "pay": {"total": 0.0}, "rates": {},
+                    "award_pay": 0.0, "flat_pay": 0.0, "topup": 0.0, "gross": 0.0,
+                    "day_rows": [], "absent": True,
+                }
+                results.append(row)
+                by_name[nm] = row
+    for r in results:
         if r["emp_type"] == "Casual":
             r["al_hrs"] = r["sl_hrs"] = r["leave_pay"] = 0.0
             continue
@@ -459,9 +482,37 @@ def apply_leave(out, leave):
         r["al_hrs"], r["sl_hrs"] = al, sl
         r["leave_pay"] = round((al + sl) * r["flat_rate"], 2)
         r["gross"] = round(r["flat_pay"] + r["topup"] + r["leave_pay"], 2)
+    # Drop synthesised absentee rows that ended up with no leave, then re-sort.
+    out["results"] = [r for r in results
+                      if not (r.get("absent") and not r.get("leave_pay"))]
+    out["results"].sort(key=lambda r: (0 if r["emp_type"] != "Casual" else 1, r["name"]))
     out["total_gross"] = round(sum(r["gross"] for r in out["results"]), 2)
     out["total_leave"] = round(sum(r.get("leave_pay", 0) for r in out["results"]), 2)
     return out
+
+
+def permanent_roster(setup_bytes):
+    """[{name, emp_type, section, flat_rate}] for every FT/PT (non-casual) employee in the
+    setup sheet — INCLUDING those who didn't work this week (e.g. on leave). Lets the leave
+    table list everyone, not just whoever appears in the shift CSV."""
+    emp_df, _rates, _ph = load_setup_from_bytes(setup_bytes)
+    roster = []
+    for _, emp_row in emp_df.iterrows():
+        d = emp_row.to_dict()
+        emp_type = get_emp_type_key(
+            _get_col(d, 'Employment Type', 'Employment\nType') or 'Full-Time')
+        if emp_type == 'Casual':
+            continue
+        name = _get_col(d, 'Employee Name (Display)', 'Employee Name')
+        if not name:
+            continue
+        flat_raw = _get_col(d, 'Flat Hourly Rate ($)', 'Flat Hourly\nRate ($)')
+        flat_rate = float(flat_raw) if flat_raw not in (None, '', 'nan') else 0.0
+        section = str(_get_col(d, 'Section (FOH/BOH)', 'Section\n(FOH/BOH)') or '').strip()
+        roster.append({"name": str(name).strip(), "emp_type": emp_type,
+                       "section": section, "flat_rate": flat_rate})
+    return roster
+
 
 
 # ── EXCEL REPORT (built in memory) ───────────────────────────────────────────
