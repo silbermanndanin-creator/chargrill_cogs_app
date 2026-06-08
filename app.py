@@ -2589,6 +2589,18 @@ if tab_var is not None:
         if vf is not None:
             csv_bytes = vf.getvalue()
             st.session_state["shift_csv_bytes"] = csv_bytes
+            # Persist so it survives reboots — stop re-uploading every time.
+            try:
+                _we = str(pd.to_datetime(payroll.load_csv_from_bytes(csv_bytes)["Date"]).max().date())
+            except Exception:
+                _we = ""
+            storage.save_shift_csv(getattr(vf, "name", "shift.csv"), csv_bytes, _we)
+            bust_caches()
+            if storage.load_shift_csv() is None:
+                st.warning("Held for this session, but it can't survive a reboot yet — the "
+                           "**shift_csv** table doesn't exist in Supabase. Run its block from "
+                           "`supabase_schema.sql` in the Supabase SQL Editor (one-time) and it'll "
+                           "stay loaded after that.")
 
         if csv_bytes:
             try:
