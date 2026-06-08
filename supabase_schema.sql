@@ -163,6 +163,16 @@ create table if not exists employee_overrides (
     updated_at       text
 );
 
+-- Latest weekly Tanda shift CSV (base64), so the Variations tab can reuse the CSV
+-- uploaded in the Labour tab without re-uploading — survives redeploys. Single row (id=1).
+create table if not exists shift_csv (
+    id           integer primary key,            -- always 1; upsert replaces the latest
+    filename     text,
+    csv_b64      text,
+    week_ending  text,
+    uploaded_at  text
+);
+
 -- Storage bucket for emailed invoices: Power Automate drops each email attachment
 -- here, and inbox_ingest.py (GitHub Actions cron) reads + saves them. Private — the
 -- service_role key has full access; nothing public is needed. (You can also create
