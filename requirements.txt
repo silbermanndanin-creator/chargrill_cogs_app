@@ -10,3 +10,5 @@ plotly>=5.20
 python-docx>=1.1   # generate part-time variation letters (.docx) from the firm template
 supabase>=2.0   # only used in cloud mode (SUPABASE_URL + SUPABASE_KEY set); local uses CSV
 holidays>=0.40   # public-holiday detection for the drinks order (state-aware)
+google-api-python-client>=2.0   # optional: save variation letters to Google Drive
+google-auth>=2.0                # service-account auth for the Drive upload
