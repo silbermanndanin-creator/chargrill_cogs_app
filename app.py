@@ -2587,13 +2587,8 @@ if tab_var is not None:
                 st.success(f"✅ Week ending {wk_end:%d %b %Y}: every part-timer matched their "
                            "contracted start times — no letters needed.")
             elif vmap:
-                n = sum(len(v) for v in vmap.values())
-                st.markdown(f"**Week ending {wk_end:%d %b %Y} — {n} variation(s)**")
-                vrows = [{"Employee": emp, "Date": str(e["date"]), "Day": e["weekday"],
-                          "Contracted start": V._fmt(e["contracted_start"]) if e["contracted_start"] else "—",
-                          "Actual start": V._fmt(e["actual_start"]),
-                          "Type": "extra day" if e["kind"] == "extra_day" else "start time"}
-                         for emp, evs in vmap.items() for e in evs]
+                vrows = V.display_rows(vmap)  # one row per employee+date, nicely formatted
+                st.markdown(f"**Week ending {wk_end:%d %b %Y} — {len(vrows)} variation(s)**")
                 st.dataframe(pd.DataFrame(vrows), hide_index=True, width="stretch")
                 if st.button("💾 Save this week's variations to file", type="primary", key="var_save"):
                     saved = storage.save_variation_events(vmap, wk_end)
