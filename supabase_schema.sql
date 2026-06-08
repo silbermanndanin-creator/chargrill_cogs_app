@@ -163,6 +163,14 @@ create table if not exists employee_overrides (
     updated_at       text
 );
 
+-- Storage bucket for emailed invoices: Power Automate drops each email attachment
+-- here, and inbox_ingest.py (GitHub Actions cron) reads + saves them. Private — the
+-- service_role key has full access; nothing public is needed. (You can also create
+-- this in Dashboard -> Storage -> New bucket, name "invoice_inbox", Public off.)
+insert into storage.buckets (id, name, public)
+values ('invoice_inbox', 'invoice_inbox', false)
+on conflict (id) do nothing;
+
 -- This app runs server-side on Streamlit Cloud and connects with the service_role
 -- key, so Row Level Security is not required. If you prefer to enable RLS, add
 -- policies that allow the service role full access.
