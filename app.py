@@ -926,9 +926,9 @@ if tab_lab is not None:
                                    if saved.get(nm, {}).get("employment_type") != c]
                         if missing:
                             st.error("Couldn't save the change — the **employee_overrides** table "
-                                     "doesn't exist in Supabase yet. In your app → Manage app → "
-                                     "Settings → run the `employee_overrides` block from "
-                                     "`supabase_schema.sql` in the Supabase SQL editor, then try again.")
+                                     "doesn't exist in Supabase yet. Open your **Supabase** project "
+                                     "→ **SQL Editor** → New query → run the `employee_overrides` "
+                                     "block from `supabase_schema.sql`, then try again.")
                         else:
                             # Recompute this week's pay immediately if a CSV is already loaded.
                             _cb = st.session_state.get("shift_csv_bytes")
