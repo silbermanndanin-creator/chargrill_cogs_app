@@ -216,10 +216,16 @@ def render_letter(cname, patterns, today=None, details=None):
         if f not in seen:
             seen.add(f)
             days_full.append(f)
-    iii = "; ".join(f"start work at {_fmt(p['start'])} and finish work at {_fmt(p['finish'])} "
-                    f"on {C.WEEKDAY_FULL[p['weekday']]}" for p in patterns)
-    hrs = {round(_dur(p["start"], p["finish"]), 2) for p in patterns}
-    hours_phrase = (f"{next(iter(hrs)):g}" if len(hrs) == 1 else "the")
+    # Clause (iii): the template's exact sentence, repeated per pattern for split shifts.
+    iii = "; ".join(f"you will start work at {_fmt_compact(p['start'])} and finish work at "
+                    f"{_fmt_compact(p['finish'])} on {C.WEEKDAY_FULL[p['weekday']]}" for p in patterns)
+    # Clause (i): ordinary hours per day = sum of that day's blocks. Fill only if every
+    # worked day has the same daily total; otherwise leave the [insert] blank for the owner.
+    day_hours = {}
+    for p in patterns:
+        day_hours[p["weekday"]] = day_hours.get(p["weekday"], 0.0) + _dur(p["start"], p["finish"])
+    distinct = {round(v, 2) for v in day_hours.values()}
+    hours_str = f"{next(iter(distinct)):g}" if len(distinct) == 1 else "[insert]"
 
     to_delete = []
     for p in doc.paragraphs:
@@ -231,13 +237,13 @@ def render_letter(cname, patterns, today=None, details=None):
             _set(p, today.strftime("%d %B %Y")); continue
         if t.startswith("[Option 1"):
             to_delete.append(p); continue
-        if t.startswith("[Option 2"):
+        if t.startswith("[Option 2"):  # template wording verbatim, dates filled, instruction prefix dropped
             _set(p, f"The terms of this variation will commence on {commence:%d %B %Y}, and will "
                     f"end on {end:%d %B %Y}. At the end of this period, your hours of work and "
-                    f"associated arrangements will revert back to those set out in clause 3 of "
-                    f"the Agreement."); continue
+                    f"associated arrangements will revert back to those set out in [clause 3] of the "
+                    f"Agreement (instead of those set out in clause [3] below)."); continue
         if "ordinary hours each day" in raw:
-            _set(p, f"(i)\tyou will work {hours_phrase} ordinary hours each day as set out below;"); continue
+            _set(p, f"(i)\tyou will work {hours_str} ordinary hours each day;"); continue
         if "days of the week to be worked" in raw:
             _set(p, f"(ii)\tyou will work on {_join(days_full)} each week;"); continue
         if "you will start work at" in raw:
