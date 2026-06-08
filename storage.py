@@ -47,6 +47,8 @@ DRINKS_PATH = os.path.join(DATA_DIR, "drinks_counts.csv")
 DRINKS_COLUMNS = ["item", "on_hand", "updated_at"]
 CHECKS_PATH = os.path.join(DATA_DIR, "invoice_checks.csv")
 CHECKS_COLUMNS = ["period_key", "supplier", "state", "note", "updated_at"]
+EMP_OVR_PATH = os.path.join(DATA_DIR, "employee_overrides.csv")
+EMP_OVR_COLUMNS = ["employee", "employment_type", "section", "flat_rate", "updated_at"]
 
 
 def iso_week_of(d: dt.date) -> str:
@@ -616,6 +618,73 @@ def invoice_checks_for(period_key: str) -> dict:
         if sup:
             out[sup] = {"state": _txt(r.get("state")), "note": _txt(r.get("note")),
                         "updated_at": r.get("updated_at")}
+    return out
+
+
+# ---------- employee classification overrides (change FT/PT/Casual without re-uploading setup) ----------
+def set_employee_override(employee, employment_type="", section="", flat_rate=None):
+    """Override a setup-sheet employee's classification (keyed by display name). One row per
+    employee; replaces any existing override."""
+    emp = str(employee or "").strip()
+    if not emp:
+        return
+    row = {"employee": emp, "employment_type": str(employment_type or ""),
+           "section": str(section or ""),
+           "flat_rate": ("" if flat_rate in (None, "") else round(float(flat_rate), 2)),
+           "updated_at": dt.datetime.now().isoformat(timespec="seconds")}
+    if _use_supabase():
+        try:
+            _client().table("employee_overrides").upsert(row, on_conflict="employee").execute()
+        except Exception:
+            pass  # table not created yet -> degrade
+    else:
+        _ensure_csv(EMP_OVR_PATH, EMP_OVR_COLUMNS)
+        df = pd.read_csv(EMP_OVR_PATH)
+        if not df.empty:
+            df = df[df["employee"].astype(str) != emp]
+        df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+        df.to_csv(EMP_OVR_PATH, index=False)
+
+
+def delete_employee_override(employee):
+    emp = str(employee or "").strip()
+    if _use_supabase():
+        try:
+            _client().table("employee_overrides").delete().eq("employee", emp).execute()
+        except Exception:
+            pass
+    elif os.path.exists(EMP_OVR_PATH):
+        df = pd.read_csv(EMP_OVR_PATH)
+        df = df[df["employee"].astype(str) != emp]
+        df.to_csv(EMP_OVR_PATH, index=False)
+
+
+def employee_overrides() -> dict:
+    """{employee display name: {'employment_type','section','flat_rate'}} — flat_rate float or None."""
+    if _use_supabase():
+        try:
+            rows = _client().table("employee_overrides").select("*").execute().data or []
+        except Exception:
+            return {}
+    else:
+        _ensure_csv(EMP_OVR_PATH, EMP_OVR_COLUMNS)
+        df = pd.read_csv(EMP_OVR_PATH)
+        rows = df.to_dict("records") if not df.empty else []
+
+    def _txt(v):
+        return "" if v is None or (isinstance(v, float) and pd.isna(v)) else str(v).strip()
+    out = {}
+    for r in rows:
+        emp = _txt(r.get("employee"))
+        if not emp:
+            continue
+        fr = r.get("flat_rate")
+        try:
+            fr = None if fr in (None, "") or (isinstance(fr, float) and pd.isna(fr)) else float(fr)
+        except (TypeError, ValueError):
+            fr = None
+        out[emp] = {"employment_type": _txt(r.get("employment_type")),
+                    "section": _txt(r.get("section")), "flat_rate": fr}
     return out
 
 
