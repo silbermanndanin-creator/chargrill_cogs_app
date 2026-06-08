@@ -908,27 +908,30 @@ if tab_lab is not None:
                     if st.button("💾 Save classifications", type="primary", key="emp_class_save"):
                         n = 0
                         want = {}
+                        err = None
                         for _, r in class_ed.iterrows():
                             nm = r["Employee"]
                             cls = str(r["Classification"]).strip()
                             sec = str(r.get("Section") or "").strip()
                             b = base.get(nm, {})
                             if cls != b.get("employment_type") or sec != (b.get("section") or ""):
-                                storage.set_employee_override(nm, employment_type=cls, section=sec)
+                                e = storage.set_employee_override(nm, employment_type=cls, section=sec)
+                                err = err or e
                                 want[nm] = cls
                                 n += 1
                             else:
                                 storage.delete_employee_override(nm)  # back to the sheet's value
                         bust_caches()
-                        # Verify it actually persisted — a missing Supabase table fails silently.
+                        # Verify it actually persisted (a Supabase write can fail silently).
                         saved = storage.employee_overrides()
                         missing = [nm for nm, c in want.items()
                                    if saved.get(nm, {}).get("employment_type") != c]
                         if missing:
-                            st.error("Couldn't save the change — the **employee_overrides** table "
-                                     "doesn't exist in Supabase yet. Open your **Supabase** project "
-                                     "→ **SQL Editor** → New query → run the `employee_overrides` "
-                                     "block from `supabase_schema.sql`, then try again.")
+                            st.error("Couldn't save to Supabase."
+                                     + (f" Error: `{err}`" if err else "")
+                                     + " Make sure the **employee_overrides** table exists "
+                                     "(run its block from `supabase_schema.sql` in the Supabase "
+                                     "SQL Editor) and that you're on the same project as the app.")
                         else:
                             # Recompute this week's pay immediately if a CSV is already loaded.
                             _cb = st.session_state.get("shift_csv_bytes")
