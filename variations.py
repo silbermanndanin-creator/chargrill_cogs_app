@@ -37,6 +37,72 @@ def _fmt(hhmm):
     return f"{t.hour % 12 or 12}:{t.minute:02d}{ap}"
 
 
+def _fmt_compact(hhmm):
+    """'14:00' -> '2pm', '14:30' -> '2:30pm' (drop ':00' on the hour)."""
+    t = parse_hhmm(hhmm)
+    if not t:
+        return str(hhmm)
+    ap = "am" if t.hour < 12 else "pm"
+    h = t.hour % 12 or 12
+    return f"{h}{ap}" if t.minute == 0 else f"{h}:{t.minute:02d}{ap}"
+
+
+def _ordinal(n):
+    """1 -> '1st', 2 -> '2nd', 11 -> '11th'."""
+    suf = "th" if 11 <= n % 100 <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suf}"
+
+
+def nice_date(d):
+    """A date -> 'Monday 1st June'."""
+    if not isinstance(d, dt.date):
+        try:
+            d = pd.to_datetime(d).date()
+        except Exception:
+            return str(d)
+    return f"{d:%A} {_ordinal(d.day)} {d:%B}"
+
+
+def _day_span(events):
+    """'11am-3pm' — earliest actual start to latest actual finish across a day's shifts."""
+    def sm(e):
+        return _mins(e["actual_start"])
+
+    def fm(e):
+        return _mins(e["actual_finish"])
+    starts = [e for e in events if sm(e) is not None]
+    if not starts:
+        return "—"
+    start_str = _fmt_compact(min(starts, key=sm)["actual_start"])
+    fins = [e for e in events if fm(e) is not None]
+    if fins:
+        return f"{start_str}–{_fmt_compact(max(fins, key=fm)['actual_finish'])}"
+    return start_str
+
+
+def display_rows(vmap):
+    """Merge a week's variation events into ONE row per employee+date for the on-screen table:
+    {Employee, When ('Monday 1st June'), Worked ('11am-3pm'), 'Contracted start', Type}.
+    A split shift (two entries on one day) becomes a single 'earliest-start to latest-finish' span."""
+    rows = []
+    for emp, evs in vmap.items():
+        by_date = {}
+        for e in evs:
+            d = e["date"] if isinstance(e["date"], dt.date) else pd.to_datetime(e["date"]).date()
+            by_date.setdefault(d, []).append(e)
+        for d in sorted(by_date):
+            grp = by_date[d]
+            cstart = next((g.get("contracted_start") for g in grp if g.get("contracted_start")), None)
+            rows.append({
+                "Employee": emp,
+                "When": nice_date(d),
+                "Worked": _day_span(grp),
+                "Contracted start": _fmt_compact(cstart) if cstart else "—",
+                "Type": "start time" if any(g["kind"] == "start" for g in grp) else "extra day",
+            })
+    return rows
+
+
 def _dur(start, finish):
     s, f = _mins(start), _mins(finish)
     if s is None or f is None:
