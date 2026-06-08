@@ -178,11 +178,31 @@ def load_csv_from_bytes(csv_bytes):
 # ── TIME HELPERS ─────────────────────────────────────────────────────────────
 
 def parse_hhmm(s):
-    try:
-        parts = str(s).strip().split(':')
-        return time(int(parts[0]) % 24, int(parts[1]))
-    except Exception:
+    """Parse a time of day to a datetime.time, accepting both 24-hour and 12-hour formats:
+    '14:00', '14:00:00', '2:00pm', '2:00 PM', '9am', '2026-06-02 14:00' (takes the time part).
+    Returns None if no time can be read. Robust so the shift CSV (often 24h) and the typed
+    contracts (which may be am/pm) still compare correctly."""
+    if s is None:
         return None
+    txt = str(s).strip().lower()
+    if not txt:
+        return None
+    ap = None
+    m = re.search(r'(\d{1,2}):(\d{2})(?::\d{2})?\s*([ap]m)?', txt)
+    if m:
+        h, mi, ap = int(m.group(1)), int(m.group(2)), m.group(3)
+    else:  # bare hour with am/pm, e.g. '2pm', '9 am'
+        m2 = re.match(r'^(\d{1,2})\s*([ap]m)$', txt)
+        if not m2:
+            return None
+        h, mi, ap = int(m2.group(1)), 0, m2.group(2)
+    if ap == 'pm' and h != 12:
+        h += 12
+    elif ap == 'am' and h == 12:
+        h = 0
+    if not (0 <= mi < 60):
+        return None
+    return time(h % 24, mi)
 
 
 def late_night_hrs(start_s, end_s, cutoff_h=22):
