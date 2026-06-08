@@ -2643,6 +2643,13 @@ if tab_var is not None:
                             st.success(f"Saved {ok} letter(s) to your Google Drive folder.")
                         if fail:
                             st.error("Some didn't save — " + "; ".join(fail))
+                    with st.expander("🔧 Google Drive connection"):
+                        st.caption("Share the Drive folder with **this exact** email as **Editor**:")
+                        st.code(gdrive.service_account_email() or "?", language=None)
+                        st.caption(f"Target folder ID: `{gdrive.folder_id()}`")
+                        if st.button("🔍 Test folder access", key="var_drive_test"):
+                            _ok, _msg = gdrive.check_access()
+                            (st.success if _ok else st.error)(_msg)
                 else:
                     _has = "GDRIVE_SERVICE_ACCOUNT" in _secret_names()
                     st.caption("☁️ Drive key is in Secrets but not loaded — **reboot the app** to "
