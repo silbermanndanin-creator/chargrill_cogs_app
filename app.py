@@ -196,10 +196,43 @@ st.markdown(f"<style>{_CSS.substitute(**T)}</style>", unsafe_allow_html=True)
 
 
 def get_api_key():
+    """Anthropic key from Streamlit secrets (top-level OR under any [section]), else env.
+    Tolerant of stray whitespace / smart-quote paste issues."""
     try:
-        return st.secrets["ANTHROPIC_API_KEY"]
+        v = st.secrets.get("ANTHROPIC_API_KEY")
+        if not v:  # maybe nested under a [section] table
+            for _sect in st.secrets.values():
+                try:
+                    if isinstance(_sect, dict) and _sect.get("ANTHROPIC_API_KEY"):
+                        v = _sect["ANTHROPIC_API_KEY"]
+                        break
+                except Exception:
+                    pass
+        if v:
+            return str(v).strip().strip('"').strip("'").strip()
     except Exception:
-        return os.environ.get("ANTHROPIC_API_KEY")
+        pass
+    return (os.environ.get("ANTHROPIC_API_KEY") or "").strip() or None
+
+
+def _secret_names():
+    """Top-level secret names the app can currently see (names only, never values) —
+    used to diagnose a missing/misnamed/misformatted ANTHROPIC_API_KEY."""
+    try:
+        return list(st.secrets.keys())
+    except Exception:
+        return []  # secrets file failed to parse (e.g. a TOML/quote error) -> nothing visible
+
+
+def _api_key_help():
+    names = _secret_names()
+    seen = ", ".join(str(n) for n in names) if names else "none (secrets didn't load)"
+    return (f"No ANTHROPIC_API_KEY readable. Secret names the app sees: **{seen}**. "
+            "Fix in **Manage app → Settings → Secrets**: add the line exactly\n\n"
+            '`ANTHROPIC_API_KEY = "sk-ant-..."`\n\n'
+            "— use straight quotes (not “ ”), keep it on one line, and don't put it under a "
+            "`[section]` heading. If the names above show *none*, another line in Secrets has a "
+            "typo and is breaking the whole file.")
 
 
 if get_api_key():
@@ -623,7 +656,7 @@ with tab_inv:
 
     if pages:
         if not get_api_key():
-            st.error("No ANTHROPIC_API_KEY set — add it to .streamlit/secrets.toml.")
+            st.error(_api_key_help())
         elif st.button("Extract with Claude Vision", type="primary", key="invbtn"):
             with st.spinner(f"Reading invoice ({len(pages)} page(s))…"):
                 try:
@@ -702,7 +735,7 @@ if tab_pos is not None:
                                   type=["jpg", "jpeg", "png", "webp", "pdf"], key="posup")
         if pup is not None:
             if not get_api_key():
-                st.error("No ANTHROPIC_API_KEY set.")
+                st.error(_api_key_help())
             elif st.button("Read takings", type="primary", key="posbtn"):
                 with st.spinner("Reading slip…"):
                     media = getattr(pup, "type", "image/jpeg")
