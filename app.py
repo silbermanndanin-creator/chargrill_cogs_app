@@ -690,12 +690,37 @@ with tab_inv:
             st.dataframe(li_df, hide_index=True, width="stretch")
             save_lines = inv.get("line_items", [])
         # Reliability check: do the (possibly edited) line amounts add up to the total?
-        rec = extract.reconciliation({"line_items": save_lines, "total_ex_gst": total,
-                                      "total_inc_gst": inv.get("total_inc_gst")})
+        _inv_dict = {"line_items": save_lines, "total_ex_gst": total,
+                     "total_inc_gst": inv.get("total_inc_gst")}
+        rec = extract.reconciliation(_inv_dict)
         if rec["checkable"] and not rec["ok"]:
-            st.warning(f"⚠️ Lines add up to **${rec['line_sum']:,.2f}**, but the total is "
-                       f"**${rec['target']:,.2f}** (off by ${abs(rec['diff']):,.2f}). "
-                       "Check for a missed, duplicated, or misread line before saving.")
+            h = extract.reconciliation_hints(_inv_dict)
+            gap = abs(h["gap"])
+            hi_lo = "**higher than**" if h["direction"] == "high" else "**lower than**"
+            st.warning(f"⚠️ Lines add up to **${rec['line_sum']:,.2f}** — that's "
+                       f"**${gap:,.2f}** {hi_lo} the invoice total of **${rec['target']:,.2f}**.")
+            tips = []
+            if h["direction"] == "high":
+                tips.append("Lines total **more** than the invoice → look for a **duplicated** "
+                            "line, an **over-read amount**, or a **discount / credit** line on "
+                            "the invoice that wasn't captured (it should subtract).")
+            else:
+                tips.append("Lines total **less** than the invoice → a line is probably "
+                            "**missing**, or an **amount was under-read**.")
+            for c in h["gap_candidates"]:
+                tips.append(f"Line {c['idx']} **{c['description']}** = **${c['amount']:,.2f}**, "
+                            f"which equals the ${gap:,.2f} gap — likely a **duplicate** or a line "
+                            "that shouldn't be here.")
+            for f in h["line_flags"]:
+                tips.append(f"Line {f['idx']} **{f['description']}**: amount **${f['printed']:,.2f}** "
+                            f"≠ qty × price (**${f['computed']:,.2f}**) — likely a **misread digit**.")
+            if not h["gap_candidates"] and not h["line_flags"]:
+                tips.append(f"No single line matches the ${gap:,.2f} gap, so it's likely one "
+                            "**misread amount** or a **missing / extra** line — scan the list "
+                            "against the paper invoice.")
+            st.markdown("**Where to check:**\n" + "\n".join(f"- {t}" for t in tips))
+            st.caption("Fix it in **📋 Invoices → ✏️ Edit / fix an invoice** after saving, "
+                       "or correct the total above if the lines are right.")
         elif rec["checkable"]:
             st.caption(f"✅ Lines reconcile with the total (${rec['line_sum']:,.2f}).")
         dup = storage.find_duplicate(config.canonicalize(supplier_raw), inv_date, float(total))

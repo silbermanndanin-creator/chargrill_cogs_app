@@ -192,6 +192,46 @@ def reconciliation(inv: dict) -> dict:
     return {"checkable": True, "ok": ok, "line_sum": s, "target": target, "diff": diff}
 
 
+def reconciliation_hints(inv: dict) -> dict:
+    """Pinpoint WHERE a line-vs-total mismatch likely sits, so it's quick to check against
+    the paper invoice. Returns the reconciliation result plus:
+      gap            signed line_sum - target (+ => lines exceed the total)
+      direction      'high' (lines > total) | 'low' (lines < total)
+      line_flags     lines whose amount != quantity*unit_price (a misread WITHIN a line)
+      gap_candidates lines whose amount ~= |gap| (a likely duplicate / extra / missing line)
+    Empty lists when nothing specific stands out (then it's a spread misread or a
+    missing/extra line with no single matching amount)."""
+    rec = reconciliation(inv)
+    out = {**rec, "gap": rec["diff"],
+           "direction": "high" if rec["diff"] > 0 else "low",
+           "line_flags": [], "gap_candidates": []}
+    if not rec["checkable"] or rec["ok"]:
+        return out
+    items = inv.get("line_items") or []
+    g = abs(rec["diff"])
+    for i, li in enumerate(items, 1):
+        if not isinstance(li, dict):
+            continue
+        try:
+            amt = round(float(li.get("amount") or 0), 2)
+        except (TypeError, ValueError):
+            continue
+        desc = li.get("description") or f"line {i}"
+        q, up = li.get("quantity"), li.get("unit_price")
+        if q is not None and up is not None:
+            try:
+                comp = round(float(q) * float(up), 2)
+                if abs(comp - amt) > 0.02:
+                    out["line_flags"].append({"idx": i, "description": desc,
+                                              "printed": amt, "computed": comp,
+                                              "diff": round(amt - comp, 2)})
+            except (TypeError, ValueError):
+                pass
+        if g > 0 and abs(amt - g) <= max(0.05, 0.01 * g):
+            out["gap_candidates"].append({"idx": i, "description": desc, "amount": amt})
+    return out
+
+
 def _read_invoice(client, model, content) -> InvoiceData:
     resp = client.messages.parse(
         model=model,
