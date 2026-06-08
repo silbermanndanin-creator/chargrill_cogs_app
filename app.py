@@ -245,6 +245,21 @@ for _k in ("SUPABASE_URL", "SUPABASE_KEY"):
     if _v:
         os.environ[_k] = _v
 
+# Google Drive service account (optional: enables saving variation letters to Drive).
+# Accept either a JSON string or a [GDRIVE_SERVICE_ACCOUNT] TOML table in secrets.
+try:
+    _ga = st.secrets.get("GDRIVE_SERVICE_ACCOUNT")
+except Exception:
+    _ga = None
+if _ga:
+    os.environ["GDRIVE_SERVICE_ACCOUNT"] = _ga if isinstance(_ga, str) else json.dumps(dict(_ga))
+try:
+    _gf = st.secrets.get("GDRIVE_FOLDER_ID")
+except Exception:
+    _gf = None
+if _gf:
+    os.environ["GDRIVE_FOLDER_ID"] = str(_gf)
+
 
 # ============ Roles: chef (default) vs owner ============
 # The app opens in the restricted "chef" view. The owner taps the 🔒 box at the
@@ -2611,6 +2626,9 @@ if tab_var is not None:
                     "actual_start": r["actual_start"], "actual_finish": r["actual_finish"],
                     "contracted_start": (r["contracted_start"] or None),
                     "contracted_finish": None, "kind": r["kind"]})
+            import gdrive
+            drive_on = gdrive.is_configured()
+            letters = {}  # emp -> (filename, bytes), for the "save all" button
             for emp in sorted(by_emp):
                 pats = V.combine_patterns(by_emp[emp])
                 with st.container(border=True):
@@ -2619,10 +2637,32 @@ if tab_var is not None:
                         docx_bytes = V.render_letter(emp, pats)
                         commence = min(min(p["dates"]) for p in pats)
                         end = max(max(p["dates"]) for p in pats)
-                        st.download_button(
-                            f"⬇️ Variation letter (.docx)", docx_bytes, key=f"varletter_{emp}",
-                            file_name=f"Variation Letter - {emp} - {commence:%d%b}-{end:%d%b%Y}.docx",
-                            mime="application/vnd.openxmlformats-officedocument."
-                                 "wordprocessingml.document")
+                        fname = f"Variation Letter - {emp} - {commence:%d%b}-{end:%d%b%Y}.docx"
+                        letters[emp] = (fname, docx_bytes)
+                        dc = st.columns(2)
+                        dc[0].download_button(
+                            "⬇️ Download (.docx)", docx_bytes, key=f"varletter_{emp}",
+                            file_name=fname, mime=gdrive.DOCX_MIME)
+                        if drive_on and dc[1].button("☁️ Save to Drive", key=f"vardrive_{emp}"):
+                            try:
+                                res = gdrive.upload_docx(fname, docx_bytes)
+                                st.success(f"Saved to Google Drive ✓  [open letter]({res['link']})")
+                            except Exception as e:
+                                st.error(f"Drive save failed: {e}")
                     except Exception as e:
                         st.caption(f"Could not build letter: {e}")
+            if drive_on and letters:
+                if st.button("☁️ Save ALL letters to Drive", key="vardrive_all"):
+                    ok, fail = 0, []
+                    for _emp, (fn, bb) in letters.items():
+                        try:
+                            gdrive.upload_docx(fn, bb); ok += 1
+                        except Exception as e:
+                            fail.append(f"{_emp}: {e}")
+                    if ok:
+                        st.success(f"Saved {ok} letter(s) to your Google Drive folder.")
+                    if fail:
+                        st.error("Some didn't save — " + "; ".join(fail))
+            elif not drive_on:
+                st.caption("💡 Connect Google Drive to save letters straight to your Drive folder "
+                           "(needs a one-time service-account setup — ask me to walk you through it).")
