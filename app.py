@@ -2622,6 +2622,34 @@ if tab_var is not None:
                     bust_caches()
                     st.session_state["var_flash"] = f"Saved {saved} variation event(s) to file."
                     st.rerun()
+
+                # ---- Save THIS WEEK's letters straight to Google Drive (discoverable here) ----
+                import gdrive
+                if gdrive.is_configured():
+                    if st.button("☁️ Save this week's letters to Drive", key="var_drive_week"):
+                        ok, fail = 0, []
+                        for _emp, _evs in vmap.items():
+                            try:
+                                _pats = V.combine_patterns(_evs)
+                                _c0 = min(min(p["dates"]) for p in _pats)
+                                _c1 = max(max(p["dates"]) for p in _pats)
+                                gdrive.upload_docx(
+                                    f"Variation Letter - {_emp} - {_c0:%d%b}-{_c1:%d%b%Y}.docx",
+                                    V.render_letter(_emp, _pats))
+                                ok += 1
+                            except Exception as e:
+                                fail.append(f"{_emp}: {e}")
+                        if ok:
+                            st.success(f"Saved {ok} letter(s) to your Google Drive folder.")
+                        if fail:
+                            st.error("Some didn't save — " + "; ".join(fail))
+                else:
+                    _has = "GDRIVE_SERVICE_ACCOUNT" in _secret_names()
+                    st.caption("☁️ Drive key is in Secrets but not loaded — **reboot the app** to "
+                               "enable saving letters to Drive."
+                               if _has else
+                               "☁️ To save letters to Drive, add **GDRIVE_SERVICE_ACCOUNT** in "
+                               f"Secrets. Secret names seen: **{', '.join(_secret_names()) or 'none'}**.")
         if st.session_state.pop("var_flash", None):
             st.success(st.session_state.get("var_flash") or "Saved.")
 
