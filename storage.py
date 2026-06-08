@@ -301,10 +301,10 @@ def inbox_download(name) -> bytes:
     return _client().storage.from_(INBOX_BUCKET).download(name)
 
 
-def inbox_archive(name):
-    """Move a successfully-processed file into processed/ so it's never read twice.
-    Best-effort: on a name clash (same file archived before) suffix with a timestamp."""
-    dest = f"processed/{name}"
+def _inbox_move(name, folder):
+    """Move a handled file into a subfolder of the inbox bucket so it isn't read again.
+    Best-effort: on a name clash (same file moved before) suffix with a timestamp."""
+    dest = f"{folder}/{name}"
     bucket = _client().storage.from_(INBOX_BUCKET)
     try:
         bucket.move(name, dest)
@@ -314,6 +314,18 @@ def inbox_archive(name):
             bucket.move(name, f"{dest}.{stamp}")
         except Exception:
             pass  # leave it in place rather than crash; next run will retry the move
+
+
+def inbox_archive(name):
+    """Move a successfully-saved invoice file into processed/ so it's never read twice."""
+    _inbox_move(name, "processed")
+
+
+def inbox_review(name):
+    """Move a file that ISN'T a savable COGS invoice (a statement, credit note, or an
+    unrecognised / non-COGS supplier) into review/ — kept for a human to glance at, but
+    never counted toward COGS. Captured, not dropped."""
+    _inbox_move(name, "review")
 
 
 # ---------- revenue (so COGS% can trend across periods) ----------

@@ -155,6 +155,65 @@ def _content_blocks(b64: str, media_type: str) -> list:
     return [_doc_block(b64, media_type), {"type": "text", "text": "Extract this supplier invoice."}]
 
 
+# ---------------- Document triage (gate the emailed inbox) ----------------
+# Suppliers email more than just invoices: monthly ACCOUNT STATEMENTS (which sum a whole
+# month of invoices into one big total — catastrophic if read as a single invoice), credit
+# notes, remittances, and the odd non-COGS expense. classify_document() does a cheap first
+# read so inbox_ingest can route anything that isn't a single supplier invoice to review/
+# instead of into COGS. The app's own upload path doesn't use this — it's inbox-only.
+CLASSIFY_SYSTEM = """You are triaging a PDF/photo emailed to an Australian hospitality venue \
+(Chargrill Charlie's) to decide if it is a single SUPPLIER INVOICE that should be entered into \
+the food-cost system.
+
+Return:
+- document_type: exactly one of —
+    'invoice'      a single tax invoice billing for the goods/services of ONE order/delivery. \
+A tax invoice counts as 'invoice' even if the goods are delivered later (some suppliers invoice \
+the order ahead of delivery).
+    'statement'    an ACCOUNT STATEMENT / month-end statement: it summarises MULTIPLE invoices, \
+lists several invoice numbers/dates, or shows an account balance or aged balances \
+(current/30/60/90 days) or a 'balance brought forward'. This is NOT one invoice — choose \
+'statement' whenever the document totals up more than one invoice.
+    'credit_note'  a credit note, refund or adjustment.
+    'remittance'   a remittance advice / payment confirmation.
+    'order'        a purchase order or order confirmation that is not itself a tax invoice.
+    'other'        anything else (price list, newsletter, contract, etc.).
+- supplier_name: the business that issued the document, exactly as printed.
+- confidence: 'high' | 'medium' | 'low'.
+Return only these three fields."""
+
+
+class DocClass(BaseModel):
+    document_type: str
+    supplier_name: str
+    confidence: str = "medium"
+
+
+def classify_document(pages, media_type: Optional[str] = None,
+                      client: Optional[anthropic.Anthropic] = None) -> DocClass:
+    """Cheap first-pass triage of an emailed file: a single supplier INVOICE, or a
+    statement / credit note / remittance / order / other? Returns document_type +
+    supplier_name so the inbox can skip anything that isn't a real invoice before paying
+    for a full extraction. `pages` is bytes (with media_type) or a list of (bytes, mt)."""
+    client = client or anthropic.Anthropic()
+    if isinstance(pages, (bytes, bytearray)):
+        pages = [(pages, media_type or "image/jpeg")]
+    content = []
+    for fb, mt in pages:
+        fb, mt = _prep_image(fb, mt or "image/jpeg")
+        b64 = base64.standard_b64encode(fb).decode("utf-8")
+        content.append(_doc_block(b64, mt))
+    content.append({"type": "text", "text":
+                    "Classify this document (it may be one of several pages of the same document)."})
+    resp = client.messages.parse(
+        model=MODEL, max_tokens=300,
+        system=[{"type": "text", "text": CLASSIFY_SYSTEM, "cache_control": {"type": "ephemeral"}}],
+        messages=[{"role": "user", "content": content}],
+        output_format=DocClass,
+    )
+    return resp.parsed_output
+
+
 def _line_sum(inv: dict) -> float:
     """Sum of the line-item amounts (robust to nulls / bad values)."""
     s = 0.0
