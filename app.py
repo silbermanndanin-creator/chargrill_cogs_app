@@ -449,6 +449,11 @@ def c_invoice_checks(period_key):
     return storage.invoice_checks_for(period_key)
 
 
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def c_employee_overrides():
+    return storage.employee_overrides()
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def c_lightspeed_revenue(start, end, token, business_id):
     # Network call (up to 20s). Cached 5 min so it never blocks every rerun.
@@ -860,13 +865,67 @@ if tab_lab is not None:
         if not setup:
             st.info("Add the setup file above, then upload a weekly shift CSV here.")
         else:
+            ovr = c_employee_overrides()
+            # ---- Change an employee's classification (no need to edit the setup file) ----
+            with st.expander("👥 Employee classifications"
+                             + (f"  — {len(ovr)} override(s) active" if ovr else "")):
+                st.caption("Change someone's Full-Time / Part-Time / Casual here without "
+                           "re-uploading the setup file. Applies to this and every future "
+                           "calc until you change it back. (Casuals are paid full award rates "
+                           "and don't accrue annual/sick leave.)")
+                try:
+                    emps = payroll.all_employees(setup[1])  # base types from the sheet
+                except Exception as e:
+                    emps = []
+                    st.error(f"Couldn't read employees from the setup file: {e}")
+                if emps:
+                    base = {e["name"]: e for e in emps}
+                    class_df = pd.DataFrame([{
+                        "Employee": e["name"],
+                        "Classification": (ovr.get(e["name"], {}).get("employment_type")
+                                           or e["employment_type"]),
+                        "Section": (ovr.get(e["name"], {}).get("section") or e["section"] or ""),
+                    } for e in emps])
+                    class_ed = st.data_editor(
+                        class_df, hide_index=True, width="stretch", key="emp_class_ed",
+                        column_config={
+                            "Employee": st.column_config.TextColumn(disabled=True),
+                            "Classification": st.column_config.SelectboxColumn(
+                                options=["Full-Time", "Part-Time", "Casual"], required=True),
+                            "Section": st.column_config.SelectboxColumn(
+                                options=["FOH", "BOH", ""], required=False)})
+                    if st.button("💾 Save classifications", type="primary", key="emp_class_save"):
+                        n = 0
+                        for _, r in class_ed.iterrows():
+                            nm = r["Employee"]
+                            cls = str(r["Classification"]).strip()
+                            sec = str(r.get("Section") or "").strip()
+                            b = base.get(nm, {})
+                            if cls != b.get("employment_type") or sec != (b.get("section") or ""):
+                                storage.set_employee_override(nm, employment_type=cls, section=sec)
+                                n += 1
+                            else:
+                                storage.delete_employee_override(nm)  # back to the sheet's value
+                        bust_caches()
+                        # Recompute this week's pay immediately if a CSV is already loaded.
+                        _cb = st.session_state.get("shift_csv_bytes")
+                        if _cb:
+                            try:
+                                st.session_state["pay"] = payroll.process_shift_csv(
+                                    _cb, setup[1], overrides=storage.employee_overrides())
+                            except Exception:
+                                pass
+                        st.success(f"Saved — {n} override(s) active.")
+                        st.rerun()
+
             st.markdown("##### Upload this week's Tanda shift CSV")
             csvf = st.file_uploader("Tanda shift report (CSV)", type=["csv"], key="shiftcsv")
             if csvf is not None and st.button("Calculate award pay", type="primary", key="calcpay"):
                 with st.spinner("Crunching the award…"):
                     try:
                         st.session_state["shift_csv_bytes"] = csvf.getvalue()  # reused by Variations tab
-                        st.session_state["pay"] = payroll.process_shift_csv(csvf.getvalue(), setup[1])
+                        st.session_state["pay"] = payroll.process_shift_csv(
+                            csvf.getvalue(), setup[1], overrides=ovr)
                     except Exception as e:
                         st.error(f"Processing failed: {e}")
                         st.session_state.pop("pay", None)
@@ -885,7 +944,7 @@ if tab_lab is not None:
                     perm = [r for r in out["results"] if r["emp_type"] != "Casual"]
                     worked_names = {r["name"] for r in perm}
                     try:
-                        roster = payroll.permanent_roster(setup[1])
+                        roster = payroll.permanent_roster(setup[1], overrides=ovr)
                     except Exception:
                         roster = []
                     absent = sorted((m for m in roster if m["name"] not in worked_names),

@@ -437,11 +437,72 @@ def process_shifts(shift_df, emp_df, all_rates, public_holidays):
     }
 
 
-def process_shift_csv(csv_bytes, setup_bytes):
-    """Convenience: setup + CSV bytes -> full results dict (see process_shifts)."""
+def process_shift_csv(csv_bytes, setup_bytes, overrides=None):
+    """Convenience: setup + CSV bytes -> full results dict (see process_shifts).
+    `overrides` = {employee display name: {employment_type, section, flat_rate}} applied on
+    top of the setup sheet, so an employee's classification can be changed in-app."""
     emp_df, rates, public_holidays = load_setup_from_bytes(setup_bytes)
+    emp_df = apply_emp_overrides(emp_df, overrides)
     shift_df = load_csv_from_bytes(csv_bytes)
     return process_shifts(shift_df, emp_df, rates, public_holidays)
+
+
+def _find_col(df, *cands):
+    for c in cands:
+        if c in df.columns:
+            return c
+    return None
+
+
+def apply_emp_overrides(emp_df, overrides):
+    """Patch the EMPLOYEES dataframe with per-employee overrides (keyed by display name) so the
+    whole award engine — rates, laundry, top-up, leave eligibility — follows the new
+    classification. overrides = {name: {employment_type, section, flat_rate}}."""
+    if not overrides:
+        return emp_df
+    df = emp_df.copy()
+    name_col = _find_col(df, 'Employee Name (Display)', 'Employee Name')
+    if not name_col:
+        return df
+    type_col = _find_col(df, 'Employment Type', 'Employment\nType') or 'Employment Type'
+    sect_col = _find_col(df, 'Section (FOH/BOH)', 'Section\n(FOH/BOH)') or 'Section (FOH/BOH)'
+    rate_col = _find_col(df, 'Flat Hourly Rate ($)', 'Flat Hourly\nRate ($)') or 'Flat Hourly Rate ($)'
+    for col in (type_col, sect_col, rate_col):
+        if col not in df.columns:
+            df[col] = None
+    for idx, row in df.iterrows():
+        ov = overrides.get(str(row.get(name_col) or '').strip())
+        if not ov:
+            continue
+        if ov.get('employment_type'):
+            df.at[idx, type_col] = ov['employment_type']
+        if ov.get('section'):
+            df.at[idx, sect_col] = ov['section']
+        if ov.get('flat_rate') not in (None, ''):
+            df.at[idx, rate_col] = ov['flat_rate']
+    return df
+
+
+def all_employees(setup_bytes, overrides=None):
+    """[{name, employment_type, section, flat_rate}] for EVERY employee in the setup sheet
+    (any type), with overrides applied — used by the in-app classification editor."""
+    emp_df, _rates, _ph = load_setup_from_bytes(setup_bytes)
+    emp_df = apply_emp_overrides(emp_df, overrides)
+    out = []
+    for _, emp_row in emp_df.iterrows():
+        d = emp_row.to_dict()
+        name = _get_col(d, 'Employee Name (Display)', 'Employee Name')
+        if not name:
+            continue
+        emp_type = get_emp_type_key(
+            _get_col(d, 'Employment Type', 'Employment\nType') or 'Full-Time')
+        flat_raw = _get_col(d, 'Flat Hourly Rate ($)', 'Flat Hourly\nRate ($)')
+        flat_rate = float(flat_raw) if flat_raw not in (None, '', 'nan') else 0.0
+        section = str(_get_col(d, 'Section (FOH/BOH)', 'Section\n(FOH/BOH)') or '').strip()
+        out.append({"name": str(name).strip(), "employment_type": emp_type,
+                    "section": section, "flat_rate": flat_rate})
+    out.sort(key=lambda r: r["name"])
+    return out
 
 
 def apply_leave(out, leave, roster=None):
@@ -491,11 +552,13 @@ def apply_leave(out, leave, roster=None):
     return out
 
 
-def permanent_roster(setup_bytes):
+def permanent_roster(setup_bytes, overrides=None):
     """[{name, emp_type, section, flat_rate}] for every FT/PT (non-casual) employee in the
     setup sheet — INCLUDING those who didn't work this week (e.g. on leave). Lets the leave
-    table list everyone, not just whoever appears in the shift CSV."""
+    table list everyone, not just whoever appears in the shift CSV. Honours classification
+    overrides, so anyone reclassified to Casual drops out (and a new FT/PT shows up)."""
     emp_df, _rates, _ph = load_setup_from_bytes(setup_bytes)
+    emp_df = apply_emp_overrides(emp_df, overrides)
     roster = []
     for _, emp_row in emp_df.iterrows():
         d = emp_row.to_dict()

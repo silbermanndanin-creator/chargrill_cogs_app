@@ -152,6 +152,17 @@ create table if not exists invoice_checks (
     primary key (period_key, supplier)           -- enables upsert on (period_key, supplier)
 );
 
+-- Employee classification overrides: change an employee's Full-Time / Part-Time / Casual
+-- (and optionally section / flat rate) from the app, without re-uploading Payroll Setup.xlsx.
+-- One row per employee (keyed by display name); applied on top of the setup sheet.
+create table if not exists employee_overrides (
+    employee         text primary key,
+    employment_type  text,                       -- 'Full-Time' | 'Part-Time' | 'Casual'
+    section          text,                        -- 'FOH' | 'BOH' | ''
+    flat_rate        numeric,                     -- optional flat hourly rate override
+    updated_at       text
+);
+
 -- This app runs server-side on Streamlit Cloud and connects with the service_role
 -- key, so Row Level Security is not required. If you prefer to enable RLS, add
 -- policies that allow the service role full access.
