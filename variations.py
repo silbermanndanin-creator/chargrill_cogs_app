@@ -63,21 +63,18 @@ def nice_date(d):
     return f"{d:%A} {_ordinal(d.day)} {d:%B}"
 
 
-def _day_span(events):
-    """'11am-3pm' — earliest actual start to latest actual finish across a day's shifts."""
+def _day_blocks(events):
+    """Each shift's own start-finish for a day, earliest first, e.g. '11am-3pm, 5pm-9pm'.
+    Kept as separate blocks (not a flattened span) so split shifts feed the letters correctly."""
     def sm(e):
-        return _mins(e["actual_start"])
-
-    def fm(e):
-        return _mins(e["actual_finish"])
-    starts = [e for e in events if sm(e) is not None]
-    if not starts:
-        return "—"
-    start_str = _fmt_compact(min(starts, key=sm)["actual_start"])
-    fins = [e for e in events if fm(e) is not None]
-    if fins:
-        return f"{start_str}–{_fmt_compact(max(fins, key=fm)['actual_finish'])}"
-    return start_str
+        m = _mins(e["actual_start"])
+        return m if m is not None else 9999
+    blocks = []
+    for e in sorted(events, key=sm):
+        s = _fmt_compact(e["actual_start"])
+        blocks.append(f"{s}–{_fmt_compact(e['actual_finish'])}"
+                      if _mins(e.get("actual_finish")) is not None else s)
+    return ", ".join(blocks) if blocks else "—"
 
 
 def display_rows(vmap):
@@ -96,7 +93,7 @@ def display_rows(vmap):
             rows.append({
                 "Employee": emp,
                 "When": nice_date(d),
-                "Worked": _day_span(grp),
+                "Worked": _day_blocks(grp),
                 "Contracted start": _fmt_compact(cstart) if cstart else "—",
                 "Type": "start time" if any(g["kind"] == "start" for g in grp) else "extra day",
             })
