@@ -40,6 +40,25 @@ def _service():
     return build("drive", "v3", credentials=creds, cache_discovery=False)
 
 
+def service_account_email():
+    """The client_email of the configured service account (share the folder with THIS)."""
+    try:
+        return json.loads(os.environ.get("GDRIVE_SERVICE_ACCOUNT") or "{}").get("client_email")
+    except Exception:
+        return None
+
+
+def check_access(folder: str = None):
+    """(ok, message) — verify the service account can actually see the target folder."""
+    fid = folder or folder_id()
+    try:
+        meta = _service().files().get(fileId=fid, fields="id,name",
+                                      supportsAllDrives=True).execute()
+        return True, f"OK — folder '{meta.get('name')}' is accessible."
+    except Exception as e:
+        return False, str(e)
+
+
 def upload_docx(filename: str, data: bytes, folder: str = None) -> dict:
     """Upload .docx bytes into the Drive folder; returns {'id', 'link'}. Raises on failure.
     If a file with the same name already exists in the folder, it's updated in place."""
