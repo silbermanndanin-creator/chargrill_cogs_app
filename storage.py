@@ -266,6 +266,56 @@ def delete_invoice(saved_at):
     _delete_invoice_image(saved_at)
 
 
+# ---------- invoice inbox bucket (emailed invoices land here via Power Automate) ----------
+# Power Automate watches the invoices mailbox and HTTP-POSTs each attachment into this
+# Supabase Storage bucket; inbox_ingest.py (GitHub Actions cron) then reads + saves them.
+# Cloud-only by nature — there's no local-CSV equivalent, so these no-op without Supabase.
+INBOX_BUCKET = "invoice_inbox"
+INBOX_EXTS = {".pdf": "application/pdf", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+              ".png": "image/png", ".webp": "image/webp", ".gif": "image/gif"}
+
+
+def inbox_media_type(name):
+    """Media type for a file name from its extension, or None if it's not a kind we read."""
+    return INBOX_EXTS.get(os.path.splitext(str(name))[1].lower())
+
+
+def inbox_list():
+    """New invoice files sitting at the root of the inbox bucket, as [(name, media_type)].
+    Files we've already handled live in the processed/ subfolder and are not returned.
+    Empty when Supabase isn't configured (the inbox is a cloud-only feature)."""
+    if not _use_supabase():
+        return []
+    items = _client().storage.from_(INBOX_BUCKET).list() or []
+    out = []
+    for it in items:
+        name = it.get("name") if isinstance(it, dict) else None
+        mt = inbox_media_type(name) if name else None
+        if mt:  # a readable file (this also skips the processed/ pseudo-folder)
+            out.append((name, mt))
+    return out
+
+
+def inbox_download(name) -> bytes:
+    """Raw bytes of one file in the inbox bucket."""
+    return _client().storage.from_(INBOX_BUCKET).download(name)
+
+
+def inbox_archive(name):
+    """Move a successfully-processed file into processed/ so it's never read twice.
+    Best-effort: on a name clash (same file archived before) suffix with a timestamp."""
+    dest = f"processed/{name}"
+    bucket = _client().storage.from_(INBOX_BUCKET)
+    try:
+        bucket.move(name, dest)
+    except Exception:
+        try:
+            stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+            bucket.move(name, f"{dest}.{stamp}")
+        except Exception:
+            pass  # leave it in place rather than crash; next run will retry the move
+
+
 # ---------- revenue (so COGS% can trend across periods) ----------
 def set_revenue(period_type: str, period_key: str, revenue: float):
     row = {"period_type": period_type, "period_key": period_key,
