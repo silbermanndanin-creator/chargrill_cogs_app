@@ -527,7 +527,10 @@ def apply_leave(out, leave, roster=None):
                 row = {
                     "name": nm, "emp_type": m["emp_type"], "section": m["section"],
                     "flat_rate": float(m.get("flat_rate", 0) or 0),
-                    "hrs": {"total": 0.0}, "pay": {"total": 0.0}, "rates": {},
+                    "hrs": dict(wd=0.0, sat=0.0, sun=0.0, sun_ot=0.0, ph=0.0,
+                                late_night=0.0, daily_ot1=0.0, daily_ot2=0.0,
+                                ph_daily_ot=0.0, weekly_ot1=0.0, weekly_ot2=0.0, total=0.0),
+                    "pay": {"total": 0.0}, "rates": {},
                     "award_pay": 0.0, "flat_pay": 0.0, "topup": 0.0, "gross": 0.0,
                     "day_rows": [], "absent": True,
                 }

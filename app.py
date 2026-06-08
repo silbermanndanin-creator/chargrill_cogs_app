@@ -960,44 +960,51 @@ if tab_lab is not None:
                 iso = storage.iso_week_of(wk_end.date())
 
                 # ---- Annual / sick leave (paid at flat rate, FT/PT only) ----
-                with st.expander("➕ Annual / sick leave (FT/PT, paid at flat rate)"):
-                    st.caption("Enter AL/SL hours — added to each person's gross at their flat "
-                               "rate and carried into the report's SL/AL columns. Everyone on "
-                               "the setup sheet is listed, including anyone who didn't work this "
-                               "week (Worked hrs = 0, e.g. on leave).")
-                    perm = [r for r in out["results"] if r["emp_type"] != "Casual"]
-                    worked_names = {r["name"] for r in perm}
-                    try:
-                        roster = payroll.permanent_roster(setup[1], overrides=ovr)
-                    except Exception:
-                        roster = []
-                    absent = sorted((m for m in roster if m["name"] not in worked_names),
-                                    key=lambda m: m["name"])
-                    # Stable 0.0 base so the editor doesn't reset/lose focus on each
-                    # keystroke (the keyed widget remembers what you type); apply_leave
-                    # below reads the typed values without feeding back into this input.
-                    # Workers first (with their worked hours), then absentees at 0 hrs.
-                    leave_in = pd.DataFrame(
-                        [{"Employee": r["name"], "Worked hrs": round(r["hrs"]["total"], 2),
-                          "AL hrs": 0.0, "SL hrs": 0.0} for r in perm]
-                        + [{"Employee": m["name"], "Worked hrs": 0.0,
-                            "AL hrs": 0.0, "SL hrs": 0.0} for m in absent])
-                    edited = st.data_editor(
-                        leave_in, hide_index=True, width="stretch", key="leave_ed",
-                        column_config={
-                            "Employee": st.column_config.TextColumn(disabled=True),
-                            "Worked hrs": st.column_config.NumberColumn(disabled=True, format="%.2f"),
-                            "AL hrs": st.column_config.NumberColumn(min_value=0.0, format="%.2f"),
-                            "SL hrs": st.column_config.NumberColumn(min_value=0.0, format="%.2f")})
-
-                    def _lv(x):
+                leave, roster = {}, []
+                try:
+                    with st.expander("➕ Annual / sick leave (FT/PT, paid at flat rate)"):
+                        st.caption("Enter AL/SL hours — added to each person's gross at their flat "
+                                   "rate and carried into the report's SL/AL columns. Everyone on "
+                                   "the setup sheet is listed, including anyone who didn't work this "
+                                   "week (Worked hrs = 0, e.g. on leave).")
+                        perm = [r for r in out["results"] if r["emp_type"] != "Casual"]
+                        worked_names = {r["name"] for r in perm}
                         try:
-                            return 0.0 if x is None or float(x) != float(x) else float(x)
-                        except (TypeError, ValueError):
-                            return 0.0
-                    leave = {row["Employee"]: {"al": _lv(row["AL hrs"]), "sl": _lv(row["SL hrs"])}
-                             for _, row in edited.iterrows()}
-                out = payroll.apply_leave(out, leave, roster)
+                            roster = payroll.permanent_roster(setup[1], overrides=ovr)
+                        except Exception:
+                            roster = []
+                        absent = sorted((m for m in roster if m["name"] not in worked_names),
+                                        key=lambda m: m["name"])
+                        # Stable 0.0 base so the editor doesn't reset/lose focus on each
+                        # keystroke; apply_leave reads the typed values. Workers first (with
+                        # their worked hours), then absentees at 0 hrs.
+                        leave_in = pd.DataFrame(
+                            [{"Employee": r["name"],
+                              "Worked hrs": round(float((r.get("hrs") or {}).get("total", 0) or 0), 2),
+                              "AL hrs": 0.0, "SL hrs": 0.0} for r in perm]
+                            + [{"Employee": m["name"], "Worked hrs": 0.0,
+                                "AL hrs": 0.0, "SL hrs": 0.0} for m in absent])
+                        edited = st.data_editor(
+                            leave_in, hide_index=True, width="stretch", key="leave_ed",
+                            column_config={
+                                "Employee": st.column_config.TextColumn(disabled=True),
+                                "Worked hrs": st.column_config.NumberColumn(disabled=True, format="%.2f"),
+                                "AL hrs": st.column_config.NumberColumn(min_value=0.0, format="%.2f"),
+                                "SL hrs": st.column_config.NumberColumn(min_value=0.0, format="%.2f")})
+
+                        def _lv(x):
+                            try:
+                                return 0.0 if x is None or float(x) != float(x) else float(x)
+                            except (TypeError, ValueError):
+                                return 0.0
+                        leave = {row["Employee"]: {"al": _lv(row["AL hrs"]), "sl": _lv(row["SL hrs"])}
+                                 for _, row in edited.iterrows()}
+                except Exception as e:
+                    st.warning(f"Leave editor unavailable: {e}")
+                try:
+                    out = payroll.apply_leave(out, leave, roster)
+                except Exception:
+                    pass
                 st.session_state["pay"] = out
 
                 st.divider()
@@ -1013,64 +1020,75 @@ if tab_lab is not None:
                                + ", ".join(out["unmatched"]))
 
                 results = out["results"]
-                summary_df = pd.DataFrame([{
-                    "Employee": r["name"], "Type": r["emp_type"], "Section": r["section"],
-                    "Worked Hrs": round(r["hrs"]["total"], 2),
-                    "AL hrs": round(r.get("al_hrs", 0), 2), "SL hrs": round(r.get("sl_hrs", 0), 2),
-                    "Flat Pay": round(r["flat_pay"], 2), "Award Pay": round(r["award_pay"], 2),
-                    "Top Up": round(r["topup"], 2), "Leave Pay": round(r.get("leave_pay", 0), 2),
-                    "Gross Pay": round(r["gross"], 2)} for r in results])
-                cas = [r for r in results if r["emp_type"] == "Casual"]
-                casual_df = pd.DataFrame([{
-                    "Employee": r["name"], "WD": r["hrs"]["wd"], "Sat": r["hrs"]["sat"],
-                    "Sun": r["hrs"]["sun"], "Sun OT": r["hrs"]["sun_ot"], "PH": r["hrs"]["ph"],
-                    "Daily OT": round(r["hrs"]["daily_ot1"] + r["hrs"]["daily_ot2"], 2),
-                    "Weekly OT": round(r["hrs"]["weekly_ot1"] + r["hrs"]["weekly_ot2"], 2),
-                    "Late Night": round(r["hrs"]["late_night"], 2),
-                    "Total Hrs": round(r["hrs"]["total"], 2),
-                    "Total Pay": round(r["pay"]["total"], 2)} for r in cas])
-                secs = {}
-                for r in results:
-                    sec = r.get("section") or "Unknown"
-                    d = secs.setdefault(sec, {"FT/PT Hrs": 0.0, "FT/PT Cost": 0.0,
-                                              "Casual Hrs": 0.0, "Casual Cost": 0.0})
-                    if r["emp_type"] == "Casual":
-                        d["Casual Hrs"] += r["hrs"]["total"]; d["Casual Cost"] += r["award_pay"]
-                    else:
-                        d["FT/PT Hrs"] += r["hrs"]["total"]; d["FT/PT Cost"] += r["gross"]
-                section_df = pd.DataFrame([{
-                    "Section": s, "FT/PT Hrs": round(d["FT/PT Hrs"], 2),
-                    "FT/PT Cost": round(d["FT/PT Cost"], 2), "Casual Hrs": round(d["Casual Hrs"], 2),
-                    "Casual Cost": round(d["Casual Cost"], 2),
-                    "Total Hrs": round(d["FT/PT Hrs"] + d["Casual Hrs"], 2),
-                    "Total Cost": round(d["FT/PT Cost"] + d["Casual Cost"], 2)}
-                    for s, d in sorted(secs.items())])
-                daily_df = pd.DataFrame([{
-                    "Employee": r["name"], "Date": pd.Timestamp(day["date"]).strftime("%d/%m"),
-                    "Day": day["day_name"], "Type": day["day_type"], "Shifts": day["shifts"],
-                    "Total Hrs": round(day["total_hrs"], 2), "Ordinary": round(day["ordinary_hrs"], 2),
-                    "Daily OT": round(day.get("daily_ot1", 0) + day.get("daily_ot2", 0), 2),
-                    "Late Night": round(day["late_night"], 2), "Section": r["section"]}
-                    for r in results for day in r["day_rows"]])
+                # Defensive: a single odd row shouldn't blank the whole tab. Build/show the
+                # preview tables inside a guard; the download + save below still render.
+                def _hr(r, k):
+                    return float((r.get("hrs") or {}).get(k, 0) or 0)
+                try:
+                    summary_df = pd.DataFrame([{
+                        "Employee": r["name"], "Type": r["emp_type"], "Section": r.get("section", ""),
+                        "Worked Hrs": round(_hr(r, "total"), 2),
+                        "AL hrs": round(r.get("al_hrs", 0), 2), "SL hrs": round(r.get("sl_hrs", 0), 2),
+                        "Flat Pay": round(r.get("flat_pay", 0), 2), "Award Pay": round(r.get("award_pay", 0), 2),
+                        "Top Up": round(r.get("topup", 0), 2), "Leave Pay": round(r.get("leave_pay", 0), 2),
+                        "Gross Pay": round(r.get("gross", 0), 2)} for r in results])
+                    cas = [r for r in results if r["emp_type"] == "Casual"]
+                    casual_df = pd.DataFrame([{
+                        "Employee": r["name"], "WD": _hr(r, "wd"), "Sat": _hr(r, "sat"),
+                        "Sun": _hr(r, "sun"), "Sun OT": _hr(r, "sun_ot"), "PH": _hr(r, "ph"),
+                        "Daily OT": round(_hr(r, "daily_ot1") + _hr(r, "daily_ot2"), 2),
+                        "Weekly OT": round(_hr(r, "weekly_ot1") + _hr(r, "weekly_ot2"), 2),
+                        "Late Night": round(_hr(r, "late_night"), 2),
+                        "Total Hrs": round(_hr(r, "total"), 2),
+                        "Total Pay": round(float((r.get("pay") or {}).get("total", 0) or 0), 2)} for r in cas])
+                    secs = {}
+                    for r in results:
+                        sec = r.get("section") or "Unknown"
+                        d = secs.setdefault(sec, {"FT/PT Hrs": 0.0, "FT/PT Cost": 0.0,
+                                                  "Casual Hrs": 0.0, "Casual Cost": 0.0})
+                        if r["emp_type"] == "Casual":
+                            d["Casual Hrs"] += _hr(r, "total"); d["Casual Cost"] += r.get("award_pay", 0)
+                        else:
+                            d["FT/PT Hrs"] += _hr(r, "total"); d["FT/PT Cost"] += r.get("gross", 0)
+                    section_df = pd.DataFrame([{
+                        "Section": s, "FT/PT Hrs": round(d["FT/PT Hrs"], 2),
+                        "FT/PT Cost": round(d["FT/PT Cost"], 2), "Casual Hrs": round(d["Casual Hrs"], 2),
+                        "Casual Cost": round(d["Casual Cost"], 2),
+                        "Total Hrs": round(d["FT/PT Hrs"] + d["Casual Hrs"], 2),
+                        "Total Cost": round(d["FT/PT Cost"] + d["Casual Cost"], 2)}
+                        for s, d in sorted(secs.items())])
+                    daily_df = pd.DataFrame([{
+                        "Employee": r["name"], "Date": pd.Timestamp(day["date"]).strftime("%d/%m"),
+                        "Day": day["day_name"], "Type": day["day_type"], "Shifts": day["shifts"],
+                        "Total Hrs": round(day["total_hrs"], 2), "Ordinary": round(day["ordinary_hrs"], 2),
+                        "Daily OT": round(day.get("daily_ot1", 0) + day.get("daily_ot2", 0), 2),
+                        "Late Night": round(day["late_night"], 2), "Section": r.get("section", "")}
+                        for r in results for day in (r.get("day_rows") or [])])
 
-                bd = st.tabs(["Summary", "Casual detail", "By section", "Daily"])
-                with bd[0]:
-                    st.dataframe(summary_df, hide_index=True, width="stretch")
-                with bd[1]:
-                    if casual_df.empty:
-                        st.caption("No casual employees this week.")
-                    else:
-                        st.dataframe(casual_df, hide_index=True, width="stretch")
-                with bd[2]:
-                    st.dataframe(section_df, hide_index=True, width="stretch")
-                with bd[3]:
-                    st.dataframe(daily_df, hide_index=True, width="stretch")
+                    bd = st.tabs(["Summary", "Casual detail", "By section", "Daily"])
+                    with bd[0]:
+                        st.dataframe(summary_df, hide_index=True, width="stretch")
+                    with bd[1]:
+                        if casual_df.empty:
+                            st.caption("No casual employees this week.")
+                        else:
+                            st.dataframe(casual_df, hide_index=True, width="stretch")
+                    with bd[2]:
+                        st.dataframe(section_df, hide_index=True, width="stretch")
+                    with bd[3]:
+                        st.dataframe(daily_df, hide_index=True, width="stretch")
+                except Exception as e:
+                    st.warning(f"Couldn't render the preview tables: {e}. The Excel download "
+                               "and Save below still work.")
 
-                st.download_button(
-                    "⬇️ Download full Excel report",
-                    payroll.build_workbook(results, out["week_ending"]),
-                    file_name=f"Payroll_WeekEnding_{wk_end.strftime('%Y-%m-%d')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                try:
+                    _xlsx = payroll.build_workbook(results, out["week_ending"])
+                    st.download_button(
+                        "⬇️ Download full Excel report", _xlsx,
+                        file_name=f"Payroll_WeekEnding_{wk_end.strftime('%Y-%m-%d')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                except Exception as e:
+                    st.error(f"Couldn't build the Excel report: {e}")
 
                 st.divider()
                 st.caption(f"Save sets labour for **{iso}** — gross **${out['total_gross']:,.0f}**, "
