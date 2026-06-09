@@ -191,6 +191,16 @@ create table if not exists letters (
     saved_at    text
 );
 
+-- Per-employee letter details (Employment Agreement date + address) for variation letters.
+-- Personal data — kept in the DB, never in git. One row per employee (display name).
+create table if not exists emp_details (
+    employee        text primary key,
+    agreement_date  text,
+    address1        text,
+    address2        text,
+    updated_at      text
+);
+
 -- This app runs server-side on Streamlit Cloud and connects with the service_role
 -- key, so Row Level Security is not required. If you prefer to enable RLS, add
 -- policies that allow the service role full access.
