@@ -246,81 +246,84 @@ def _name_sub(text, cname):
 
 
 def render_letter(cname, patterns, today=None, details=None):
-    """Fill the template for one employee + a set of (possibly combined) patterns.
-    Returns .docx bytes. Fields we can't know (address, agreement date, signatory,
-    meal breaks, return-to/by) stay as [insert ...] placeholders unless provided in
-    contracts.EMP_DETAILS — the letter is a DRAFT for the owner to review and sign."""
+    """Fill the firm's variation-letter template (built from the real example) for one
+    employee + their (merged) shift patterns. Returns .docx bytes. The signatory
+    (Mark Silbermann), the meal-break clause and the body wording are fixed in the
+    template; we fill the date, name/first name, commence/end dates, the ordinary-hours
+    figure (a range when days differ), and one line per working day. Address and the
+    Employment-Agreement date stay as [insert …] placeholders for the owner to complete.
+    Letter finishes in the 9:25–10pm window are written as 10pm (see _letter_finish)."""
+    import copy
     from docx import Document
+    from docx.text.paragraph import Paragraph
     today = today or dt.date.today()
     details = details or {}
     doc = Document(TEMPLATE_PATH)
 
+    def _ld(d):  # '9 June 2026' (no leading zero), matching the example letter
+        return f"{d.day} {d:%B %Y}"
+
     commence = min(min(p["dates"]) for p in patterns)
     end = max(max(p["dates"]) for p in patterns)
-    days_full, seen = [], set()
-    for p in patterns:
-        f = C.WEEKDAY_FULL[p["weekday"]]
-        if f not in seen:
-            seen.add(f)
-            days_full.append(f)
-    # Clause (iii): the template's exact sentence, repeated per pattern for split shifts.
-    # Finish times are rounded up to 10pm in the 9:25–10pm window (see _letter_finish).
-    iii = "; ".join(f"you will start work at {_fmt_compact(p['start'])} and finish work at "
-                    f"{_fmt_compact(_letter_finish(p['finish']))} on {C.WEEKDAY_FULL[p['weekday']]}"
-                    for p in patterns)
-    # Clause (i): ordinary hours per day = sum of that day's blocks. Fill only if every
-    # worked day has the same daily total; otherwise leave the [insert] blank for the owner.
+    first = (str(cname).split() or [str(cname)])[0]
+
+    # Ordinary hours per day (letter-rounded finish) -> a single figure or a 'between X and Y'.
     day_hours = {}
     for p in patterns:
         day_hours[p["weekday"]] = day_hours.get(p["weekday"], 0.0) + _dur(p["start"], _letter_finish(p["finish"]))
-    distinct = {round(v, 2) for v in day_hours.values()}
-    hours_str = f"{next(iter(distinct)):g}" if len(distinct) == 1 else "[insert]"
+    totals = sorted({int(round(v)) for v in day_hours.values() if v})
+    hours = ("[insert]" if not totals else f"{totals[0]}" if len(totals) == 1
+             else f"between {totals[0]} and {totals[-1]}")
 
-    to_delete = []
-    for p in doc.paragraphs:
-        raw = p.text
-        t = raw.strip()
-        if not t:
+    # One line per working day: 'Monday – you will start work at 8:00am and finish work at 4:00pm.'
+    _order = {d: i for i, d in enumerate(C.DAY_ORDER)}
+    day_lines = [f"{C.WEEKDAY_FULL[p['weekday']]} – you will start work at {_fmt(p['start'])} "
+                 f"and finish work at {_fmt(_letter_finish(p['finish']))}."
+                 for p in sorted(patterns, key=lambda p: (_order.get(p["weekday"], 9),
+                                                          _mins(p["start"]) or 0))]
+    if not day_lines:
+        day_lines = ["[insert days and times]"]
+
+    tokens = {
+        "[DATE]": _ld(today),
+        "[NAME]": str(cname),
+        "[FIRSTNAME]": first,
+        "[ADDRESS1]": details.get("address1") or "[insert address]",
+        "[ADDRESS2]": details.get("address2") or "[insert suburb, State, postcode]",
+        "[AGREEMENTDATE]": details.get("agreement_date") or "[insert date of Employment Agreement]",
+        "[COMMENCE]": _ld(commence),
+        "[END]": _ld(end),
+        "[HOURS]": hours,
+        "[RETURNBY]": details.get("return_by") or _ld(today),
+        "[EXECDATE]": _ld(today),
+    }
+
+    def fill(text):
+        for k, v in tokens.items():
+            text = text.replace(k, v)
+        return text
+
+    for p in list(doc.paragraphs):
+        if "[DAYLINES]" in p.text:  # expand to one paragraph per working day
+            _set(p, day_lines[0])
+            anchor = p
+            for line in day_lines[1:]:
+                el = copy.deepcopy(p._p)
+                anchor._p.addnext(el)
+                anchor = Paragraph(el, p._parent)
+                _set(anchor, line)
             continue
-        if t == "[Insert date]":
-            _set(p, today.strftime("%d %B %Y")); continue
-        if t.startswith("[Option 1"):
-            to_delete.append(p); continue
-        if t.startswith("[Option 2"):  # template wording verbatim, dates filled, instruction prefix dropped
-            _set(p, f"The terms of this variation will commence on {commence:%d %B %Y}, and will "
-                    f"end on {end:%d %B %Y}. At the end of this period, your hours of work and "
-                    f"associated arrangements will revert back to those set out in [clause 3] of the "
-                    f"Agreement (instead of those set out in clause [3] below)."); continue
-        if "ordinary hours each day" in raw:
-            _set(p, f"(i)\tyou will work {hours_str} ordinary hours each day;"); continue
-        if "days of the week to be worked" in raw:
-            _set(p, f"(ii)\tyou will work on {_join(days_full)} each week;"); continue
-        if "you will start work at" in raw:
-            _set(p, f"(iii)\t{iii};"); continue
-        if "address details of employee" in raw and details.get("address"):
-            _set(p, details["address"]); continue
-        new = raw
-        if details.get("agreement_date"):
-            new = new.replace("[insert date of Employment Agreement]", details["agreement_date"])
-        if details.get("return_to"):
-            new = new.replace("[insert name]", details["return_to"])
-        if details.get("return_by") and "return it to" in raw:
-            new = new.replace("[insert date]", details["return_by"])
-        if details.get("signatory"):
-            new = new.replace("[Insert signatory]", details["signatory"])
-        new = _name_sub(new, cname)
-        if new != raw:
+        new = fill(p.text)
+        if new != p.text:
             _set(p, new)
-    for p in to_delete:
-        _del(p)
 
-    # name token inside the signature table
-    for tb in doc.tables:
+    for tb in doc.tables:  # signature blocks
         for row in tb.rows:
             for cell in row.cells:
                 for p in cell.paragraphs:
-                    if "name of employee" in p.text:
-                        _set(p, _name_sub(p.text, cname))
+                    new = fill(p.text)
+                    if new != p.text:
+                        _set(p, new)
 
     buf = io.BytesIO()
     doc.save(buf)
