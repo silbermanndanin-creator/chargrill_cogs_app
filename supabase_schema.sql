@@ -181,6 +181,16 @@ insert into storage.buckets (id, name, public)
 values ('invoice_inbox', 'invoice_inbox', false)
 on conflict (id) do nothing;
 
+-- Generated variation letters kept in the app (download anytime). One row per filename
+-- (re-saving the same letter updates it). file_b64 = base64 of the .docx.
+create table if not exists letters (
+    filename    text primary key,
+    employee    text,
+    label       text,
+    file_b64    text,
+    saved_at    text
+);
+
 -- This app runs server-side on Streamlit Cloud and connects with the service_role
 -- key, so Row Level Security is not required. If you prefer to enable RLS, add
 -- policies that allow the service role full access.

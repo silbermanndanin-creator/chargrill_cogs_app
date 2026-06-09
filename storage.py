@@ -22,6 +22,8 @@ POS_PATH = os.path.join(DATA_DIR, "pos_days.csv")
 LABOUR_PATH = os.path.join(DATA_DIR, "labour.csv")
 PAYROLL_SETUP_PATH = os.path.join(DATA_DIR, "payroll_setup.xlsx")
 SHIFT_CSV_PATH = os.path.join(DATA_DIR, "shift_csv.csv")
+LETTERS_PATH = os.path.join(DATA_DIR, "letters.csv")
+LETTERS_COLUMNS = ["filename", "employee", "label", "file_b64", "saved_at"]
 COLUMNS = ["saved_at", "supplier_raw", "supplier", "invoice_date",
            "total_ex_gst", "iso_week", "month", "line_items"]
 REV_COLUMNS = ["period_type", "period_key", "revenue", "updated_at"]
@@ -959,6 +961,87 @@ def load_shift_csv():
         b = f.read()
     ts = dt.datetime.fromtimestamp(os.path.getmtime(SHIFT_CSV_PATH)).isoformat(timespec="seconds")
     return ("shift.csv", b, "", ts)
+
+
+# ---------- generated variation letters, kept IN THE APP (download anytime) ----------
+# Stored as base64 .docx, one row per filename (re-saving the same letter updates it).
+def save_letter(filename: str, employee: str, data: bytes, label: str = "") -> bool:
+    row = {"filename": str(filename), "employee": str(employee or ""), "label": str(label or ""),
+           "file_b64": base64.b64encode(data).decode("ascii"),
+           "saved_at": dt.datetime.now().isoformat(timespec="seconds")}
+    if _use_supabase():
+        try:
+            _client().table("letters").upsert(row, on_conflict="filename").execute()
+        except Exception:
+            return False  # letters table not created yet
+    else:
+        _ensure_csv(LETTERS_PATH, LETTERS_COLUMNS)
+        df = pd.read_csv(LETTERS_PATH)
+        if not df.empty:
+            df = df[df["filename"].astype(str) != str(filename)]
+        df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+        df.to_csv(LETTERS_PATH, index=False)
+    return True
+
+
+def list_letters() -> list:
+    """[{filename, employee, label, saved_at}] newest first — metadata only (no file blob)."""
+    if _use_supabase():
+        try:
+            rows = (_client().table("letters").select("filename,employee,label,saved_at")
+                    .execute().data) or []
+        except Exception:
+            return []
+    else:
+        _ensure_csv(LETTERS_PATH, LETTERS_COLUMNS)
+        df = pd.read_csv(LETTERS_PATH)
+        rows = (df.drop(columns=[c for c in ["file_b64"] if c in df.columns])
+                .to_dict("records") if not df.empty else [])
+
+    def _txt(v):
+        return "" if v is None or (isinstance(v, float) and pd.isna(v)) else str(v)
+    out = [{"filename": _txt(r.get("filename")), "employee": _txt(r.get("employee")),
+            "label": _txt(r.get("label")), "saved_at": _txt(r.get("saved_at"))}
+           for r in rows if _txt(r.get("filename"))]
+    out.sort(key=lambda r: r["saved_at"], reverse=True)
+    return out
+
+
+def load_letter(filename: str):
+    """The .docx bytes for one saved letter, or None."""
+    if _use_supabase():
+        try:
+            data = (_client().table("letters").select("file_b64")
+                    .eq("filename", str(filename)).execute().data)
+        except Exception:
+            return None
+        if not data:
+            return None
+        b = data[0].get("file_b64")
+    else:
+        if not os.path.exists(LETTERS_PATH):
+            return None
+        df = pd.read_csv(LETTERS_PATH)
+        m = df[df["filename"].astype(str) == str(filename)]
+        if m.empty:
+            return None
+        b = m.iloc[0].get("file_b64")
+    try:
+        return base64.b64decode(b)
+    except Exception:
+        return None
+
+
+def delete_letter(filename: str):
+    if _use_supabase():
+        try:
+            _client().table("letters").delete().eq("filename", str(filename)).execute()
+        except Exception:
+            pass
+    elif os.path.exists(LETTERS_PATH):
+        df = pd.read_csv(LETTERS_PATH)
+        df = df[df["filename"].astype(str) != str(filename)]
+        df.to_csv(LETTERS_PATH, index=False)
 
 
 # ---------- POS daily takings (one finalised end-of-day slip per date) ----------
