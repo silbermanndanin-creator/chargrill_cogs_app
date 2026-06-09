@@ -2638,7 +2638,7 @@ if tab_var is not None:
                     ok, fail = 0, []
                     for _emp, _evs in vmap.items():
                         try:
-                            _pats = V.combine_patterns(_evs)
+                            _pats = V.combine_patterns(V.merge_events(_evs))
                             _c0 = min(min(p["dates"]) for p in _pats)
                             _c1 = max(max(p["dates"]) for p in _pats)
                             _fn = f"Variation Letter - {_emp} - {_c0:%d%b}-{_c1:%d%b%Y}.docx"
@@ -2677,7 +2677,7 @@ if tab_var is not None:
             _DOCX_MIME = ("application/vnd.openxmlformats-officedocument."
                           "wordprocessingml.document")
             for emp in sorted(by_emp):
-                pats = V.combine_patterns(by_emp[emp])
+                pats = V.combine_patterns(V.merge_events(by_emp[emp]))
                 with st.container(border=True):
                     st.markdown(f"**{emp}** — {V.summarise(pats)}")
                     try:
