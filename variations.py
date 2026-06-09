@@ -74,6 +74,12 @@ def _letter_finish(finish):
     return "22:00" if (m is not None and lo <= m <= hi) else finish
 
 
+def _letter_start(start):
+    """Round a start DOWN to the hour for letters: 9:19am -> 9:00am, 4:01pm -> 4:00pm."""
+    t = parse_hhmm(start)
+    return f"{t.hour:02d}:00" if t else start
+
+
 def _merge_day(events):
     """Merge ONE day's CONTIGUOUS/overlapping blocks into spans — a split that's really one
     continuous shift (11am-3pm + 3pm-9:35pm -> 11am-9:35pm) becomes one. Blocks with a real
@@ -263,21 +269,25 @@ def render_letter(cname, patterns, today=None, details=None):
     def _ld(d):  # '9 June 2026' (no leading zero), matching the example letter
         return f"{d.day} {d:%B %Y}"
 
-    commence = min(min(p["dates"]) for p in patterns)
-    end = max(max(p["dates"]) for p in patterns)
+    all_dates = sorted({d for p in patterns for d in p["dates"]})
+    commence = all_dates[0]
+    end = all_dates[-1]                          # last variation day worked
+    letter_date = end                            # date at the top (and execution date)
+    sunday = end + dt.timedelta(days=6 - end.weekday())  # Sunday of the variation week
     first = (str(cname).split() or [str(cname)])[0]
 
-    # Ordinary hours per day (letter-rounded finish) -> a single figure or a 'between X and Y'.
+    # Ordinary hours per day (start rounded down, finish rounded up) -> single figure or range.
     day_hours = {}
     for p in patterns:
-        day_hours[p["weekday"]] = day_hours.get(p["weekday"], 0.0) + _dur(p["start"], _letter_finish(p["finish"]))
+        day_hours[p["weekday"]] = day_hours.get(p["weekday"], 0.0) + \
+            _dur(_letter_start(p["start"]), _letter_finish(p["finish"]))
     totals = sorted({int(round(v)) for v in day_hours.values() if v})
     hours = ("[insert]" if not totals else f"{totals[0]}" if len(totals) == 1
              else f"between {totals[0]} and {totals[-1]}")
 
-    # One line per working day: 'Monday – you will start work at 8:00am and finish work at 4:00pm.'
+    # One line per VARIATION day: 'Monday – you will start work at 8:00am and finish work at 4:00pm.'
     _order = {d: i for i, d in enumerate(C.DAY_ORDER)}
-    day_lines = [f"{C.WEEKDAY_FULL[p['weekday']]} – you will start work at {_fmt(p['start'])} "
+    day_lines = [f"{C.WEEKDAY_FULL[p['weekday']]} – you will start work at {_fmt(_letter_start(p['start']))} "
                  f"and finish work at {_fmt(_letter_finish(p['finish']))}."
                  for p in sorted(patterns, key=lambda p: (_order.get(p["weekday"], 9),
                                                           _mins(p["start"]) or 0))]
@@ -285,7 +295,7 @@ def render_letter(cname, patterns, today=None, details=None):
         day_lines = ["[insert days and times]"]
 
     tokens = {
-        "[DATE]": _ld(today),
+        "[DATE]": _ld(letter_date),
         "[NAME]": str(cname),
         "[FIRSTNAME]": first,
         "[ADDRESS1]": details.get("address1") or "[insert address]",
@@ -294,8 +304,8 @@ def render_letter(cname, patterns, today=None, details=None):
         "[COMMENCE]": _ld(commence),
         "[END]": _ld(end),
         "[HOURS]": hours,
-        "[RETURNBY]": details.get("return_by") or _ld(today),
-        "[EXECDATE]": _ld(today),
+        "[RETURNBY]": details.get("return_by") or _ld(sunday),  # Sunday of the variation week
+        "[EXECDATE]": _ld(letter_date),                          # same as the top date
     }
 
     def fill(text):
