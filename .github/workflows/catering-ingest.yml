@@ -1,0 +1,39 @@
+name: Catering ingest
+
+# Reads new catering orders Power Automate dropped into the Supabase bucket
+# (catering/<platform>/...), extracts them with Claude, and writes the catering_orders
+# table the app reads. Runs every 15 min; also runnable manually from the Actions tab.
+#
+# Requires repo secrets (Settings -> Secrets -> Actions):
+#   SUPABASE_URL, SUPABASE_KEY   (same as the digest)
+#   ANTHROPIC_API_KEY            (for Claude extraction — ADD THIS if not already present)
+# Optional:
+#   SUPABASE_BUCKET              (the Storage bucket name; defaults to "invoices")
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch: {}
+
+# Don't let two ingest runs overlap (they'd both try to move the same files).
+concurrency:
+  group: catering-ingest
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: pip install supabase anthropic pydantic pillow
+      - name: Ingest catering orders
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          SUPABASE_BUCKET: ${{ secrets.SUPABASE_BUCKET }}
+        run: python catering_ingest.py

@@ -402,6 +402,11 @@ def c_load_drinks_counts():
 
 
 @st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def c_load_catering_orders():
+    return storage.load_catering_orders()
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
 def c_load_invoice_images(saved_at):
     return storage.load_invoice_images(saved_at)
 
@@ -567,15 +572,15 @@ if st.button(_toggle_label, key="theme_toggle", help="Toggle light / dark mode")
 # Owner sees all tabs; chef sees only the cost/operations tabs.
 if owner:
     (tab_dash, tab_inv, tab_pos, tab_lab, tab_veg, tab_pack, tab_list,
-     tab_recon, tab_temp, tab_rep, tab_order, tab_digest, tab_var) = st.tabs(
+     tab_recon, tab_temp, tab_rep, tab_order, tab_cater, tab_digest, tab_var) = st.tabs(
         ["📊 Dashboard", "📸 Add invoice", "💰 Daily takings", "🧮 Labour",
          "🥬 Veggie prices", "📦 Ordering", "📋 Invoices", "🧾 Reconciliation",
-         "🌡️ Temp records", "📈 Reports", "🛒 Order pad", "📨 Daily digest", "📝 Variations"])
+         "🌡️ Temp records", "📈 Reports", "🛒 Order pad", "🥗 Catering", "📨 Daily digest", "📝 Variations"])
 else:
     (tab_dash, tab_inv, tab_veg, tab_pack, tab_list, tab_temp,
-     tab_order, tab_digest) = st.tabs(
+     tab_order, tab_cater, tab_digest) = st.tabs(
         ["📊 Dashboard", "📸 Add invoice", "🥬 Veggie prices", "📦 Ordering", "📋 Invoices",
-         "🌡️ Temp records", "🛒 Order pad", "📨 Daily digest"])
+         "🌡️ Temp records", "🛒 Order pad", "🥗 Catering", "📨 Daily digest"])
     tab_pos = tab_lab = tab_recon = tab_rep = tab_var = None
 
 # ============ Add-invoice tab ============
@@ -2141,6 +2146,111 @@ if tab_digest is not None:
                          hide_index=True, width="stretch")
         if not d["over"] and d["price_rises"].empty:
             st.success("✅ Nothing flagged — COGS on track and no price spikes.")
+
+
+# ============ Catering tab (all roles): one feed from every platform ============
+if tab_cater is not None:
+    with tab_cater:
+        from collections import Counter
+        st.markdown("#### 🥗 Catering orders")
+        st.caption("Every catering order — Hampr, Eat First, Yordar, Online Catering — pulled "
+                   "from your inbox automatically. Aggregated counts for prep, plus the "
+                   "per-person name labels for bowls.")
+
+        cdf = c_load_catering_orders()
+        if cdf.empty:
+            st.info("No catering orders yet. Once the Power Automate flows are live, orders land "
+                    "here automatically within ~15 min of the email (or Slack message) arriving.")
+        else:
+            today = dt.date.today()
+            pick = st.date_input("Deliveries from / to",
+                                 value=(today, today + dt.timedelta(days=6)), key="cater_range")
+            if isinstance(pick, (list, tuple)):
+                d_from, d_to = (pick[0], pick[-1])
+            else:
+                d_from = d_to = pick
+
+            def _d(s):
+                try:
+                    return pd.to_datetime(s).date()
+                except Exception:
+                    return None
+
+            def _items(row):
+                v = row["line_items"]
+                try:
+                    return json.loads(v) if isinstance(v, str) else (v or [])
+                except Exception:
+                    return []
+
+            def _q(li):
+                try:
+                    return float(li.get("quantity") or 1)
+                except (TypeError, ValueError):
+                    return 1.0
+
+            def _fmt_q(v):
+                return int(v) if float(v) == int(v) else round(v, 2)
+
+            cdf = cdf.copy()
+            cdf["_dd"] = cdf["deliver_date"].map(_d)
+            win = cdf[(cdf["_dd"].notna()) & (cdf["_dd"] >= d_from) & (cdf["_dd"] <= d_to)]
+            win = win.sort_values(["_dd", "deliver_time"], na_position="last")
+
+            if win.empty:
+                st.info("No catering deliveries in that window.")
+            else:
+                totals = Counter()
+                for _, r in win.iterrows():
+                    for li in _items(r):
+                        totals[str(li.get("item") or "?")] += _q(li)
+                st.markdown(f"**🍳 Prep totals — {d_from:%a %d %b} → {d_to:%a %d %b}**")
+                st.dataframe(
+                    pd.DataFrame([{"Item": k, "Qty": _fmt_q(v)}
+                                  for k, v in sorted(totals.items(), key=lambda kv: -kv[1])]),
+                    hide_index=True, width="stretch")
+                st.write("")
+
+                for _, r in win.iterrows():
+                    items = _items(r)
+                    ot = str(r.get("order_type") or "").lower()
+                    badge = (" · 🏃 Pickup" if ot == "pickup"
+                             else " · 🚚 Delivery" if ot == "delivery" else "")
+                    when = f"{r['_dd']:%a %d %b}" + (f" · {r['deliver_time']}" if r.get("deliver_time") else "")
+                    with st.expander(f"{when} — {r.get('platform') or 'Catering'}{badge} · {len(items)} item(s)",
+                                     expanded=(r["_dd"] == today)):
+                        try:
+                            hc = int(r.get("headcount")) if pd.notna(r.get("headcount")) else None
+                        except (TypeError, ValueError):
+                            hc = None
+                        bits = []
+                        if r.get("company"):
+                            bits.append(f"🏢 **{r['company']}**")
+                        if r.get("contact_name"):
+                            bits.append(str(r["contact_name"]))
+                        if hc:
+                            bits.append(f"👥 {hc}")
+                        if r.get("phone"):
+                            bits.append(f"📞 {r['phone']}")
+                        if bits:
+                            st.markdown("  ·  ".join(bits))
+                        oc = Counter()
+                        for li in items:
+                            oc[str(li.get("item") or "?")] += _q(li)
+                        if oc:
+                            st.markdown("**Make:** " + ", ".join(
+                                f"{_fmt_q(v)}× {k}" for k, v in oc.items()))
+                        if items:
+                            st.dataframe(
+                                pd.DataFrame([{"Qty": _fmt_q(_q(li)), "Item": li.get("item"),
+                                               "Note / name": li.get("person") or li.get("note") or ""}
+                                              for li in items]),
+                                hide_index=True, width="stretch")
+                        if r.get("items_total"):
+                            try:
+                                st.caption(f"Order total: ${float(r['items_total']):,.2f}")
+                            except (TypeError, ValueError):
+                                pass
 
 
 # ============ Variations tab (owner): part-time variation letters ============

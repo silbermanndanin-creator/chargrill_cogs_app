@@ -140,6 +140,34 @@ create table if not exists food_safety (
     saved_at  text
 );
 
+-- Catering orders from every platform (Hampr / Eat First / Yordar / Online Catering),
+-- ingested from the Supabase Storage bucket by catering_ingest.py. line_items is a JSON
+-- string of [{item, person, quantity, unit_price}, ...]; `person` carries the per-person
+-- name on individually-named orders (e.g. Hampr bowls) for bowl labelling. source_file is
+-- UNIQUE so the ingest Action can re-run without creating duplicates.
+create table if not exists catering_orders (
+    id            bigint generated always as identity primary key,
+    saved_at      text,
+    platform      text,
+    order_type    text,                 -- 'delivery' | 'pickup'
+    company       text,                 -- the business the order is FOR (DHL, Anduril); '' if personal
+    deliver_date  text,                 -- YYYY-MM-DD (what the app/digest filter on)
+    deliver_time  text,                 -- 'HH:MM' 24h
+    headcount     integer,              -- people the order feeds ("GROUP SIZE"/"Number of People")
+    contact_name  text,
+    address       text,
+    phone         text,
+    order_ref     text,
+    line_items    text,                 -- JSON [{item, quantity, person, unit_price, note}, ...]
+    items_total   numeric,
+    confidence    text,
+    source_file   text unique           -- bucket path; enables upsert / dedupe
+);
+-- If you created catering_orders before these columns existed, add them:
+--   alter table catering_orders add column if not exists order_type text;
+--   alter table catering_orders add column if not exists headcount integer;
+--   alter table catering_orders add column if not exists company text;
+
 -- This app runs server-side on Streamlit Cloud and connects with the service_role
 -- key, so Row Level Security is not required. If you prefer to enable RLS, add
 -- policies that allow the service role full access.
