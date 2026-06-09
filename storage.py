@@ -54,6 +54,10 @@ CHECKS_PATH = os.path.join(DATA_DIR, "invoice_checks.csv")
 CHECKS_COLUMNS = ["period_key", "supplier", "state", "note", "updated_at"]
 EMP_OVR_PATH = os.path.join(DATA_DIR, "employee_overrides.csv")
 EMP_OVR_COLUMNS = ["employee", "employment_type", "section", "flat_rate", "updated_at"]
+CATERING_PATH = os.path.join(DATA_DIR, "catering.csv")
+CATERING_COLUMNS = ["saved_at", "platform", "order_type", "company", "deliver_date",
+                    "deliver_time", "headcount", "contact_name", "address", "phone",
+                    "order_ref", "line_items", "items_total", "confidence", "source_file"]
 
 
 def iso_week_of(d: dt.date) -> str:
@@ -1179,3 +1183,80 @@ def food_safety_for(date):
         return json.loads(raw) if isinstance(raw, str) else raw
     except Exception:
         return None
+
+
+# ---------- catering orders (Hampr / Eat First / Yordar / Online Catering) ----------
+def save_catering_order(order, source_file: str):
+    """Upsert one catering order, keyed by source_file (the bucket filename) so the
+    ingest Action can re-run safely without creating duplicates. `order` may be a
+    catering_extract.CateringOrder or a plain dict with the same fields."""
+    o = order.model_dump() if hasattr(order, "model_dump") else dict(order)
+    items = o.get("line_items") or []
+    items = [li if isinstance(li, dict) else li.model_dump() for li in items]
+    hc = o.get("headcount")
+    try:
+        hc = int(hc) if hc not in (None, "") else None
+    except (TypeError, ValueError):
+        hc = None
+    row = {
+        "saved_at": dt.datetime.now().isoformat(timespec="seconds"),
+        "platform": o.get("platform"),
+        "order_type": o.get("order_type"),
+        "company": o.get("company"),
+        "deliver_date": o.get("deliver_date"),
+        "deliver_time": o.get("deliver_time"),
+        "headcount": hc,
+        "contact_name": o.get("contact_name"),
+        "address": o.get("address"),
+        "phone": o.get("phone"),
+        "order_ref": o.get("order_ref"),
+        "line_items": json.dumps(items),
+        "items_total": round(float(o.get("items_total") or 0), 2),
+        "confidence": o.get("confidence"),
+        "source_file": source_file,
+    }
+    if _use_supabase():
+        try:
+            _client().table("catering_orders").upsert(row, on_conflict="source_file").execute()
+        except Exception:
+            # Older catering_orders table without order_type/headcount -> save the rest, so a
+            # missing ALTER degrades instead of crashing. Run the ALTERs in supabase_schema.sql.
+            slim = {k: v for k, v in row.items()
+                    if k not in ("order_type", "headcount", "company")}
+            _client().table("catering_orders").upsert(slim, on_conflict="source_file").execute()
+    else:
+        _ensure_csv(CATERING_PATH, CATERING_COLUMNS)
+        df = pd.read_csv(CATERING_PATH)
+        df = df[df["source_file"].astype(str) != source_file]  # one row per source file
+        df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+        df.to_csv(CATERING_PATH, index=False)
+    return row
+
+
+def load_catering_orders() -> pd.DataFrame:
+    if _use_supabase():
+        try:
+            data = _client().table("catering_orders").select("*").execute().data
+        except Exception:
+            return pd.DataFrame(columns=CATERING_COLUMNS)  # table not created yet -> degrade
+        return (pd.DataFrame(data, columns=CATERING_COLUMNS) if data
+                else pd.DataFrame(columns=CATERING_COLUMNS))
+    _ensure_csv(CATERING_PATH, CATERING_COLUMNS)
+    df = pd.read_csv(CATERING_PATH)
+    return df if not df.empty else pd.DataFrame(columns=CATERING_COLUMNS)
+
+
+def catering_already_ingested(source_file: str) -> bool:
+    """True if a catering order with this source_file is already saved (lets the ingest
+    Action skip work it's already done)."""
+    if _use_supabase():
+        try:
+            data = (_client().table("catering_orders").select("source_file")
+                    .eq("source_file", source_file).limit(1).execute().data)
+            return bool(data)
+        except Exception:
+            return False
+    if not os.path.exists(CATERING_PATH):
+        return False
+    df = pd.read_csv(CATERING_PATH)
+    return not df.empty and (df["source_file"].astype(str) == source_file).any()

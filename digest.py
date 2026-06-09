@@ -15,6 +15,7 @@ log) rather than emailed — so it's safe to run before you add the secrets.
 Run locally:  python digest.py            # uses today's date
 """
 import os
+import json
 import smtplib
 import datetime as dt
 from email.mime.multipart import MIMEMultipart
@@ -58,6 +59,37 @@ def build_digest(today=None):
 
     anom = metrics.price_anomalies(lines, min_pct=8.0)
 
+    cat = storage.load_catering_orders()
+
+    def _catering_for(day):
+        out = []
+        if cat.empty:
+            return out
+        for _, r in cat.iterrows():
+            try:
+                if pd.to_datetime(r["deliver_date"]).date() != day:
+                    continue
+            except Exception:
+                continue
+            try:
+                raw = r["line_items"]
+                items = json.loads(raw) if isinstance(raw, str) else (raw or [])
+            except Exception:
+                items = []
+            n = sum(float(li.get("quantity") or 1) for li in items)
+            try:
+                hc = int(r.get("headcount")) if pd.notna(r.get("headcount")) else None
+            except (TypeError, ValueError):
+                hc = None
+            out.append({"platform": r.get("platform") or "Catering",
+                        "time": r.get("deliver_time") or "",
+                        "company": r.get("company") or "",
+                        "contact": r.get("contact_name") or "",
+                        "headcount": hc,
+                        "items": int(n) if n == int(n) else round(n, 2)})
+        out.sort(key=lambda x: x["time"])
+        return out
+
     return {
         "today": today, "yesterday": yest, "week": wk,
         "y_net": _sum(yrow, "adjusted_ex_gst"), "y_incl": _sum(yrow, "total_incl_gst"),
@@ -65,6 +97,8 @@ def build_digest(today=None):
         "cogs_pct": (wk_cogs / wk_rev) if wk_rev > 0 else None,
         "lab": lab, "lab_pct": (lab / wk_rev) if wk_rev > 0 else None,
         "over": over, "price_rises": anom,
+        "cater_today": _catering_for(today),
+        "cater_tomorrow": _catering_for(today + dt.timedelta(days=1)),
     }
 
 
@@ -93,6 +127,17 @@ def render_text(d):
         for r in d["price_rises"].head(8).itertuples():
             L.append(f"  ▲ {r.Item} ({r.Supplier}) {r.Change} -> ${r.Now:,.2f}/unit")
         L.append("")
+    for label, key in [("Today", "cater_today"), ("Tomorrow", "cater_tomorrow")]:
+        orders = d.get(key) or []
+        if orders:
+            L.append(f"Catering {label.lower()}:")
+            for o in orders:
+                t = f" {o['time']}" if o["time"] else ""
+                whofor = o.get("company") or o.get("contact") or ""
+                who = f" — {whofor}" if whofor else ""
+                ppl = f" ({o['headcount']} ppl)" if o.get("headcount") else ""
+                L.append(f"  🥗{t} {o['platform']}: {o['items']} item(s){who}{ppl}")
+            L.append("")
     L.append("— Chargrill COGS")
     return "\n".join(L)
 
