@@ -63,18 +63,65 @@ def nice_date(d):
     return f"{d:%A} {_ordinal(d.day)} {d:%B}"
 
 
+# Letters round a finish in this window up to 10:00pm (a 9:35pm finish is really the 10pm
+# shift). Display keeps the actual time; only the letter is rounded.
+LETTER_FINISH_WINDOW = (21 * 60 + 25, 22 * 60)  # 9:25pm … 10:00pm
+
+
+def _letter_finish(finish):
+    m = _mins(finish)
+    lo, hi = LETTER_FINISH_WINDOW
+    return "22:00" if (m is not None and lo <= m <= hi) else finish
+
+
+def _merge_day(events):
+    """Merge ONE day's CONTIGUOUS/overlapping blocks into spans — a split that's really one
+    continuous shift (11am-3pm + 3pm-9:35pm -> 11am-9:35pm) becomes one. Blocks with a real
+    gap between them are kept separate. Returns events with the same keys."""
+    evs = sorted([e for e in events if _mins(e["actual_start"]) is not None],
+                 key=lambda e: _mins(e["actual_start"]))
+    out = []
+    for e in evs:
+        s, f = _mins(e["actual_start"]), _mins(e["actual_finish"])
+        if out and f is not None and out[-1]["_f"] is not None and s <= out[-1]["_f"]:
+            prev = out[-1]  # touches/overlaps the previous block -> extend the span
+            if f > prev["_f"]:
+                prev["_f"], prev["actual_finish"] = f, e["actual_finish"]
+            if e["kind"] == "start" and prev["kind"] != "start":
+                prev["kind"], prev["contracted_start"] = "start", e.get("contracted_start")
+        else:
+            out.append({"date": e["date"], "weekday": e["weekday"],
+                        "actual_start": e["actual_start"], "actual_finish": e["actual_finish"],
+                        "contracted_start": e.get("contracted_start"),
+                        "contracted_finish": e.get("contracted_finish"),
+                        "kind": e["kind"], "_f": f if f is not None else s})
+    for o in out:
+        o.pop("_f", None)
+    return out
+
+
+def merge_events(events):
+    """Merge each day's contiguous shift blocks across all of an employee's events (any number
+    of days/weeks). Feeds combine_patterns so letters reflect one span per continuous shift."""
+    by_date = {}
+    for e in events:
+        d = e["date"] if isinstance(e["date"], dt.date) else pd.to_datetime(e["date"]).date()
+        by_date.setdefault(d, []).append({**e, "date": d})
+    out = []
+    for d in sorted(by_date):
+        out.extend(_merge_day(by_date[d]))
+    return out
+
+
 def _day_blocks(events):
-    """Each shift's own start-finish for a day, earliest first, e.g. '11am-3pm, 5pm-9pm'.
-    Kept as separate blocks (not a flattened span) so split shifts feed the letters correctly."""
-    def sm(e):
-        m = _mins(e["actual_start"])
-        return m if m is not None else 9999
-    blocks = []
-    for e in sorted(events, key=sm):
-        s = _fmt_compact(e["actual_start"])
-        blocks.append(f"{s}–{_fmt_compact(e['actual_finish'])}"
-                      if _mins(e.get("actual_finish")) is not None else s)
-    return ", ".join(blocks) if blocks else "—"
+    """A day's worked time for the table: contiguous blocks merged ('11am-9:35pm'), genuinely
+    separate shifts shown apart ('11am-3pm, 5pm-9pm'). Actual times (no letter rounding)."""
+    parts = []
+    for m in _merge_day(events):
+        s = _fmt_compact(m["actual_start"])
+        parts.append(f"{s}–{_fmt_compact(m['actual_finish'])}"
+                     if _mins(m["actual_finish"]) is not None else s)
+    return ", ".join(parts) if parts else "—"
 
 
 def display_rows(vmap):
@@ -217,13 +264,15 @@ def render_letter(cname, patterns, today=None, details=None):
             seen.add(f)
             days_full.append(f)
     # Clause (iii): the template's exact sentence, repeated per pattern for split shifts.
+    # Finish times are rounded up to 10pm in the 9:25–10pm window (see _letter_finish).
     iii = "; ".join(f"you will start work at {_fmt_compact(p['start'])} and finish work at "
-                    f"{_fmt_compact(p['finish'])} on {C.WEEKDAY_FULL[p['weekday']]}" for p in patterns)
+                    f"{_fmt_compact(_letter_finish(p['finish']))} on {C.WEEKDAY_FULL[p['weekday']]}"
+                    for p in patterns)
     # Clause (i): ordinary hours per day = sum of that day's blocks. Fill only if every
     # worked day has the same daily total; otherwise leave the [insert] blank for the owner.
     day_hours = {}
     for p in patterns:
-        day_hours[p["weekday"]] = day_hours.get(p["weekday"], 0.0) + _dur(p["start"], p["finish"])
+        day_hours[p["weekday"]] = day_hours.get(p["weekday"], 0.0) + _dur(p["start"], _letter_finish(p["finish"]))
     distinct = {round(v, 2) for v in day_hours.values()}
     hours_str = f"{next(iter(distinct)):g}" if len(distinct) == 1 else "[insert]"
 
