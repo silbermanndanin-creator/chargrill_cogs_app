@@ -484,6 +484,11 @@ def c_load_letter(filename):
     return storage.load_letter(filename)
 
 
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def c_emp_details():
+    return storage.emp_details()
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def c_lightspeed_revenue(start, end, token, business_id):
     # Network call (up to 20s). Cached 5 min so it never blocks every rerun.
@@ -2581,6 +2586,32 @@ if tab_var is not None:
         if not cmap:
             st.info("Add your part-time contracts above to start detecting variations.")
 
+        # ---- Employee details for letters (Employment Agreement date + address) ----
+        _det = c_emp_details()
+        with st.expander("📋 Employee details for letters (Agreement date, address)"):
+            st.caption("Fills the [insert …] blanks in each letter. Stored in your database "
+                       "(not in git). Type the Agreement date as it should read, e.g. 17 June 2024.")
+            _emps = sorted(set(cmap) | set(_det))
+            if not _emps:
+                st.caption("Add contracts above first — their letter details will appear here.")
+            else:
+                ddf = pd.DataFrame([{
+                    "Employee": e,
+                    "Agreement date": _det.get(e, {}).get("agreement_date", ""),
+                    "Address line 1": _det.get(e, {}).get("address1", ""),
+                    "Address line 2": _det.get(e, {}).get("address2", ""),
+                } for e in _emps])
+                ded = st.data_editor(
+                    ddf, hide_index=True, width="stretch", key="emp_det_ed",
+                    column_config={"Employee": st.column_config.TextColumn(disabled=True)})
+                if st.button("💾 Save employee details", key="emp_det_save"):
+                    for _, r in ded.iterrows():
+                        storage.save_emp_detail(r["Employee"], r["Agreement date"],
+                                                r["Address line 1"], r["Address line 2"])
+                    bust_caches()
+                    st.session_state["var_flash"] = "Saved employee details."
+                    st.rerun()
+
         # Reuse the Labour CSV: session first, then the persisted copy (survives reboots).
         csv_bytes = st.session_state.get("shift_csv_bytes")
         _src = "this session's 🧮 Labour upload"
@@ -2642,7 +2673,7 @@ if tab_var is not None:
                             _c0 = min(min(p["dates"]) for p in _pats)
                             _c1 = max(max(p["dates"]) for p in _pats)
                             _fn = f"Variation Letter - {_emp} - {_c0:%d%b}-{_c1:%d%b%Y}.docx"
-                            if storage.save_letter(_fn, _emp, V.render_letter(_emp, _pats),
+                            if storage.save_letter(_fn, _emp, V.render_letter(_emp, _pats, details=_det.get(_emp, {})),
                                                    label=f"{_c0:%d %b}–{_c1:%d %b %Y}"):
                                 ok += 1
                             else:
@@ -2681,7 +2712,7 @@ if tab_var is not None:
                 with st.container(border=True):
                     st.markdown(f"**{emp}** — {V.summarise(pats)}")
                     try:
-                        docx_bytes = V.render_letter(emp, pats)
+                        docx_bytes = V.render_letter(emp, pats, details=_det.get(emp, {}))
                         commence = min(min(p["dates"]) for p in pats)
                         end = max(max(p["dates"]) for p in pats)
                         fname = f"Variation Letter - {emp} - {commence:%d%b}-{end:%d%b%Y}.docx"

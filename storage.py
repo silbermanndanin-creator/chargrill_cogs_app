@@ -24,6 +24,8 @@ PAYROLL_SETUP_PATH = os.path.join(DATA_DIR, "payroll_setup.xlsx")
 SHIFT_CSV_PATH = os.path.join(DATA_DIR, "shift_csv.csv")
 LETTERS_PATH = os.path.join(DATA_DIR, "letters.csv")
 LETTERS_COLUMNS = ["filename", "employee", "label", "file_b64", "saved_at"]
+EMP_DETAILS_PATH = os.path.join(DATA_DIR, "emp_details.csv")
+EMP_DETAILS_COLUMNS = ["employee", "agreement_date", "address1", "address2", "updated_at"]
 COLUMNS = ["saved_at", "supplier_raw", "supplier", "invoice_date",
            "total_ex_gst", "iso_week", "month", "line_items"]
 REV_COLUMNS = ["period_type", "period_key", "revenue", "updated_at"]
@@ -1042,6 +1044,51 @@ def delete_letter(filename: str):
         df = pd.read_csv(LETTERS_PATH)
         df = df[df["filename"].astype(str) != str(filename)]
         df.to_csv(LETTERS_PATH, index=False)
+
+
+# ---------- per-employee letter details (agreement date + address), kept in the DB ----------
+def save_emp_detail(employee, agreement_date="", address1="", address2=""):
+    emp = str(employee or "").strip()
+    if not emp:
+        return
+    row = {"employee": emp, "agreement_date": str(agreement_date or ""),
+           "address1": str(address1 or ""), "address2": str(address2 or ""),
+           "updated_at": dt.datetime.now().isoformat(timespec="seconds")}
+    if _use_supabase():
+        try:
+            _client().table("emp_details").upsert(row, on_conflict="employee").execute()
+        except Exception:
+            pass  # emp_details table not created yet
+    else:
+        _ensure_csv(EMP_DETAILS_PATH, EMP_DETAILS_COLUMNS)
+        df = pd.read_csv(EMP_DETAILS_PATH)
+        if not df.empty:
+            df = df[df["employee"].astype(str) != emp]
+        df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+        df.to_csv(EMP_DETAILS_PATH, index=False)
+
+
+def emp_details() -> dict:
+    """{employee: {'agreement_date','address1','address2'}} for filling variation letters."""
+    if _use_supabase():
+        try:
+            rows = _client().table("emp_details").select("*").execute().data or []
+        except Exception:
+            return {}
+    else:
+        _ensure_csv(EMP_DETAILS_PATH, EMP_DETAILS_COLUMNS)
+        df = pd.read_csv(EMP_DETAILS_PATH)
+        rows = df.to_dict("records") if not df.empty else []
+
+    def _t(v):
+        return "" if v is None or (isinstance(v, float) and pd.isna(v)) else str(v).strip()
+    out = {}
+    for r in rows:
+        emp = _t(r.get("employee"))
+        if emp:
+            out[emp] = {"agreement_date": _t(r.get("agreement_date")),
+                        "address1": _t(r.get("address1")), "address2": _t(r.get("address2"))}
+    return out
 
 
 # ---------- POS daily takings (one finalised end-of-day slip per date) ----------
