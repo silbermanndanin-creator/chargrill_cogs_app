@@ -474,6 +474,16 @@ def c_load_shift_csv():
     return storage.load_shift_csv()
 
 
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def c_list_letters():
+    return storage.list_letters()
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def c_load_letter(filename):
+    return storage.load_letter(filename)
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def c_lightspeed_revenue(start, end, token, business_id):
     # Network call (up to 20s). Cached 5 min so it never blocks every rerun.
@@ -2623,40 +2633,31 @@ if tab_var is not None:
                     st.session_state["var_flash"] = f"Saved {saved} variation event(s) to file."
                     st.rerun()
 
-                # ---- Save THIS WEEK's letters straight to Google Drive (discoverable here) ----
-                import gdrive
-                if gdrive.is_configured():
-                    if st.button("☁️ Save this week's letters to Drive", key="var_drive_week"):
-                        ok, fail = 0, []
-                        for _emp, _evs in vmap.items():
-                            try:
-                                _pats = V.combine_patterns(_evs)
-                                _c0 = min(min(p["dates"]) for p in _pats)
-                                _c1 = max(max(p["dates"]) for p in _pats)
-                                gdrive.upload_docx(
-                                    f"Variation Letter - {_emp} - {_c0:%d%b}-{_c1:%d%b%Y}.docx",
-                                    V.render_letter(_emp, _pats))
+                # ---- Save this week's letters into the app (download anytime, survives reboots) ----
+                if st.button("📁 Save this week's letters", key="var_save_letters"):
+                    ok, fail = 0, []
+                    for _emp, _evs in vmap.items():
+                        try:
+                            _pats = V.combine_patterns(_evs)
+                            _c0 = min(min(p["dates"]) for p in _pats)
+                            _c1 = max(max(p["dates"]) for p in _pats)
+                            _fn = f"Variation Letter - {_emp} - {_c0:%d%b}-{_c1:%d%b%Y}.docx"
+                            if storage.save_letter(_fn, _emp, V.render_letter(_emp, _pats),
+                                                   label=f"{_c0:%d %b}–{_c1:%d %b %Y}"):
                                 ok += 1
-                            except Exception as e:
-                                fail.append(f"{_emp}: {e}")
-                        if ok:
-                            st.success(f"Saved {ok} letter(s) to your Google Drive folder.")
-                        if fail:
-                            st.error("Some didn't save — " + "; ".join(fail))
-                    with st.expander("🔧 Google Drive connection"):
-                        st.caption("Share the Drive folder with **this exact** email as **Editor**:")
-                        st.code(gdrive.service_account_email() or "?", language=None)
-                        st.caption(f"Target folder ID: `{gdrive.folder_id()}`")
-                        if st.button("🔍 Test folder access", key="var_drive_test"):
-                            _ok, _msg = gdrive.check_access()
-                            (st.success if _ok else st.error)(_msg)
-                else:
-                    _has = "GDRIVE_SERVICE_ACCOUNT" in _secret_names()
-                    st.caption("☁️ Drive key is in Secrets but not loaded — **reboot the app** to "
-                               "enable saving letters to Drive."
-                               if _has else
-                               "☁️ To save letters to Drive, add **GDRIVE_SERVICE_ACCOUNT** in "
-                               f"Secrets. Secret names seen: **{', '.join(_secret_names()) or 'none'}**.")
+                            else:
+                                fail.append(_emp)
+                        except Exception as e:
+                            fail.append(f"{_emp}: {e}")
+                    if ok:
+                        bust_caches()
+                        st.session_state["var_flash"] = (f"Saved {ok} letter(s) — find them in "
+                                                         "📂 Saved letters below.")
+                        st.rerun()
+                    if fail:
+                        st.error("Couldn't save: " + ", ".join(map(str, fail))
+                                 + " — make sure the **letters** table exists in Supabase "
+                                 "(run its block from `supabase_schema.sql`).")
         if st.session_state.pop("var_flash", None):
             st.success(st.session_state.get("var_flash") or "Saved.")
 
@@ -2673,9 +2674,8 @@ if tab_var is not None:
                     "actual_start": r["actual_start"], "actual_finish": r["actual_finish"],
                     "contracted_start": (r["contracted_start"] or None),
                     "contracted_finish": None, "kind": r["kind"]})
-            import gdrive
-            drive_on = gdrive.is_configured()
-            letters = {}  # emp -> (filename, bytes), for the "save all" button
+            _DOCX_MIME = ("application/vnd.openxmlformats-officedocument."
+                          "wordprocessingml.document")
             for emp in sorted(by_emp):
                 pats = V.combine_patterns(by_emp[emp])
                 with st.container(border=True):
@@ -2685,38 +2685,39 @@ if tab_var is not None:
                         commence = min(min(p["dates"]) for p in pats)
                         end = max(max(p["dates"]) for p in pats)
                         fname = f"Variation Letter - {emp} - {commence:%d%b}-{end:%d%b%Y}.docx"
-                        letters[emp] = (fname, docx_bytes)
                         dc = st.columns(2)
                         dc[0].download_button(
                             "⬇️ Download (.docx)", docx_bytes, key=f"varletter_{emp}",
-                            file_name=fname, mime=gdrive.DOCX_MIME)
-                        if drive_on and dc[1].button("☁️ Save to Drive", key=f"vardrive_{emp}"):
-                            try:
-                                res = gdrive.upload_docx(fname, docx_bytes)
-                                st.success(f"Saved to Google Drive ✓  [open letter]({res['link']})")
-                            except Exception as e:
-                                st.error(f"Drive save failed: {e}")
+                            file_name=fname, mime=_DOCX_MIME)
+                        if dc[1].button("📁 Save in app", key=f"varsave_{emp}"):
+                            if storage.save_letter(fname, emp, docx_bytes,
+                                                   label=f"{commence:%d %b}–{end:%d %b %Y}"):
+                                bust_caches()
+                                st.success("Saved — see 📂 Saved letters below.")
+                            else:
+                                st.error("Couldn't save — create the **letters** table in Supabase.")
                     except Exception as e:
                         st.caption(f"Could not build letter: {e}")
-            if drive_on and letters:
-                if st.button("☁️ Save ALL letters to Drive", key="vardrive_all"):
-                    ok, fail = 0, []
-                    for _emp, (fn, bb) in letters.items():
-                        try:
-                            gdrive.upload_docx(fn, bb); ok += 1
-                        except Exception as e:
-                            fail.append(f"{_emp}: {e}")
-                    if ok:
-                        st.success(f"Saved {ok} letter(s) to your Google Drive folder.")
-                    if fail:
-                        st.error("Some didn't save — " + "; ".join(fail))
-            elif not drive_on:
-                _has = "GDRIVE_SERVICE_ACCOUNT" in _secret_names()
-                if _has:
-                    st.warning("☁️ Google Drive key **is** in Secrets but not loaded yet — "
-                               "**reboot the app** (Manage app → ⋮ → Reboot) to pick it up, then "
-                               "the **Save to Drive** buttons will appear.")
-                else:
-                    st.caption("💡 Google Drive not connected. Add **GDRIVE_SERVICE_ACCOUNT** "
-                               f"(the service-account key) in Secrets. Secret names seen now: "
-                               f"**{', '.join(_secret_names()) or 'none'}**.")
+
+        # ---- Saved letters (kept in the app, download anytime) ----
+        st.divider()
+        _DOCX_MIME = ("application/vnd.openxmlformats-officedocument."
+                      "wordprocessingml.document")
+        with st.expander("📂 Saved letters — stored in the app, download anytime"):
+            _saved = c_list_letters()
+            if not _saved:
+                st.caption("No letters saved yet — use **📁 Save this week's letters** above.")
+            else:
+                _lab = {L["filename"]: f"{L['employee']} · {L['label']} · saved {L['saved_at'][:16]}"
+                        for L in _saved}
+                _pick = st.selectbox("Pick a saved letter", list(_lab),
+                                     format_func=lambda f: _lab.get(f, f), key="saved_letter_pick")
+                _b = c_load_letter(_pick) if _pick else None
+                ccs = st.columns(2)
+                if _b:
+                    ccs[0].download_button("⬇️ Download", _b, file_name=_pick,
+                                           mime=_DOCX_MIME, key="saved_letter_dl")
+                if ccs[1].button("🗑️ Delete", key="saved_letter_del"):
+                    storage.delete_letter(_pick)
+                    bust_caches()
+                    st.rerun()
