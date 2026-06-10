@@ -1911,15 +1911,25 @@ with tab_list:
         by_week = st.toggle("📅 Group by week", value=True, key="invlist_byweek",
                             help="See which invoices landed in each Mon–Sun trading week.")
         if by_week:
-            for _i, w in enumerate(sorted(view["_wkstart"].dropna().unique(), reverse=True)):
+            def _week_expander(w, expanded):
                 wk = view[view["_wkstart"] == w]
                 ws = pd.Timestamp(w).date()
                 we = ws + dt.timedelta(days=6)
                 wt = pd.to_numeric(wk["total_ex_gst"], errors="coerce").sum()
                 with st.expander(f"Week of {ws:%d %b} – {we:%d %b %Y}  ·  "
                                  f"{len(wk)} invoice(s)  ·  ${wt:,.0f} ex-GST",
-                                 expanded=(_i == 0)):
+                                 expanded=expanded):
                     _show_invoice_table(wk)
+
+            weeks = sorted(view["_wkstart"].dropna().unique(), reverse=True)
+            RECENT = 3  # this week + the previous two; older weeks hidden behind a toggle
+            for _i, w in enumerate(weeks[:RECENT]):
+                _week_expander(w, expanded=(_i == 0))
+            if len(weeks) > RECENT:
+                if st.toggle(f"📂 Show older weeks ({len(weeks) - RECENT} more)",
+                             value=False, key="invlist_more"):
+                    for w in weeks[RECENT:]:
+                        _week_expander(w, expanded=False)
             # Invoices whose date couldn't be parsed have no week — surface them in their
             # own group so they're never silently dropped from the list.
             stray = view[view["_wkstart"].isna()]
