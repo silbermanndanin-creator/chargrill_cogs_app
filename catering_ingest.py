@@ -8,6 +8,11 @@ Online Catering text). This script reads any new files, runs Claude extraction, 
 row to the `catering_orders` table, and moves the file to catering/done/<platform>/ so it
 isn't processed twice. Re-running is safe (the row is upserted on source_file).
 
+A file that yields no usable order (wrong attachment, blank/garbled) is moved to
+catering/review/<platform>/ instead — captured for a human to look at, but not re-read
+(and re-charged to Claude) on every run. A file that hits a transient error (network /
+rate limit) is LEFT in place so the next run retries it — a blip never loses a real order.
+
 Environment / GitHub repo secrets:
   SUPABASE_URL, SUPABASE_KEY      (same as the app + digest)
   ANTHROPIC_API_KEY              (for Claude extraction — add this secret if not present)
@@ -45,15 +50,21 @@ def _ext(name: str) -> str:
     return os.path.splitext(name.lower())[1]
 
 
-def process_one(sb, folder: str, name: str) -> str:
-    """Extract + save one file, then archive it. Returns a short status string."""
+def _archive(sb, src: str, dest: str):
+    """Move a handled file out of the inbox folder (into done/ or review/)."""
+    sb.storage.from_(BUCKET).move(src, dest)
+
+
+def process_one(sb, folder: str, name: str):
+    """Extract + save one file, then archive it. Returns (status, detail) where status
+    is 'saved' | 'skip' | 'review'."""
     prefix = f"catering/{folder}"
     path = f"{prefix}/{name}"
     hint = PLATFORMS[folder]
 
     if storage.catering_already_ingested(path):
-        sb.storage.from_(BUCKET).move(path, f"catering/done/{folder}/{name}")
-        return f"skip (already ingested) {path}"
+        _archive(sb, path, f"catering/done/{folder}/{name}")
+        return ("skip", f"already ingested {path}")
 
     raw = sb.storage.from_(BUCKET).download(path)
     ext = _ext(name)
@@ -63,15 +74,23 @@ def process_one(sb, folder: str, name: str) -> str:
         order = extract_catering(file_bytes=raw,
                                  media_type=IMG_MEDIA.get(ext, "application/pdf"),
                                  platform_hint=hint)
+
+    # Nothing usable came back (a wrong attachment, blank or garbled file) — set it aside
+    # in review/ instead of re-reading it (and re-paying for Claude) every run. A genuine
+    # order always has at least a delivery date or some line items.
+    if not order.line_items and not order.deliver_date:
+        _archive(sb, path, f"catering/review/{folder}/{name}")
+        return ("review", f"no order found -> review/ [{path}]")
+
     storage.save_catering_order(order, source_file=path)
-    sb.storage.from_(BUCKET).move(path, f"catering/done/{folder}/{name}")
+    _archive(sb, path, f"catering/done/{folder}/{name}")
     n = len(order.line_items)
-    return f"saved {hint} · {order.deliver_date} {order.deliver_time or ''} · {n} item(s) [{path}]"
+    return ("saved", f"{hint} · {order.deliver_date} {order.deliver_time or ''} · {n} item(s) [{path}]")
 
 
 def main():
     sb = _client()
-    total = 0
+    saved = reviewed = failed = 0
     for folder in PLATFORMS:
         prefix = f"catering/{folder}"
         try:
@@ -85,11 +104,19 @@ def main():
             if not name or name == ".emptyFolderPlaceholder" or f.get("id") is None:
                 continue
             try:
-                print("[catering]", process_one(sb, folder, name))
-                total += 1
+                status, detail = process_one(sb, folder, name)
             except Exception as e:
-                print(f"[catering] ERROR on {prefix}/{name}: {e}")
-    print(f"[catering] done — {total} file(s) processed.")
+                # Transient glitch (network / rate limit): leave the file in place so the
+                # next run retries it — a blip never loses a real order.
+                failed += 1
+                print(f"[catering] FAILED {prefix}/{name}: {e!r} — left for retry")
+                continue
+            if status == "review":
+                reviewed += 1
+            elif status == "saved":
+                saved += 1
+            print(f"[catering] {status}: {detail}")
+    print(f"[catering] done — {saved} saved, {reviewed} for review, {failed} failed.")
 
 
 if __name__ == "__main__":
