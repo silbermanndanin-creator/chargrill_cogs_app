@@ -27,7 +27,10 @@ from supabase import create_client
 import storage
 from catering_extract import extract_catering
 
-BUCKET = os.environ.get("SUPABASE_BUCKET", "invoices")
+# `or` (not a default arg): the GitHub workflow passes SUPABASE_BUCKET even when the
+# secret is unset, which arrives as an empty string — that must still fall back to
+# "invoices", or Supabase rejects "" as an invalid bucket name.
+BUCKET = os.environ.get("SUPABASE_BUCKET") or "invoices"
 PLATFORMS = {
     "hampr": "Hampr",
     "eatfirst": "Eat First",
