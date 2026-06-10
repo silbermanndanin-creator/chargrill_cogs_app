@@ -2587,7 +2587,6 @@ if tab_digest is not None:
 # ============ Catering tab (all roles): one feed from every platform ============
 if tab_cater is not None:
     with tab_cater:
-        from collections import Counter
         st.markdown("#### 🥗 Catering orders")
         st.caption("Every catering order — Hampr, Eat First, Yordar, Online Catering — pulled "
                    "from your inbox automatically. Aggregated counts for prep, plus the "
@@ -2656,12 +2655,6 @@ if tab_cater is not None:
                             bits.append(f"📞 {r['phone']}")
                         if bits:
                             st.markdown("  ·  ".join(bits))
-                        oc = Counter()
-                        for li in items:
-                            oc[str(li.get("item") or "?")] += _q(li)
-                        if oc:
-                            st.markdown("**Make:** " + ", ".join(
-                                f"{_fmt_q(v)}× {k}" for k, v in oc.items()))
                         if items:
                             st.dataframe(
                                 pd.DataFrame([{"Qty": _fmt_q(_q(li)), "Item": li.get("item"),
