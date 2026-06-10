@@ -649,16 +649,16 @@ if st.button(_toggle_label, key="theme_toggle", help="Toggle light / dark mode")
 
 # Owner sees all tabs; chef sees only the cost/operations tabs.
 if owner:
-    (tab_dash, tab_inv, tab_pos, tab_lab, tab_veg, tab_pack, tab_list, tab_track,
+    (tab_dash, tab_inv, tab_pos, tab_list, tab_track, tab_lab, tab_veg, tab_pack,
      tab_recon, tab_temp, tab_rep, tab_order, tab_digest, tab_var) = st.tabs(
-        ["📊 Dashboard", "📸 Add invoice", "💰 Daily takings", "🧮 Labour",
-         "🥬 Veggie prices", "📦 Ordering", "📋 Invoices", "✅ Invoice tracker",
+        ["📊 Dashboard", "📸 Add invoice", "💰 Daily takings", "📋 Invoices", "✅ Invoice tracker",
+         "🧮 Labour", "🥬 Veggie prices", "📦 Ordering",
          "🧾 Reconciliation", "🌡️ Temp records", "📈 Reports", "🛒 Order pad",
          "📨 Daily digest", "📝 Variations"])
 else:
-    (tab_dash, tab_inv, tab_veg, tab_pack, tab_list, tab_temp,
+    (tab_dash, tab_inv, tab_list, tab_veg, tab_pack, tab_temp,
      tab_order, tab_digest) = st.tabs(
-        ["📊 Dashboard", "📸 Add invoice", "🥬 Veggie prices", "📦 Ordering", "📋 Invoices",
+        ["📊 Dashboard", "📸 Add invoice", "📋 Invoices", "🥬 Veggie prices", "📦 Ordering",
          "🌡️ Temp records", "🛒 Order pad", "📨 Daily digest"])
     tab_pos = tab_lab = tab_recon = tab_rep = tab_var = tab_track = None
 
@@ -1873,20 +1873,48 @@ with tab_list:
             view = view[view["supplier_raw"].astype(str).str.lower().str.contains(q, na=False)
                         | view["line_items"].astype(str).str.lower().str.contains(q, na=False)]
         view = view.assign(_sortd=pd.to_datetime(view["invoice_date"], errors="coerce"))
-        view = view.sort_values(["_sortd", "saved_at"], ascending=False).drop(columns="_sortd")
+        view = view.sort_values(["_sortd", "saved_at"], ascending=False)
         total = pd.to_numeric(view["total_ex_gst"], errors="coerce").sum()
         st.caption(f"{len(view)} invoice(s) · ${total:,.0f} ex-GST")
-        show = view[["invoice_date", "supplier_raw", "supplier", "total_ex_gst"]].rename(
-            columns={"invoice_date": "Date", "supplier_raw": "Supplier (as invoiced)",
-                     "supplier": "Category", "total_ex_gst": "Total ex-GST $"})
-        # Real date dtype so tapping the Date header sorts chronologically (not as text),
-        # shown in Australian DD/MM/YYYY; money right-aligned with a $ format.
-        show["Date"] = pd.to_datetime(show["Date"], errors="coerce")
-        show["Total ex-GST $"] = pd.to_numeric(show["Total ex-GST $"], errors="coerce")
-        st.dataframe(show, hide_index=True, width="stretch", column_config={
-            "Date": st.column_config.DateColumn("Date", format="DD/MM/YYYY"),
-            "Total ex-GST $": st.column_config.NumberColumn("Total ex-GST $", format="$%.2f"),
-        })
+
+        # Monday-start week (matches the sidebar's Mon–Sun trading week) so invoices can
+        # be grouped by the week they landed in — "what came in this week" at a glance.
+        _wkstart = view["_sortd"].dt.normalize() - pd.to_timedelta(view["_sortd"].dt.weekday, unit="D")
+        view = view.assign(_wkstart=_wkstart).drop(columns="_sortd")
+
+        def _show_invoice_table(_df):
+            t = _df[["invoice_date", "supplier_raw", "supplier", "total_ex_gst"]].rename(
+                columns={"invoice_date": "Date", "supplier_raw": "Supplier (as invoiced)",
+                         "supplier": "Category", "total_ex_gst": "Total ex-GST $"})
+            # Real date dtype so tapping the Date header sorts chronologically (not as
+            # text), shown in Australian DD/MM/YYYY; money right-aligned with a $ format.
+            t["Date"] = pd.to_datetime(t["Date"], errors="coerce")
+            t["Total ex-GST $"] = pd.to_numeric(t["Total ex-GST $"], errors="coerce")
+            st.dataframe(t, hide_index=True, width="stretch", column_config={
+                "Date": st.column_config.DateColumn("Date", format="DD/MM/YYYY"),
+                "Total ex-GST $": st.column_config.NumberColumn("Total ex-GST $", format="$%.2f"),
+            })
+
+        by_week = st.toggle("📅 Group by week", value=True, key="invlist_byweek",
+                            help="See which invoices landed in each Mon–Sun trading week.")
+        if by_week:
+            for _i, w in enumerate(sorted(view["_wkstart"].dropna().unique(), reverse=True)):
+                wk = view[view["_wkstart"] == w]
+                ws = pd.Timestamp(w).date()
+                we = ws + dt.timedelta(days=6)
+                wt = pd.to_numeric(wk["total_ex_gst"], errors="coerce").sum()
+                with st.expander(f"Week of {ws:%d %b} – {we:%d %b %Y}  ·  "
+                                 f"{len(wk)} invoice(s)  ·  ${wt:,.0f} ex-GST",
+                                 expanded=(_i == 0)):
+                    _show_invoice_table(wk)
+            # Invoices whose date couldn't be parsed have no week — surface them in their
+            # own group so they're never silently dropped from the list.
+            stray = view[view["_wkstart"].isna()]
+            if not stray.empty:
+                with st.expander(f"⚠️ Undated  ·  {len(stray)} invoice(s)"):
+                    _show_invoice_table(stray)
+        else:
+            _show_invoice_table(view)
         with st.expander("🔍 View line items"):
             for _, r in view.iterrows():
                 st.markdown(f"**{r['invoice_date']} · {r['supplier_raw']}** → "
