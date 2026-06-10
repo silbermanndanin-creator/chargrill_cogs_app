@@ -29,7 +29,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install deps
-        run: pip install supabase anthropic pydantic pillow
+        run: pip install supabase anthropic pandas pydantic pillow
       - name: Ingest catering orders
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
