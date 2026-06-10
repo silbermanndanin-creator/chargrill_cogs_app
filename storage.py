@@ -292,14 +292,20 @@ def _is_pdf(name) -> bool:
     return str(name).lower().endswith(".pdf")
 
 
+# Supabase Storage list() returns only 100 entries by default — with a backlog in the
+# bucket that silently hid everything past the first 100. List big batches, oldest first,
+# so the longest-waiting invoices always clear before newer ones.
+_LIST_OPTS = {"limit": 1000, "sortBy": {"column": "created_at", "order": "asc"}}
+
+
 def inbox_list():
     """New PDF invoice files sitting at the root of the inbox bucket, as
-    [(name, media_type)]. Files we've already handled live in the processed/ / review/ /
-    ignored/ subfolders and are not returned. Empty when Supabase isn't configured
-    (the inbox is a cloud-only feature)."""
+    [(name, media_type)], oldest first. Files we've already handled live in the
+    processed/ / review/ / ignored/ subfolders and are not returned. Empty when
+    Supabase isn't configured (the inbox is a cloud-only feature)."""
     if not _use_supabase():
         return []
-    items = _client().storage.from_(INBOX_BUCKET).list() or []
+    items = _client().storage.from_(INBOX_BUCKET).list("", _LIST_OPTS) or []
     out = []
     for it in items:
         name = it.get("name") if isinstance(it, dict) else None
@@ -315,7 +321,7 @@ def inbox_list_other():
     review/, ignored/) come back from Storage list() with a null id — skipped."""
     if not _use_supabase():
         return []
-    items = _client().storage.from_(INBOX_BUCKET).list() or []
+    items = _client().storage.from_(INBOX_BUCKET).list("", _LIST_OPTS) or []
     out = []
     for it in items:
         if not isinstance(it, dict):
@@ -372,7 +378,7 @@ def review_list():
     auto-save (statements, credit notes, unrecognised suppliers) for a human to decide on."""
     if not _use_supabase():
         return []
-    items = _client().storage.from_(INBOX_BUCKET).list("review") or []
+    items = _client().storage.from_(INBOX_BUCKET).list("review", _LIST_OPTS) or []
     out = []
     for it in items:
         name = it.get("name") if isinstance(it, dict) else None
