@@ -1,0 +1,33 @@
+name: Review triage
+
+# On-demand tidy + report of the invoice_inbox review/ queue (review_triage.py):
+# sweeps legacy non-PDFs to ignored/, collapses exact-duplicate PDFs, then prints
+# a Claude classification line per remaining file so the owner can fast-triage
+# the app's review queue. Nothing is auto-accepted, nothing is deleted.
+# Run from the Actions tab ("Run workflow").
+
+on:
+  workflow_dispatch: {}
+
+# Same group as the inbox ingest so the two never touch the bucket at once —
+# a triage started mid-ingest just waits its turn.
+concurrency:
+  group: invoice-inbox
+  cancel-in-progress: false
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: pip install anthropic supabase pandas pydantic Pillow
+      - name: Triage review queue
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python review_triage.py
