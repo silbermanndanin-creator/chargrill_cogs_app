@@ -460,6 +460,16 @@ def c_load_invoice_images(saved_at):
 
 
 @st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def c_review_list():
+    return storage.review_list()
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def c_review_download(name):
+    return storage.review_download(name)
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
 def c_catering_file(source_file):
     return storage.catering_file_bytes(source_file)
 
@@ -1850,6 +1860,82 @@ with tab_list:
     edited_f = st.session_state.pop("edit_flash", None)
     if edited_f:
         st.success(edited_f)
+
+    # ---- Review queue: emailed PDFs the auto-ingest didn't save (review/ folder) ----
+    # inbox_ingest routes anything that isn't a clean COGS supplier invoice (statements,
+    # credit notes, unrecognised suppliers) into review/ in the inbox bucket. Surface that
+    # queue here: ✅ Accept reads the PDF with the same Claude Vision pipeline as Add
+    # invoice, saves it (with the PDF attached) and archives the file to processed/;
+    # 🗑 Dismiss parks it in ignored/ without counting it.
+    rev_flash = st.session_state.pop("review_flash", None)
+    if rev_flash:
+        st.success(rev_flash)
+    _review = c_review_list()
+    if _review:
+        with st.expander(f"📥 Emailed invoices needing review ({len(_review)})", expanded=True):
+            st.caption("These arrived by email but weren't auto-saved — usually a statement, "
+                       "credit note, or a supplier the app doesn't recognise. **Accept** reads "
+                       "and saves one as a normal invoice (the PDF moves to processed/); "
+                       "**Dismiss** sets it aside without counting it.")
+            _rnames = [n for n, _ in _review]
+            _rwhen = dict(_review)
+            rsel = st.selectbox(
+                "File to review", _rnames, key="review_sel",
+                format_func=lambda n: f"{n}" + (f"  ·  received {_rwhen[n]}" if _rwhen.get(n) else ""))
+            try:
+                _rbytes = c_review_download(rsel)
+            except Exception as e:
+                _rbytes = None
+                st.error(f"Couldn't load this file from storage: {e}")
+            rb = st.columns([1.4, 1.6, 1.4])
+            if _rbytes:
+                rb[0].download_button("⬇️ View / download PDF", _rbytes, file_name=rsel,
+                                      mime="application/pdf", key="review_dl")
+                if not get_api_key():
+                    st.error(_api_key_help())
+                elif rb[1].button("✅ Accept — read & save as invoice", type="primary",
+                                  key="review_accept"):
+                    with st.spinner("Reading invoice with Claude Vision…"):
+                        try:
+                            _rinv = extract_invoice(_rbytes, "application/pdf").model_dump()
+                            if hasattr(extract, "correct_mispriced_lines"):
+                                _rinv = extract.correct_mispriced_lines(
+                                    _rbytes, _rinv, media_type="application/pdf")
+                            _rsup = _rinv["supplier_name"]
+                            _rtot = float(_rinv["total_ex_gst"])
+                            _rdup = storage.find_duplicate(
+                                config.canonicalize(_rsup), _rinv["invoice_date"], _rtot)
+                            if _rdup is not None:
+                                storage.review_accept(rsel)
+                                st.session_state["review_flash"] = (
+                                    f"Already saved ({_rdup['invoice_date']} · "
+                                    f"{_rdup['supplier_raw']} · ${float(_rdup['total_ex_gst']):,.2f}) "
+                                    "— file moved to processed/ without double-counting.")
+                            else:
+                                _rrow = storage.save_invoice(
+                                    _rsup, _rinv["invoice_date"], _rtot, _rinv["line_items"])
+                                storage.save_invoice_image(
+                                    _rrow["saved_at"], _rbytes, "application/pdf")
+                                storage.review_accept(rsel)
+                                st.session_state["review_flash"] = (
+                                    f"Saved {_rsup} → {config.canonicalize(_rsup)} · "
+                                    f"${_rtot:,.2f} ex-GST — file moved to processed/. "
+                                    "Wrong numbers? Fix it in ✏️ Edit / fix an invoice below.")
+                            bust_caches()
+                            # the accepted file is gone from the options -> drop the stale pick
+                            st.session_state.pop("review_sel", None)
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Couldn't read this invoice: {e} — it stays in review.")
+            # Dismiss works even when the file couldn't be downloaded, so a corrupt
+            # upload can still be cleared from the queue.
+            if rb[2].button("🗑 Dismiss — don't count it", key="review_dismiss"):
+                storage.review_dismiss(rsel)
+                bust_caches()
+                st.session_state["review_flash"] = f"Dismissed {rsel} — moved to ignored/."
+                st.session_state.pop("review_sel", None)
+                st.rerun()
+
     if df.empty:
         st.info("No invoices submitted yet — add one in **📸 Add invoice**.")
     else:

@@ -8,6 +8,9 @@ moves the file into processed/ so it's never double-counted. Nothing to click �
 emailed invoices appear in the app on their own.
 
 Design choices for "never miss / 100% accurate":
+  - PDF-ONLY: real supplier invoices arrive as PDF attachments. Anything else that
+    rides along on an email (signature logos, inline images, calendar invites) is swept
+    into ignored/ unread — so only PDFs ever reach processed/ or review/.
   - TRIAGE FIRST (extract.classify_document): suppliers also email statements (which
     sum a whole month into one big total), credit notes and the odd non-COGS expense.
     Only a single invoice from a recognised COGS supplier (config.SUPPLIERS) is saved;
@@ -87,6 +90,12 @@ def process_one(name, media_type, client):
 
 
 def main():
+    # Sweep non-PDF junk (signature logos, inline images…) into ignored/ unread —
+    # only PDF invoices are ever processed, so review/ and processed/ stay PDF-only.
+    for name in storage.inbox_list_other():
+        storage.inbox_ignore(name)
+        print(f"[inbox] ignored {name}: not a PDF -> ignored/")
+
     files = storage.inbox_list()
     if not files:
         print("[inbox] nothing to process")
