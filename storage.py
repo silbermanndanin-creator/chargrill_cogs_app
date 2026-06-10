@@ -281,30 +281,48 @@ def delete_invoice(saved_at):
 # ---------- invoice inbox bucket (emailed invoices land here via Power Automate) ----------
 # Power Automate watches the invoices mailbox and HTTP-POSTs each attachment into this
 # Supabase Storage bucket; inbox_ingest.py (GitHub Actions cron) then reads + saves them.
+# PDF-ONLY by design: real supplier invoices arrive as PDFs, while signature logos,
+# inline images and other email junk arrive as images — those are parked in ignored/
+# and never read, so only PDF invoices ever reach the app or the review queue.
 # Cloud-only by nature — there's no local-CSV equivalent, so these no-op without Supabase.
 INBOX_BUCKET = "invoice_inbox"
-INBOX_EXTS = {".pdf": "application/pdf", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-              ".png": "image/png", ".webp": "image/webp", ".gif": "image/gif"}
 
 
-def inbox_media_type(name):
-    """Media type for a file name from its extension, or None if it's not a kind we read."""
-    return INBOX_EXTS.get(os.path.splitext(str(name))[1].lower())
+def _is_pdf(name) -> bool:
+    return str(name).lower().endswith(".pdf")
 
 
 def inbox_list():
-    """New invoice files sitting at the root of the inbox bucket, as [(name, media_type)].
-    Files we've already handled live in the processed/ subfolder and are not returned.
-    Empty when Supabase isn't configured (the inbox is a cloud-only feature)."""
+    """New PDF invoice files sitting at the root of the inbox bucket, as
+    [(name, media_type)]. Files we've already handled live in the processed/ / review/ /
+    ignored/ subfolders and are not returned. Empty when Supabase isn't configured
+    (the inbox is a cloud-only feature)."""
     if not _use_supabase():
         return []
     items = _client().storage.from_(INBOX_BUCKET).list() or []
     out = []
     for it in items:
         name = it.get("name") if isinstance(it, dict) else None
-        mt = inbox_media_type(name) if name else None
-        if mt:  # a readable file (this also skips the processed/ pseudo-folder)
-            out.append((name, mt))
+        if name and _is_pdf(name):
+            out.append((name, "application/pdf"))
+    return out
+
+
+def inbox_list_other():
+    """Non-PDF files sitting at the root of the inbox bucket (signature logos, inline
+    images, calendar invites…), as [name]. The ingest sweeps these into ignored/ so the
+    inbox stays clean without ever reading them. Folder pseudo-entries (processed/,
+    review/, ignored/) come back from Storage list() with a null id — skipped."""
+    if not _use_supabase():
+        return []
+    items = _client().storage.from_(INBOX_BUCKET).list() or []
+    out = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        name = it.get("name")
+        if name and not _is_pdf(name) and it.get("id") is not None:
+            out.append(name)
     return out
 
 
@@ -313,17 +331,18 @@ def inbox_download(name) -> bytes:
     return _client().storage.from_(INBOX_BUCKET).download(name)
 
 
-def _inbox_move(name, folder):
-    """Move a handled file into a subfolder of the inbox bucket so it isn't read again.
+def _inbox_move(path, folder):
+    """Move a handled file (root name or subfolder path like 'review/x.pdf') into a
+    subfolder of the inbox bucket so it isn't read again.
     Best-effort: on a name clash (same file moved before) suffix with a timestamp."""
-    dest = f"{folder}/{name}"
+    dest = f"{folder}/{os.path.basename(str(path))}"
     bucket = _client().storage.from_(INBOX_BUCKET)
     try:
-        bucket.move(name, dest)
+        bucket.move(path, dest)
     except Exception:
         try:
             stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-            bucket.move(name, f"{dest}.{stamp}")
+            bucket.move(path, f"{dest}.{stamp}")
         except Exception:
             pass  # leave it in place rather than crash; next run will retry the move
 
@@ -335,9 +354,50 @@ def inbox_archive(name):
 
 def inbox_review(name):
     """Move a file that ISN'T a savable COGS invoice (a statement, credit note, or an
-    unrecognised / non-COGS supplier) into review/ — kept for a human to glance at, but
-    never counted toward COGS. Captured, not dropped."""
+    unrecognised / non-COGS supplier) into review/ — surfaced in the app's review queue
+    for a human to accept or dismiss, but never counted until accepted."""
     _inbox_move(name, "review")
+
+
+def inbox_ignore(name):
+    """Move a non-PDF attachment into ignored/ — only PDF invoices are processed;
+    everything else is parked unread (kept, in case something ever needs digging out)."""
+    _inbox_move(name, "ignored")
+
+
+# ---------- review queue (review/ subfolder of the inbox bucket, shown in the app) ----------
+def review_list():
+    """PDFs waiting in review/ of the inbox bucket, newest first, as
+    [(name, received 'YYYY-MM-DD HH:MM')]. These are emailed files the ingest didn't
+    auto-save (statements, credit notes, unrecognised suppliers) for a human to decide on."""
+    if not _use_supabase():
+        return []
+    items = _client().storage.from_(INBOX_BUCKET).list("review") or []
+    out = []
+    for it in items:
+        name = it.get("name") if isinstance(it, dict) else None
+        if name and _is_pdf(name):
+            when = str(it.get("created_at") or "")[:16].replace("T", " ")
+            out.append((name, when))
+    out.sort(key=lambda t: t[1], reverse=True)
+    return out
+
+
+def review_download(name) -> bytes:
+    """Raw bytes of one file in the review queue."""
+    return _client().storage.from_(INBOX_BUCKET).download(f"review/{name}")
+
+
+def review_accept(name):
+    """An accepted review file has been saved as an invoice — archive it to processed/
+    so the review queue (and the next ingest run) never sees it again."""
+    _inbox_move(f"review/{name}", "processed")
+
+
+def review_dismiss(name):
+    """A review file the owner doesn't want counted (junk, statement, already entered) —
+    park it in ignored/. Nothing is deleted, so it can always be dug out of the bucket."""
+    _inbox_move(f"review/{name}", "ignored")
 
 
 # ---------- revenue (so COGS% can trend across periods) ----------

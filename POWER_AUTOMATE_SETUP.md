@@ -5,20 +5,29 @@ automatically — nothing to photograph, nothing to type.
 
 ```
 Supplier emails a PDF ──► Power Automate (cloud flow, runs 24/7)
-                              │  saves the attachment into Supabase Storage
+                              │  saves ONLY .pdf attachments into Supabase Storage
                               ▼
                      bucket: invoice_inbox
                               │
                               ▼
         GitHub Action "Invoice inbox" (every ~15 min)  ── inbox_ingest.py
-            reads each file with Claude Vision, saves the invoice + photo
+            reads each PDF with Claude Vision, then routes it:
+              · a clean supplier invoice  → saved + PDF archived to processed/
+              · anything else (statement, credit note,
+                unrecognised supplier)    → review/   (shown in the app)
+              · a non-PDF that slips in   → ignored/  (never read, never shown)
                               │
                               ▼
                  Invoice shows up in the app on your phone
 ```
 
-Paper invoices handed over at delivery: email a phone photo to the **same** inbox
-address and it flows through the identical pipeline.
+**Only PDFs are processed** — signature logos, inline images and other email junk never
+reach the app. The **review/** queue is visible in the app under
+**📋 Invoices → 📥 Emailed invoices needing review**: tap **Accept** to read and save one
+as a normal invoice (the PDF then moves to processed/), or **Dismiss** to set it aside.
+
+Paper invoices handed over at delivery: photograph them in the app's **📸 Add invoice**
+tab — emailed photos are no longer ingested (PDF attachments only).
 
 ---
 
@@ -49,7 +58,13 @@ At **make.powerautomate.com** → **Create** → **Automated cloud flow**.
 
 **Action:** *Apply to each* → choose **Attachments** as the input.
 
-**Inside the loop, add:** *HTTP* (the premium one). Fill it in:
+**Inside the loop, add a *Condition* first** so only PDF invoices are uploaded
+(signature logos and inline images ride along as attachments — skip them here):
+
+- Left box (expression): `endsWith(toLower(items('Apply_to_each')?['Name']), '.pdf')`
+- Operator: **is equal to** → Right box: `true`
+
+**In the *If yes* branch, add:** *HTTP* (the premium one). Fill it in:
 
 | Field | Value |
 |---|---|
@@ -70,15 +85,16 @@ hit **Run workflow** on the GitHub Action) it appears in the app.
 
 ---
 
-## Recommended once it's working: ignore email-signature logos
-Email signatures sometimes ride along as tiny image "attachments" and would be read as
-junk invoices. Add a **Condition** inside the *Apply to each*, before the HTTP action:
-
-- `length(items('Apply_to_each')?['ContentBytes'])` **is greater than** `40000`
-
-(Real invoices are well above this; logos are below it.) Put the HTTP action in the
-**If yes** branch. Junk that still slips through can be deleted in the app's **Invoices**
-tab.
+## What lands where in the bucket
+- **(root)** — new PDFs waiting for the next ingest run.
+- **processed/** — PDFs saved as invoices (including review files you accepted).
+- **review/** — PDFs the ingest didn't auto-save: statements, credit notes, orders, or an
+  invoice from a supplier the app doesn't recognise. Handle these in the app:
+  **📋 Invoices → 📥 Emailed invoices needing review** → view the PDF, then **Accept**
+  (reads + saves it as an invoice and moves the PDF to processed/) or **Dismiss**
+  (moves it to ignored/ without counting it).
+- **ignored/** — non-PDF attachments that slipped past the flow's PDF condition, plus
+  anything you dismissed. Never read, never shown; kept in case it's ever needed.
 
 ---
 
