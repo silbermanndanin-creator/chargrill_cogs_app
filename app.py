@@ -460,6 +460,11 @@ def c_load_invoice_images(saved_at):
 
 
 @st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def c_catering_file(source_file):
+    return storage.catering_file_bytes(source_file)
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
 def c_supplier_cadence():
     return metrics.supplier_cadence(c_load_invoices())
 
@@ -655,17 +660,20 @@ if st.button(_toggle_label, key="theme_toggle", help="Toggle light / dark mode")
 # Owner sees all tabs; chef sees only the cost/operations tabs.
 if owner:
     (tab_dash, tab_inv, tab_pos, tab_list, tab_track, tab_lab, tab_veg, tab_pack,
-     tab_recon, tab_temp, tab_rep, tab_order, tab_cater, tab_digest, tab_var) = st.tabs(
+     tab_recon, tab_temp, tab_rep, tab_cater, tab_var) = st.tabs(
         ["📊 Dashboard", "📸 Add invoice", "💰 Daily takings", "📋 Invoices", "✅ Invoice tracker",
          "🧮 Labour", "🥬 Veggie prices", "📦 Ordering",
-         "🧾 Reconciliation", "🌡️ Temp records", "📈 Reports", "🛒 Order pad",
-         "🥗 Catering", "📨 Daily digest", "📝 Variations"])
+         "🧾 Reconciliation", "🌡️ Temp records", "📈 Reports",
+         "🥗 Catering", "📝 Variations"])
 else:
     (tab_dash, tab_inv, tab_list, tab_veg, tab_pack, tab_temp,
-     tab_order, tab_cater, tab_digest) = st.tabs(
+     tab_cater) = st.tabs(
         ["📊 Dashboard", "📸 Add invoice", "📋 Invoices", "🥬 Veggie prices", "📦 Ordering",
-         "🌡️ Temp records", "🛒 Order pad", "🥗 Catering", "📨 Daily digest"])
+         "🌡️ Temp records", "🥗 Catering"])
     tab_pos = tab_lab = tab_recon = tab_rep = tab_var = tab_track = None
+
+# Order pad + Daily digest tabs removed — these stay None so their (guarded) bodies skip.
+tab_order = tab_digest = None
 
 # ============ Add-invoice tab ============
 with tab_inv:
@@ -2591,12 +2599,9 @@ if tab_cater is not None:
                     "here automatically within ~15 min of the email (or Slack message) arriving.")
         else:
             today = dt.date.today()
-            pick = st.date_input("Deliveries from / to",
-                                 value=(today, today + dt.timedelta(days=6)), key="cater_range")
-            if isinstance(pick, (list, tuple)):
-                d_from, d_to = (pick[0], pick[-1])
-            else:
-                d_from = d_to = pick
+            st.caption(f"📆 Showing deliveries for **{period_label}** — change it with the "
+                       "period selector in the sidebar.")
+            d_from, d_to = p_start, p_end
 
             def _d(s):
                 try:
@@ -2626,19 +2631,8 @@ if tab_cater is not None:
             win = win.sort_values(["_dd", "deliver_time"], na_position="last")
 
             if win.empty:
-                st.info("No catering deliveries in that window.")
+                st.info(f"No catering deliveries in {period_label}.")
             else:
-                totals = Counter()
-                for _, r in win.iterrows():
-                    for li in _items(r):
-                        totals[str(li.get("item") or "?")] += _q(li)
-                st.markdown(f"**🍳 Prep totals — {d_from:%a %d %b} → {d_to:%a %d %b}**")
-                st.dataframe(
-                    pd.DataFrame([{"Item": k, "Qty": _fmt_q(v)}
-                                  for k, v in sorted(totals.items(), key=lambda kv: -kv[1])]),
-                    hide_index=True, width="stretch")
-                st.write("")
-
                 for _, r in win.iterrows():
                     items = _items(r)
                     ot = str(r.get("order_type") or "").lower()
@@ -2679,6 +2673,20 @@ if tab_cater is not None:
                                 st.caption(f"Order total: ${float(r['items_total']):,.2f}")
                             except (TypeError, ValueError):
                                 pass
+                        # Original emailed PDF / order file, fetched from Storage on demand.
+                        src_file = r.get("source_file")
+                        if src_file:
+                            _orig = c_catering_file(str(src_file))
+                            if _orig:
+                                _ext = (os.path.splitext(str(src_file))[1] or ".pdf").lower()
+                                _mime = ("application/pdf" if _ext == ".pdf"
+                                         else "text/html" if _ext in (".html", ".htm")
+                                         else "application/octet-stream")
+                                _ref = r.get("order_ref") or r["_dd"]
+                                st.download_button(
+                                    "📄 Download original", _orig,
+                                    file_name=f"{(r.get('platform') or 'order')}_{_ref}{_ext}",
+                                    mime=_mime, key=f"catdl_{src_file}")
 
 
 # ============ Variations tab (owner): part-time variation letters ============

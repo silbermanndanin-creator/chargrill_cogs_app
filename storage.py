@@ -58,6 +58,9 @@ CATERING_PATH = os.path.join(DATA_DIR, "catering.csv")
 CATERING_COLUMNS = ["saved_at", "platform", "order_type", "company", "deliver_date",
                     "deliver_time", "headcount", "contact_name", "address", "phone",
                     "order_ref", "line_items", "items_total", "confidence", "source_file"]
+# Bucket the catering files live in (same default the ingest Action uses). `or` so an
+# empty SUPABASE_BUCKET still falls back rather than becoming an invalid "" bucket name.
+CATERING_BUCKET = os.environ.get("SUPABASE_BUCKET") or "invoices"
 
 
 def iso_week_of(d: dt.date) -> str:
@@ -1215,12 +1218,25 @@ def save_catering_order(order, source_file: str):
         "confidence": o.get("confidence"),
         "source_file": source_file,
     }
+    order_ref = str(o.get("order_ref") or "").strip()
+    platform = o.get("platform")
     if _use_supabase():
+        # A revised order (same platform + order_ref, but arriving as a NEW file) should
+        # REPLACE the earlier version rather than pile up beside it — delete the old row(s)
+        # first, then upsert the new one. Only when there's an order_ref to match on; an
+        # order with no ref falls back to plain per-file dedup so unrelated orders are safe.
+        if order_ref:
+            try:
+                (_client().table("catering_orders").delete()
+                 .eq("platform", platform).eq("order_ref", order_ref)
+                 .neq("source_file", source_file).execute())
+            except Exception:
+                pass
         try:
             _client().table("catering_orders").upsert(row, on_conflict="source_file").execute()
         except Exception:
-            # Older catering_orders table without order_type/headcount -> save the rest, so a
-            # missing ALTER degrades instead of crashing. Run the ALTERs in supabase_schema.sql.
+            # Older catering_orders table without order_type/headcount/company -> save the
+            # rest, so a missing ALTER degrades instead of crashing.
             slim = {k: v for k, v in row.items()
                     if k not in ("order_type", "headcount", "company")}
             _client().table("catering_orders").upsert(slim, on_conflict="source_file").execute()
@@ -1228,6 +1244,9 @@ def save_catering_order(order, source_file: str):
         _ensure_csv(CATERING_PATH, CATERING_COLUMNS)
         df = pd.read_csv(CATERING_PATH)
         df = df[df["source_file"].astype(str) != source_file]  # one row per source file
+        if order_ref:  # also drop any earlier version of the same order
+            df = df[~((df["order_ref"].astype(str) == order_ref)
+                      & (df["platform"].astype(str) == str(platform)))]
         df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
         df.to_csv(CATERING_PATH, index=False)
     return row
@@ -1244,6 +1263,24 @@ def load_catering_orders() -> pd.DataFrame:
     _ensure_csv(CATERING_PATH, CATERING_COLUMNS)
     df = pd.read_csv(CATERING_PATH)
     return df if not df.empty else pd.DataFrame(columns=CATERING_COLUMNS)
+
+
+def catering_file_bytes(source_file: str):
+    """The original catering file (PDF / HTML email body) from Storage, so the app can
+    offer it as a download. After ingest the file is archived under catering/done/<...>;
+    try there first, then the pre-ingest path. Returns bytes, or None if unavailable."""
+    if not (source_file and _use_supabase()):
+        return None
+    bucket = _client().storage.from_(CATERING_BUCKET)
+    done = source_file.replace("catering/", "catering/done/", 1)
+    for path in (done, source_file):
+        try:
+            data = bucket.download(path)
+            if data:
+                return data
+        except Exception:
+            continue
+    return None
 
 
 def catering_already_ingested(source_file: str) -> bool:
