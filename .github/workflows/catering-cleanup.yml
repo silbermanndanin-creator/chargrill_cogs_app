@@ -1,0 +1,31 @@
+name: Catering cleanup
+
+# One-off purge of catering-platform items (Hampr / Eat First / Yordar / Online
+# Catering) from the supplier-invoice side (catering_cleanup.py): deletes any
+# saved invoices from those platforms and parks catering-named bucket files in
+# ignored/. The ingest's catering gate keeps new ones out automatically.
+# Run from the Actions tab ("Run workflow"). No Claude calls — no API credits needed.
+
+on:
+  workflow_dispatch: {}
+
+# Same lock as the ingest/triage so it never touches the bucket mid-ingest.
+concurrency:
+  group: invoice-inbox
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: pip install anthropic supabase pandas pydantic Pillow
+      - name: Purge catering items
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python catering_cleanup.py

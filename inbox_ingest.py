@@ -36,12 +36,27 @@ import storage
 from config import canonicalize
 
 
+# Catering-platform orders (Hampr / Eat First / Yordar / Online Catering) have their
+# OWN pipeline (catering_ingest.py -> the Catering tab) and must never be counted as
+# supplier invoices or clutter review/ — any that stray into the invoices mailbox are
+# parked in ignored/. 'yorder' covers a common misspelling on order documents.
+CATERING_KEYWORDS = ("hampr", "eat first", "eatfirst", "yordar", "yorder", "online catering")
+
+
+def _is_catering(text) -> bool:
+    t = (text or "").lower()
+    return any(k in t for k in CATERING_KEYWORDS)
+
+
 def _route(document_type, supplier_name):
     """Decide what to do with a file from its triage. Returns (action, reason) where
-    action is 'save' (a real COGS supplier invoice) or 'review' (everything else —
-    statements, credit notes, and unrecognised / non-COGS suppliers go to review/).
+    action is 'save' (a real COGS supplier invoice), 'ignore' (a catering-platform
+    document — the catering pipeline's job, parked unprocessed) or 'review'
+    (everything else — statements, credit notes, unrecognised / non-COGS suppliers).
 
     Pure logic (no I/O) so it's unit-testable without calling Claude."""
+    if _is_catering(supplier_name):
+        return ("ignore", f"catering platform {supplier_name!r} — handled by the catering pipeline")
     dt = (document_type or "").strip().lower()
     if dt != "invoice":
         return ("review", f"not an invoice (document_type={dt or 'unknown'})")
@@ -60,8 +75,8 @@ def process_one(name, media_type, client, raw=None):
     # 1) Cheap triage FIRST — skip statements / non-COGS before paying for a full read.
     triage = extract.classify_document(raw, media_type, client=client)
     action, reason = _route(triage.document_type, triage.supplier_name)
-    if action == "review":
-        return ("review", triage.supplier_name, 0.0, triage.confidence, reason)
+    if action != "save":
+        return (action, triage.supplier_name, 0.0, triage.confidence, reason)
 
     # 2) Full Claude Vision extraction (same pipeline as the app's manual upload).
     data = extract.extract_invoice(raw, media_type, client=client)
@@ -80,8 +95,8 @@ def process_one(name, media_type, client, raw=None):
     # 3) Re-check the COGS gate against the FULL read's supplier name (more reliable than
     # the triage read) — catches a non-COGS invoice the triage let through.
     action2, reason2 = _route("invoice", supplier_raw)
-    if action2 == "review":
-        return ("review", supplier_raw, total, conf, reason2)
+    if action2 != "save":
+        return (action2, supplier_raw, total, conf, reason2)
 
     # 4) Skip an invoice we already have (re-sent email), matching the app's dedup rule.
     if storage.find_duplicate(canonicalize(supplier_raw), invoice_date, total):
@@ -132,6 +147,11 @@ def main():
             # Leave the file in the inbox (don't archive) so the next run retries it.
             failed += 1
             print(f"[inbox] FAILED {name}: {e!r} — left in inbox for retry")
+            continue
+        if status == "ignore":
+            storage.inbox_ignore(name)
+            ignored += 1
+            print(f"[inbox] ignored {name}: {supplier} — {reason} -> ignored/")
             continue
         if status == "review":
             storage.inbox_review(name)
