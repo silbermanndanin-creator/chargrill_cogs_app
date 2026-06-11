@@ -69,16 +69,26 @@ At **make.powerautomate.com** → **Create** → **Automated cloud flow**.
 | Field | Value |
 |---|---|
 | **Method** | `POST` |
-| **URI** | `https://zelbbsvthqbxelraogac.supabase.co/storage/v1/object/invoice_inbox/@{guid()}_@{encodeUriComponent(items('Apply_to_each')?['Name'])}` |
+| **URI** | the expression in the block below (copy it exactly) |
 | **Headers** | `apikey` = `<YOUR SUPABASE SERVICE_ROLE KEY>`<br>`Authorization` = `Bearer <YOUR SUPABASE SERVICE_ROLE KEY>`<br>`Content-Type` = `application/octet-stream`<br>`x-upsert` = `true` |
 | **Body** | expression: `base64ToBinary(items('Apply_to_each')?['ContentBytes'])` |
+
+```
+https://zelbbsvthqbxelraogac.supabase.co/storage/v1/object/invoice_inbox/@{ticks(utcNow())}_b64_@{replace(replace(replace(base64(concat(triggerOutputs()?['body/from'], '|', items('Apply_to_each')?['Name'])), '+', '-'), '/', '_'), '=', '')}.pdf
+```
 
 - The **service_role key** is in Supabase dashboard → **Settings** → **API** →
   `service_role` (the secret one). It's the same key as `SUPABASE_KEY`. **Never** paste
   it into a file that gets committed to GitHub — only into the Power Automate header box.
-- `@{guid()}_…` just gives every file a unique name so two invoices never clash. The
-  original filename (and its `.pdf`/`.jpg` extension) is kept on the end, which the
-  reader needs.
+- The URI expression packs `<sender email>|<attachment name>` into an ASCII-safe
+  base64 token (Supabase rejects keys with special characters), with `ticks(utcNow())`
+  in front so two uploads never clash. The app decodes it back and shows
+  **sender — attachment.pdf** everywhere (review queue, downloads, logs) — e.g.
+  `bidfood — Invoice 12345.pdf` — so files are identifiable without opening them.
+
+**Already have the flow running?** Only the **URI** changed — open the flow, edit the
+HTTP action, and replace the URI with the value above (everything else stays the same).
+Files uploaded before the change just keep showing the attachment name without a sender.
 
 **Save**, then send a test email with a PDF to that inbox. Within ~15 min (or after you
 hit **Run workflow** on the GitHub Action) it appears in the app.

@@ -296,6 +296,23 @@ def _is_pdf(name) -> bool:
     return str(name).lower().endswith(".pdf")
 
 
+# Freemail domains where the mailbox name (not the domain) identifies the sender.
+_FREEMAIL = {"gmail", "googlemail", "hotmail", "outlook", "live", "msn", "yahoo",
+             "icloud", "me", "aol", "proton", "protonmail", "bigpond", "optusnet",
+             "tpg", "iinet", "westnet"}
+
+
+def sender_name(addr) -> str:
+    """Short human name pulled from an email address: the company domain for business
+    senders ('accounts@bidfood.com.au' -> 'bidfood'), or the mailbox name for
+    personal/freemail senders ('jo.bloggs@gmail.com' -> 'jo.bloggs')."""
+    local, _, domain = str(addr).strip().strip("<>").partition("@")
+    root = domain.split(".")[0].strip().lower()
+    if not root or root in _FREEMAIL:
+        return local.strip() or str(addr).strip()
+    return root
+
+
 def display_name(name) -> str:
     """Human-readable form of a bucket file name.
 
@@ -303,7 +320,11 @@ def display_name(name) -> str:
     apostrophe in an attachment name 400s the upload), so the Power Automate flows
     upload as '<ticks>_b64_<urlsafe-base64-of-original-name>.pdf'. Decode that back to
     the original attachment name for anything a human reads (the app's review queue,
-    ingest/triage logs). Plain names (older uploads) pass through unchanged."""
+    ingest/triage logs). Plain names (older uploads) pass through unchanged.
+
+    Newer flows prepend the sender's email address inside the encoded name as
+    '<sender@addr>|<attachment name>' (see POWER_AUTOMATE_SETUP.md) — rendered here as
+    'sender — attachment.pdf' so every file says who emailed it."""
     s = str(name)
     m = re.match(r"^\d+_b64_(.+)\.pdf$", s, re.IGNORECASE)
     if not m:
@@ -311,9 +332,13 @@ def display_name(name) -> str:
     token = m.group(1).replace("-", "+").replace("_", "/")
     token += "=" * (-len(token) % 4)
     try:
-        return base64.b64decode(token).decode("utf-8", "replace")
+        decoded = base64.b64decode(token).decode("utf-8", "replace")
     except Exception:
         return s
+    sender, sep, rest = decoded.partition("|")
+    if sep and "@" in sender:
+        return f"{sender_name(sender)} — {rest.strip()}"
+    return decoded
 
 
 def encode_name(display, ticks=None) -> str:
