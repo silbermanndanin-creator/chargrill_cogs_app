@@ -26,6 +26,8 @@ Requires env / GitHub repo secrets:
   SUPABASE_URL, SUPABASE_KEY (service_role), ANTHROPIC_API_KEY
 Run locally against the cloud inbox with:  python inbox_ingest.py
 """
+import hashlib
+
 import anthropic
 
 import config
@@ -48,11 +50,12 @@ def _route(document_type, supplier_name):
     return ("save", "")
 
 
-def process_one(name, media_type, client):
+def process_one(name, media_type, client, raw=None):
     """Triage one inbox file, then save it if it's a real COGS invoice.
     Returns (status, supplier, total, conf, reason) with status in
     'saved' | 'duplicate' | 'review'."""
-    raw = storage.inbox_download(name)
+    if raw is None:
+        raw = storage.inbox_download(name)
 
     # 1) Cheap triage FIRST — skip statements / non-COGS before paying for a full read.
     triage = extract.classify_document(raw, media_type, client=client)
@@ -103,10 +106,28 @@ def main():
 
     print(f"[inbox] {len(files)} file(s) to process")
     client = anthropic.Anthropic()
-    saved = dups = reviewed = failed = 0
+    saved = dups = reviewed = failed = ignored = 0
+    # Exact byte-duplicates (the same attachment uploaded under several names —
+    # the backlog from before the flows used deterministic filenames) are detected
+    # by hash BEFORE the Claude read, so each unique document is paid for once.
+    seen_hashes = {}  # sha256 -> first file name with that content
     for name, mt in files:
         try:
-            status, supplier, total, conf, reason = process_one(name, mt, client)
+            raw = storage.inbox_download(name)
+        except Exception as e:
+            failed += 1
+            print(f"[inbox] FAILED {name}: {e!r} — left in inbox for retry")
+            continue
+        digest = hashlib.sha256(raw).hexdigest()
+        first = seen_hashes.get(digest)
+        if first:
+            storage.inbox_ignore(name)
+            ignored += 1
+            print(f"[inbox] ignored {name}: exact copy of {first} -> ignored/")
+            continue
+        seen_hashes[digest] = name
+        try:
+            status, supplier, total, conf, reason = process_one(name, mt, client, raw=raw)
         except Exception as e:
             # Leave the file in the inbox (don't archive) so the next run retries it.
             failed += 1
@@ -125,8 +146,8 @@ def main():
             dups += 1
             print(f"[inbox] duplicate {name}: {supplier} ${total:,.2f} — skipped")
 
-    print(f"[inbox] done: {saved} saved, {dups} duplicate(s), "
-          f"{reviewed} for review, {failed} failed")
+    print(f"[inbox] done: {saved} saved, {dups} duplicate(s), {reviewed} for review, "
+          f"{ignored} exact cop(ies) ignored, {failed} failed")
 
 
 if __name__ == "__main__":
