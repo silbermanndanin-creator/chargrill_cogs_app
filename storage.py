@@ -10,6 +10,7 @@ The backend is chosen per call from env vars, so nothing else in the app changes
 import os
 import json
 import base64
+import re
 import datetime as dt
 import pandas as pd
 import config
@@ -290,6 +291,26 @@ INBOX_BUCKET = "invoice_inbox"
 
 def _is_pdf(name) -> bool:
     return str(name).lower().endswith(".pdf")
+
+
+def display_name(name) -> str:
+    """Human-readable form of a bucket file name.
+
+    Supabase Storage rejects keys with characters outside a small ASCII set (a curly
+    apostrophe in an attachment name 400s the upload), so the Power Automate flows
+    upload as '<ticks>_b64_<urlsafe-base64-of-original-name>.pdf'. Decode that back to
+    the original attachment name for anything a human reads (the app's review queue,
+    ingest/triage logs). Plain names (older uploads) pass through unchanged."""
+    s = str(name)
+    m = re.match(r"^\d+_b64_(.+)\.pdf$", s, re.IGNORECASE)
+    if not m:
+        return s
+    token = m.group(1).replace("-", "+").replace("_", "/")
+    token += "=" * (-len(token) % 4)
+    try:
+        return base64.b64decode(token).decode("utf-8", "replace")
+    except Exception:
+        return s
 
 
 # Supabase Storage list() returns only 100 entries by default — with a backlog in the
