@@ -1,5 +1,6 @@
 # rebuild marker 2026-05-29a — labour & prime cost (clears stale Streamlit Cloud module cache)
 import os
+import re
 import json
 import datetime as dt
 import pandas as pd
@@ -669,17 +670,16 @@ if st.button(_toggle_label, key="theme_toggle", help="Toggle light / dark mode")
 
 # Owner sees all tabs; chef sees only the cost/operations tabs.
 if owner:
-    (tab_dash, tab_inv, tab_pos, tab_list, tab_track, tab_lab, tab_veg, tab_pack,
-     tab_recon, tab_temp, tab_rep, tab_cater, tab_var) = st.tabs(
+    (tab_dash, tab_inv, tab_pos, tab_list, tab_track, tab_cater, tab_lab, tab_veg, tab_pack,
+     tab_recon, tab_temp, tab_rep, tab_var) = st.tabs(
         ["📊 Dashboard", "📸 Add invoice", "💰 Daily takings", "📋 Invoices", "✅ Invoice tracker",
-         "🧮 Labour", "🥬 Veggie prices", "📦 Ordering",
-         "🧾 Reconciliation", "🌡️ Temp records", "📈 Reports",
-         "🥗 Catering", "📝 Variations"])
+         "🥗 Catering", "🧮 Labour", "🥬 Veggie prices", "📦 Ordering",
+         "🧾 Reconciliation", "🌡️ Temp records", "📈 Reports", "📝 Variations"])
 else:
-    (tab_dash, tab_inv, tab_list, tab_veg, tab_pack, tab_temp,
-     tab_cater) = st.tabs(
-        ["📊 Dashboard", "📸 Add invoice", "📋 Invoices", "🥬 Veggie prices", "📦 Ordering",
-         "🌡️ Temp records", "🥗 Catering"])
+    (tab_dash, tab_inv, tab_list, tab_cater, tab_veg, tab_pack,
+     tab_temp) = st.tabs(
+        ["📊 Dashboard", "📸 Add invoice", "📋 Invoices", "🥗 Catering", "🥬 Veggie prices",
+         "📦 Ordering", "🌡️ Temp records"])
     tab_pos = tab_lab = tab_recon = tab_rep = tab_var = tab_track = None
 
 # Order pad + Daily digest tabs removed — these stay None so their (guarded) bodies skip.
@@ -2755,11 +2755,21 @@ if tab_cater is not None:
                         if bits:
                             st.markdown("  ·  ".join(bits))
                         if items:
-                            st.dataframe(
-                                pd.DataFrame([{"Qty": _fmt_q(_q(li)), "Item": li.get("item"),
-                                               "Note / name": li.get("person") or li.get("note") or ""}
-                                              for li in items]),
-                                hide_index=True, width="stretch")
+                            # Prep-friendly list: "1 x Regular ⬛ Garden Salad — name".
+                            # ⬛ marks Regular (square tub), ⚫ marks Large (round) so the
+                            # kitchen can count containers at a glance.
+                            def _size_mark(text):
+                                text = re.sub(r"\b(regular)\b", r"\1 ⬛", text,
+                                              count=1, flags=re.IGNORECASE)
+                                return re.sub(r"\b(large)\b", r"\1 ⚫", text,
+                                              count=1, flags=re.IGNORECASE)
+                            _lines = []
+                            for li in items:
+                                _txt = _size_mark(str(li.get("item") or ""))
+                                _tail = li.get("person") or li.get("note") or ""
+                                _lines.append(f"- **{_fmt_q(_q(li))} x** {_txt}"
+                                              + (f" — *{_tail}*" if _tail else ""))
+                            st.markdown("\n".join(_lines))
                         if r.get("items_total"):
                             try:
                                 st.caption(f"Order total: ${float(r['items_total']):,.2f}")
