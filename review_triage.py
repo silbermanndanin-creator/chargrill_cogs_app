@@ -90,7 +90,8 @@ def main():
             groups["unknown"].append((name, f"classification failed: {e!r}"))
             continue
         dt = (c.document_type or "?").strip().lower()
-        line = f"{name}  ·  {c.supplier_name}  ·  {dt}  ·  confidence {c.confidence}"
+        line = (f"{storage.display_name(name)}  ·  {c.supplier_name}  ·  {dt}"
+                f"  ·  confidence {c.confidence}")
         if dt == "invoice" and canonicalize(c.supplier_name) != config.FALLBACK_SUPPLIER:
             groups["accept"].append((name, line))
         elif dt == "invoice":

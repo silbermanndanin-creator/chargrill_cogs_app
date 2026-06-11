@@ -1881,7 +1881,8 @@ with tab_list:
             _rwhen = dict(_review)
             rsel = st.selectbox(
                 "File to review", _rnames, key="review_sel",
-                format_func=lambda n: f"{n}" + (f"  ·  received {_rwhen[n]}" if _rwhen.get(n) else ""))
+                format_func=lambda n: storage.display_name(n)
+                + (f"  ·  received {_rwhen[n]}" if _rwhen.get(n) else ""))
             try:
                 _rbytes = c_review_download(rsel)
             except Exception as e:
@@ -1889,7 +1890,8 @@ with tab_list:
                 st.error(f"Couldn't load this file from storage: {e}")
             rb = st.columns([1.4, 1.6, 1.4])
             if _rbytes:
-                rb[0].download_button("⬇️ View / download PDF", _rbytes, file_name=rsel,
+                rb[0].download_button("⬇️ View / download PDF", _rbytes,
+                                      file_name=storage.display_name(rsel),
                                       mime="application/pdf", key="review_dl")
                 if not get_api_key():
                     st.error(_api_key_help())
@@ -1932,7 +1934,8 @@ with tab_list:
             if rb[2].button("🗑 Dismiss — don't count it", key="review_dismiss"):
                 storage.review_dismiss(rsel)
                 bust_caches()
-                st.session_state["review_flash"] = f"Dismissed {rsel} — moved to ignored/."
+                st.session_state["review_flash"] = (
+                    f"Dismissed {storage.display_name(rsel)} — moved to ignored/.")
                 st.session_state.pop("review_sel", None)
                 st.rerun()
 

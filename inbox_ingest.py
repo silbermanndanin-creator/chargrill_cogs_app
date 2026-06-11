@@ -127,18 +127,19 @@ def main():
     # by hash BEFORE the Claude read, so each unique document is paid for once.
     seen_hashes = {}  # sha256 -> first file name with that content
     for name, mt in files:
+        disp = storage.display_name(name)  # original attachment name for the log
         try:
             raw = storage.inbox_download(name)
         except Exception as e:
             failed += 1
-            print(f"[inbox] FAILED {name}: {e!r} — left in inbox for retry")
+            print(f"[inbox] FAILED {disp}: {e!r} — left in inbox for retry")
             continue
         digest = hashlib.sha256(raw).hexdigest()
         first = seen_hashes.get(digest)
         if first:
             storage.inbox_ignore(name)
             ignored += 1
-            print(f"[inbox] ignored {name}: exact copy of {first} -> ignored/")
+            print(f"[inbox] ignored {disp}: exact copy of {storage.display_name(first)} -> ignored/")
             continue
         seen_hashes[digest] = name
         try:
@@ -146,25 +147,25 @@ def main():
         except Exception as e:
             # Leave the file in the inbox (don't archive) so the next run retries it.
             failed += 1
-            print(f"[inbox] FAILED {name}: {e!r} — left in inbox for retry")
+            print(f"[inbox] FAILED {disp}: {e!r} — left in inbox for retry")
             continue
         if status == "ignore":
             storage.inbox_ignore(name)
             ignored += 1
-            print(f"[inbox] ignored {name}: {supplier} — {reason} -> ignored/")
+            print(f"[inbox] ignored {disp}: {supplier} — {reason} -> ignored/")
             continue
         if status == "review":
             storage.inbox_review(name)
             reviewed += 1
-            print(f"[inbox] review {name}: {supplier} — {reason} -> review/")
+            print(f"[inbox] review {disp}: {supplier} — {reason} -> review/")
             continue
         storage.inbox_archive(name)
         if status == "saved":
             saved += 1
-            print(f"[inbox] saved {name}: {supplier} ${total:,.2f} (confidence {conf})")
+            print(f"[inbox] saved {disp}: {supplier} ${total:,.2f} (confidence {conf})")
         else:
             dups += 1
-            print(f"[inbox] duplicate {name}: {supplier} ${total:,.2f} — skipped")
+            print(f"[inbox] duplicate {disp}: {supplier} ${total:,.2f} — skipped")
 
     print(f"[inbox] done: {saved} saved, {dups} duplicate(s), {reviewed} for review, "
           f"{ignored} exact cop(ies) ignored, {failed} failed")
