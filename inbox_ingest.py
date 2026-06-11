@@ -48,35 +48,52 @@ def _is_catering(text) -> bool:
     return any(k in t for k in CATERING_KEYWORDS)
 
 
+def review_label(document_type, supplier_name):
+    """Short human tag for WHY a file goes to review — e.g. 'Statement · Bidfood' or
+    'Invoice · Joe's Produce (unrecognised supplier)'. storage.inbox_review stitches it
+    into the stored filename so the app's review queue (and any download) is
+    identifiable without opening the PDF."""
+    doc = (document_type or "").strip().lower() or "unknown"
+    sup = (supplier_name or "").strip() or "unknown supplier"
+    if doc == "invoice":
+        return f"Invoice · {sup} (unrecognised supplier)"
+    return f"{doc.replace('_', ' ').title()} · {sup}"
+
+
 def _route(document_type, supplier_name):
-    """Decide what to do with a file from its triage. Returns (action, reason) where
-    action is 'save' (a real COGS supplier invoice), 'ignore' (a catering-platform
+    """Decide what to do with a file from its triage. Returns (action, reason, label)
+    where action is 'save' (a real COGS supplier invoice), 'ignore' (a catering-platform
     document — the catering pipeline's job, parked unprocessed) or 'review'
     (everything else — statements, credit notes, unrecognised / non-COGS suppliers).
+    label (review only, else None) is the filename tag from review_label.
 
     Pure logic (no I/O) so it's unit-testable without calling Claude."""
     if _is_catering(supplier_name):
-        return ("ignore", f"catering platform {supplier_name!r} — handled by the catering pipeline")
+        return ("ignore",
+                f"catering platform {supplier_name!r} — handled by the catering pipeline",
+                None)
     dt = (document_type or "").strip().lower()
     if dt != "invoice":
-        return ("review", f"not an invoice (document_type={dt or 'unknown'})")
+        return ("review", f"not an invoice (document_type={dt or 'unknown'})",
+                review_label(dt, supplier_name))
     if canonicalize(supplier_name) == config.FALLBACK_SUPPLIER:
-        return ("review", f"unrecognised / non-COGS supplier: {supplier_name!r}")
-    return ("save", "")
+        return ("review", f"unrecognised / non-COGS supplier: {supplier_name!r}",
+                review_label(dt, supplier_name))
+    return ("save", "", None)
 
 
 def process_one(name, media_type, client, raw=None):
     """Triage one inbox file, then save it if it's a real COGS invoice.
-    Returns (status, supplier, total, conf, reason) with status in
-    'saved' | 'duplicate' | 'review'."""
+    Returns (status, supplier, total, conf, reason, label) with status in
+    'saved' | 'duplicate' | 'review'; label is the review filename tag (or None)."""
     if raw is None:
         raw = storage.inbox_download(name)
 
     # 1) Cheap triage FIRST — skip statements / non-COGS before paying for a full read.
     triage = extract.classify_document(raw, media_type, client=client)
-    action, reason = _route(triage.document_type, triage.supplier_name)
+    action, reason, label = _route(triage.document_type, triage.supplier_name)
     if action != "save":
-        return (action, triage.supplier_name, 0.0, triage.confidence, reason)
+        return (action, triage.supplier_name, 0.0, triage.confidence, reason, label)
 
     # 2) Full Claude Vision extraction (same pipeline as the app's manual upload).
     data = extract.extract_invoice(raw, media_type, client=client)
@@ -94,17 +111,17 @@ def process_one(name, media_type, client, raw=None):
 
     # 3) Re-check the COGS gate against the FULL read's supplier name (more reliable than
     # the triage read) — catches a non-COGS invoice the triage let through.
-    action2, reason2 = _route("invoice", supplier_raw)
+    action2, reason2, label2 = _route("invoice", supplier_raw)
     if action2 != "save":
-        return (action2, supplier_raw, total, conf, reason2)
+        return (action2, supplier_raw, total, conf, reason2, label2)
 
     # 4) Skip an invoice we already have (re-sent email), matching the app's dedup rule.
     if storage.find_duplicate(canonicalize(supplier_raw), invoice_date, total):
-        return ("duplicate", supplier_raw, total, conf, "")
+        return ("duplicate", supplier_raw, total, conf, "", None)
 
     row = storage.save_invoice(supplier_raw, invoice_date, total, inv["line_items"])
     storage.save_invoice_image(row["saved_at"], raw, media_type)
-    return ("saved", supplier_raw, total, conf, "")
+    return ("saved", supplier_raw, total, conf, "", None)
 
 
 def main():
@@ -143,7 +160,7 @@ def main():
             continue
         seen_hashes[digest] = name
         try:
-            status, supplier, total, conf, reason = process_one(name, mt, client, raw=raw)
+            status, supplier, total, conf, reason, label = process_one(name, mt, client, raw=raw)
         except Exception as e:
             # Leave the file in the inbox (don't archive) so the next run retries it.
             failed += 1
@@ -155,9 +172,9 @@ def main():
             print(f"[inbox] ignored {disp}: {supplier} — {reason} -> ignored/")
             continue
         if status == "review":
-            storage.inbox_review(name)
+            storage.inbox_review(name, label=label)
             reviewed += 1
-            print(f"[inbox] review {disp}: {supplier} — {reason} -> review/")
+            print(f"[inbox] review {disp}: {supplier} — {reason} -> review/ as {label!r}")
             continue
         storage.inbox_archive(name)
         if status == "saved":

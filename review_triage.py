@@ -27,6 +27,7 @@ import anthropic
 
 import config
 import extract
+import inbox_ingest
 import storage
 from config import canonicalize
 
@@ -90,9 +91,20 @@ def main():
             groups["unknown"].append((name, f"classification failed: {e!r}"))
             continue
         dt = (c.document_type or "?").strip().lower()
+        recognised = (dt == "invoice"
+                      and canonicalize(c.supplier_name) != config.FALLBACK_SUPPLIER)
+        # Stitch the classification into the stored filename (same naming the ingest
+        # now applies on routing to review/) so the app's review queue is identifiable
+        # without downloading. Skipped when a previous run already labelled the file.
+        label = (f"Invoice · {c.supplier_name}" if recognised
+                 else inbox_ingest.review_label(c.document_type, c.supplier_name))
+        if not storage.display_name(name).startswith(label):
+            storage.review_relabel(name, label)
+            name = storage.relabel(name, label)
+            print(f"[triage] renamed -> {storage.display_name(name)}")
         line = (f"{storage.display_name(name)}  ·  {c.supplier_name}  ·  {dt}"
                 f"  ·  confidence {c.confidence}")
-        if dt == "invoice" and canonicalize(c.supplier_name) != config.FALLBACK_SUPPLIER:
+        if recognised:
             groups["accept"].append((name, line))
         elif dt == "invoice":
             groups["maybe"].append((name, line))

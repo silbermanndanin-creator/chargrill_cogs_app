@@ -89,10 +89,13 @@ hit **Run workflow** on the GitHub Action) it appears in the app.
 - **(root)** — new PDFs waiting for the next ingest run.
 - **processed/** — PDFs saved as invoices (including review files you accepted).
 - **review/** — PDFs the ingest didn't auto-save: statements, credit notes, orders, or an
-  invoice from a supplier the app doesn't recognise. Handle these in the app:
+  invoice from a supplier the app doesn't recognise. The ingest renames each file with
+  what it found (e.g. `Statement · Bidfood — <original name>.pdf`), so the queue is
+  identifiable at a glance without downloading anything. Handle these in the app:
   **📋 Invoices → 📥 Emailed invoices needing review** → view the PDF, then **Accept**
   (reads + saves it as an invoice and moves the PDF to processed/) or **Dismiss**
-  (moves it to ignored/ without counting it).
+  (moves it to ignored/ without counting it). To clear several at once, tick them in
+  the **Delete several at once** list and press **🗑 Delete selected**.
 - **ignored/** — non-PDF attachments that slipped past the flow's PDF condition, plus
   anything you dismissed. Never read, never shown; kept in case it's ever needed.
 
