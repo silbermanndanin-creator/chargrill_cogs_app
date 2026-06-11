@@ -1,0 +1,34 @@
+name: Review bulk dismiss
+
+# Dismiss a batch of review-queue files in one go (review_dismiss.py): each named
+# file moves review/ -> ignored/, same as tapping Dismiss in the app. Nothing is
+# deleted. Run from the Actions tab with the file names (one per line).
+
+on:
+  workflow_dispatch:
+    inputs:
+      names:
+        description: "File names in review/ to dismiss (one per line)"
+        required: true
+        type: string
+
+concurrency:
+  group: invoice-inbox
+  cancel-in-progress: false
+
+jobs:
+  dismiss:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: pip install anthropic supabase pandas pydantic Pillow
+      - name: Dismiss listed files
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          DISMISS_NAMES: ${{ inputs.names }}
+        run: python review_dismiss.py
