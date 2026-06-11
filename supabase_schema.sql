@@ -229,6 +229,24 @@ create table if not exists catering_orders (
 --   alter table catering_orders add column if not exists headcount integer;
 --   alter table catering_orders add column if not exists company text;
 
+-- Platform payment documents (Hampr remittance advice / Yordar RGI / Eat First RCTI),
+-- ingested from the Supabase Storage bucket by remittance_ingest.py. `lines` is a JSON
+-- string of [{order_ref, order_date, company, amount, commission}, ...] — one entry per
+-- order the document pays for. The app matches order_ref back to catering_orders to show
+-- outstanding $ per platform. source_file is UNIQUE so the ingest Action can re-run
+-- without creating duplicates.
+create table if not exists platform_remittances (
+    id            bigint generated always as identity primary key,
+    saved_at      text,
+    platform      text,                 -- 'Hampr' | 'Eat First' | 'Yordar'
+    doc_ref       text,                 -- RGI-260608006 / AU60031-308187; '' for Hampr (no number)
+    doc_date      text,                 -- YYYY-MM-DD payment / invoice date
+    total_paid    numeric,              -- total $ deposited with this document
+    lines         text,                 -- JSON [{order_ref, order_date, company, amount, commission}, ...]
+    confidence    text,
+    source_file   text unique           -- bucket path; enables upsert / dedupe
+);
+
 -- This app runs server-side on Streamlit Cloud and connects with the service_role
 -- key, so Row Level Security is not required. If you prefer to enable RLS, add
 -- policies that allow the service role full access.

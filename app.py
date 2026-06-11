@@ -465,6 +465,16 @@ def c_catering_file(source_file):
 
 
 @st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def c_load_platform_remittances():
+    return storage.load_platform_remittances()
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def c_remittance_file(source_file):
+    return storage.remittance_file_bytes(source_file)
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
 def c_supplier_cadence():
     return metrics.supplier_cadence(c_load_invoices())
 
@@ -2690,6 +2700,127 @@ if tab_cater is not None:
                                     "📄 Download original", _orig,
                                     file_name=f"{(r.get('platform') or 'order')}_{_ref}{_ext}",
                                     mime=_mime, key=f"catdl_{src_file}")
+
+        # ---- Payments & outstanding: remittances matched to orders by order number ----
+        st.divider()
+        st.markdown("#### 💰 Platform payments & outstanding")
+        st.caption("Hampr remittance advices, Yordar RGIs and Eat First RCTIs are pulled "
+                   "from your inbox and matched to the orders above by order number. A "
+                   "delivered order that isn't on any payment document yet is outstanding. "
+                   "Only orders captured since the catering feed went live are counted.")
+
+        rdf = c_load_platform_remittances()
+        RECON_PLATFORMS = ("Hampr", "Eat First", "Yordar")
+
+        def _norm_ref(v):
+            """Order numbers as comparable keys: '#97241', 'Order 97241', 'ORD-378600',
+            '378600' all reduce to the bare number ('97241' / '378600') so the order email
+            and the payment document match however each side prints the prefix."""
+            s = "".join(ch for ch in str(v or "").upper() if ch.isalnum())
+            bare = s.lstrip("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+            return bare if bare else s
+
+        # Explode every payment line out of the docs; build the paid-order key set.
+        paid_keys, docs = set(), []
+        for _, rr in rdf.iterrows():
+            try:
+                _lines = (json.loads(rr["lines"]) if isinstance(rr["lines"], str)
+                          else (rr["lines"] or []))
+            except Exception:
+                _lines = []
+            for li in _lines:
+                ref = _norm_ref(li.get("order_ref"))
+                if ref:
+                    paid_keys.add((str(rr.get("platform") or ""), ref))
+            docs.append((rr, _lines))
+
+        if cdf.empty and rdf.empty:
+            st.info("No payments yet. Once the remittance Power Automate flows are live, "
+                    "Hampr/Yordar/Eat First payment documents land here automatically and "
+                    "tick orders off as paid.")
+        else:
+            # Delivered platform orders not on any payment document = outstanding.
+            odf = cdf.copy()
+            if not odf.empty:
+                if "_dd" not in odf.columns:
+                    odf["_dd"] = odf["deliver_date"].map(_d)
+                odf = odf[odf["platform"].isin(RECON_PLATFORMS)
+                          & odf["_dd"].notna() & (odf["_dd"] <= dt.date.today())]
+                odf["_paid"] = [
+                    (str(p or ""), _norm_ref(ref)) in paid_keys and bool(_norm_ref(ref))
+                    for p, ref in zip(odf["platform"], odf["order_ref"])]
+            unpaid = odf[~odf["_paid"]] if not odf.empty else odf
+
+            def _owed(platform):
+                if unpaid.empty:
+                    return 0.0
+                m = unpaid[unpaid["platform"] == platform]
+                return float(pd.to_numeric(m["items_total"], errors="coerce").fillna(0).sum())
+
+            cols = st.columns(4)
+            owed_total = 0.0
+            for col, plat in zip(cols[:3], RECON_PLATFORMS):
+                owed = _owed(plat)
+                owed_total += owed
+                n = 0 if unpaid.empty else int((unpaid["platform"] == plat).sum())
+                col.metric(f"{plat} owes", f"${owed:,.0f}", f"{n} order(s)",
+                           delta_color="off")
+            cols[3].metric("Total outstanding", f"${owed_total:,.0f}")
+            st.caption("⚠️ Eat First deposits arrive NET of commission (~14.5%), so the "
+                       "money received will be less than the order totals shown here.")
+
+            if not unpaid.empty:
+                show = unpaid.sort_values("_dd")
+                st.dataframe(
+                    pd.DataFrame({
+                        "Delivered": show["_dd"].map(lambda d_: f"{d_:%a %d %b}"),
+                        "Platform": show["platform"],
+                        "Company": show["company"],
+                        "Order #": show["order_ref"],
+                        "Total $": pd.to_numeric(show["items_total"], errors="coerce")
+                                     .fillna(0).map(lambda v: f"{v:,.2f}"),
+                    }),
+                    hide_index=True, width="stretch")
+            elif not odf.empty:
+                st.success("✅ Every captured order is on a payment document — nothing outstanding.")
+
+            # The payment documents themselves, newest first, lines ticked off against orders.
+            if docs:
+                st.markdown("**Payments received**")
+                order_keys = set()
+                if not cdf.empty:
+                    order_keys = {(str(p or ""), _norm_ref(ref))
+                                  for p, ref in zip(cdf["platform"], cdf["order_ref"])
+                                  if _norm_ref(ref)}
+                docs.sort(key=lambda t: str(t[0].get("doc_date") or ""), reverse=True)
+                for rr, _lines in docs:
+                    ref_bit = f" · {rr['doc_ref']}" if rr.get("doc_ref") else ""
+                    try:
+                        paid_bit = f"${float(rr.get('total_paid') or 0):,.2f}"
+                    except (TypeError, ValueError):
+                        paid_bit = ""
+                    with st.expander(f"{rr.get('doc_date') or '?'} — {rr.get('platform')}"
+                                     f"{ref_bit} · {paid_bit} · {len(_lines)} order(s)"):
+                        if _lines:
+                            st.dataframe(
+                                pd.DataFrame([{
+                                    "Order #": li.get("order_ref"),
+                                    "Order date": li.get("order_date") or "",
+                                    "Company": li.get("company") or "",
+                                    "Paid $": f"{float(li.get('amount') or 0):,.2f}",
+                                    "Matched": ("✓" if (str(rr.get("platform") or ""),
+                                                        _norm_ref(li.get("order_ref")))
+                                                in order_keys else "— no captured order")
+                                } for li in _lines]),
+                                hide_index=True, width="stretch")
+                        _rsrc = rr.get("source_file")
+                        if _rsrc:
+                            _rorig = c_remittance_file(str(_rsrc))
+                            if _rorig:
+                                st.download_button(
+                                    "📄 Download original", _rorig,
+                                    file_name=os.path.basename(str(_rsrc)),
+                                    mime="application/pdf", key=f"remdl_{_rsrc}")
 
 
 # ============ Variations tab (owner): part-time variation letters ============
