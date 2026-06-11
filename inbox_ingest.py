@@ -26,6 +26,8 @@ Requires env / GitHub repo secrets:
   SUPABASE_URL, SUPABASE_KEY (service_role), ANTHROPIC_API_KEY
 Run locally against the cloud inbox with:  python inbox_ingest.py
 """
+import hashlib
+
 import anthropic
 
 import config
@@ -34,12 +36,27 @@ import storage
 from config import canonicalize
 
 
+# Catering-platform orders (Hampr / Eat First / Yordar / Online Catering) have their
+# OWN pipeline (catering_ingest.py -> the Catering tab) and must never be counted as
+# supplier invoices or clutter review/ — any that stray into the invoices mailbox are
+# parked in ignored/. 'yorder' covers a common misspelling on order documents.
+CATERING_KEYWORDS = ("hampr", "eat first", "eatfirst", "yordar", "yorder", "online catering")
+
+
+def _is_catering(text) -> bool:
+    t = (text or "").lower()
+    return any(k in t for k in CATERING_KEYWORDS)
+
+
 def _route(document_type, supplier_name):
     """Decide what to do with a file from its triage. Returns (action, reason) where
-    action is 'save' (a real COGS supplier invoice) or 'review' (everything else —
-    statements, credit notes, and unrecognised / non-COGS suppliers go to review/).
+    action is 'save' (a real COGS supplier invoice), 'ignore' (a catering-platform
+    document — the catering pipeline's job, parked unprocessed) or 'review'
+    (everything else — statements, credit notes, unrecognised / non-COGS suppliers).
 
     Pure logic (no I/O) so it's unit-testable without calling Claude."""
+    if _is_catering(supplier_name):
+        return ("ignore", f"catering platform {supplier_name!r} — handled by the catering pipeline")
     dt = (document_type or "").strip().lower()
     if dt != "invoice":
         return ("review", f"not an invoice (document_type={dt or 'unknown'})")
@@ -48,17 +65,18 @@ def _route(document_type, supplier_name):
     return ("save", "")
 
 
-def process_one(name, media_type, client):
+def process_one(name, media_type, client, raw=None):
     """Triage one inbox file, then save it if it's a real COGS invoice.
     Returns (status, supplier, total, conf, reason) with status in
     'saved' | 'duplicate' | 'review'."""
-    raw = storage.inbox_download(name)
+    if raw is None:
+        raw = storage.inbox_download(name)
 
     # 1) Cheap triage FIRST — skip statements / non-COGS before paying for a full read.
     triage = extract.classify_document(raw, media_type, client=client)
     action, reason = _route(triage.document_type, triage.supplier_name)
-    if action == "review":
-        return ("review", triage.supplier_name, 0.0, triage.confidence, reason)
+    if action != "save":
+        return (action, triage.supplier_name, 0.0, triage.confidence, reason)
 
     # 2) Full Claude Vision extraction (same pipeline as the app's manual upload).
     data = extract.extract_invoice(raw, media_type, client=client)
@@ -77,8 +95,8 @@ def process_one(name, media_type, client):
     # 3) Re-check the COGS gate against the FULL read's supplier name (more reliable than
     # the triage read) — catches a non-COGS invoice the triage let through.
     action2, reason2 = _route("invoice", supplier_raw)
-    if action2 == "review":
-        return ("review", supplier_raw, total, conf, reason2)
+    if action2 != "save":
+        return (action2, supplier_raw, total, conf, reason2)
 
     # 4) Skip an invoice we already have (re-sent email), matching the app's dedup rule.
     if storage.find_duplicate(canonicalize(supplier_raw), invoice_date, total):
@@ -103,14 +121,37 @@ def main():
 
     print(f"[inbox] {len(files)} file(s) to process")
     client = anthropic.Anthropic()
-    saved = dups = reviewed = failed = 0
+    saved = dups = reviewed = failed = ignored = 0
+    # Exact byte-duplicates (the same attachment uploaded under several names —
+    # the backlog from before the flows used deterministic filenames) are detected
+    # by hash BEFORE the Claude read, so each unique document is paid for once.
+    seen_hashes = {}  # sha256 -> first file name with that content
     for name, mt in files:
         try:
-            status, supplier, total, conf, reason = process_one(name, mt, client)
+            raw = storage.inbox_download(name)
+        except Exception as e:
+            failed += 1
+            print(f"[inbox] FAILED {name}: {e!r} — left in inbox for retry")
+            continue
+        digest = hashlib.sha256(raw).hexdigest()
+        first = seen_hashes.get(digest)
+        if first:
+            storage.inbox_ignore(name)
+            ignored += 1
+            print(f"[inbox] ignored {name}: exact copy of {first} -> ignored/")
+            continue
+        seen_hashes[digest] = name
+        try:
+            status, supplier, total, conf, reason = process_one(name, mt, client, raw=raw)
         except Exception as e:
             # Leave the file in the inbox (don't archive) so the next run retries it.
             failed += 1
             print(f"[inbox] FAILED {name}: {e!r} — left in inbox for retry")
+            continue
+        if status == "ignore":
+            storage.inbox_ignore(name)
+            ignored += 1
+            print(f"[inbox] ignored {name}: {supplier} — {reason} -> ignored/")
             continue
         if status == "review":
             storage.inbox_review(name)
@@ -125,8 +166,8 @@ def main():
             dups += 1
             print(f"[inbox] duplicate {name}: {supplier} ${total:,.2f} — skipped")
 
-    print(f"[inbox] done: {saved} saved, {dups} duplicate(s), "
-          f"{reviewed} for review, {failed} failed")
+    print(f"[inbox] done: {saved} saved, {dups} duplicate(s), {reviewed} for review, "
+          f"{ignored} exact cop(ies) ignored, {failed} failed")
 
 
 if __name__ == "__main__":
