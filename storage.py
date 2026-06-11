@@ -62,6 +62,9 @@ CATERING_COLUMNS = ["saved_at", "platform", "order_type", "company", "deliver_da
 # Bucket the catering files live in (same default the ingest Action uses). `or` so an
 # empty SUPABASE_BUCKET still falls back rather than becoming an invalid "" bucket name.
 CATERING_BUCKET = os.environ.get("SUPABASE_BUCKET") or "invoices"
+REMIT_PATH = os.path.join(DATA_DIR, "platform_remittances.csv")
+REMIT_COLUMNS = ["saved_at", "platform", "doc_ref", "doc_date", "total_paid",
+                 "lines", "confidence", "source_file"]
 
 
 def iso_week_of(d: dt.date) -> str:
@@ -1383,4 +1386,97 @@ def catering_already_ingested(source_file: str) -> bool:
     if not os.path.exists(CATERING_PATH):
         return False
     df = pd.read_csv(CATERING_PATH)
+    return not df.empty and (df["source_file"].astype(str) == source_file).any()
+
+
+# ---------- platform remittances (Hampr remittance advice / Yordar RGI / Eat First RCTI) ----------
+def save_platform_remittance(doc, source_file: str):
+    """Upsert one platform payment document, keyed by source_file (the bucket filename)
+    so the ingest Action can re-run safely without creating duplicates. `doc` may be a
+    remittance_extract.RemittanceDoc or a plain dict with the same fields."""
+    d = doc.model_dump() if hasattr(doc, "model_dump") else dict(doc)
+    lines = d.get("lines") or []
+    lines = [li if isinstance(li, dict) else li.model_dump() for li in lines]
+    row = {
+        "saved_at": dt.datetime.now().isoformat(timespec="seconds"),
+        "platform": d.get("platform"),
+        "doc_ref": d.get("doc_ref"),
+        "doc_date": d.get("doc_date"),
+        "total_paid": round(float(d.get("total_paid") or 0), 2),
+        "lines": json.dumps(lines),
+        "confidence": d.get("confidence"),
+        "source_file": source_file,
+    }
+    doc_ref = str(d.get("doc_ref") or "").strip()
+    platform = d.get("platform")
+    if _use_supabase():
+        # A re-issued document (same platform + doc_ref, but arriving as a NEW file)
+        # should REPLACE the earlier version rather than double-count the payment.
+        # Only when there's a doc_ref to match on (Hampr remittances have none — those
+        # fall back to plain per-file dedup).
+        if doc_ref:
+            try:
+                (_client().table("platform_remittances").delete()
+                 .eq("platform", platform).eq("doc_ref", doc_ref)
+                 .neq("source_file", source_file).execute())
+            except Exception:
+                pass
+        _client().table("platform_remittances").upsert(
+            row, on_conflict="source_file").execute()
+    else:
+        _ensure_csv(REMIT_PATH, REMIT_COLUMNS)
+        df = pd.read_csv(REMIT_PATH)
+        df = df[df["source_file"].astype(str) != source_file]  # one row per source file
+        if doc_ref:  # also drop any earlier version of the same document
+            df = df[~((df["doc_ref"].astype(str) == doc_ref)
+                      & (df["platform"].astype(str) == str(platform)))]
+        df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+        df.to_csv(REMIT_PATH, index=False)
+    return row
+
+
+def load_platform_remittances() -> pd.DataFrame:
+    if _use_supabase():
+        try:
+            data = _client().table("platform_remittances").select("*").execute().data
+        except Exception:
+            return pd.DataFrame(columns=REMIT_COLUMNS)  # table not created yet -> degrade
+        return (pd.DataFrame(data, columns=REMIT_COLUMNS) if data
+                else pd.DataFrame(columns=REMIT_COLUMNS))
+    _ensure_csv(REMIT_PATH, REMIT_COLUMNS)
+    df = pd.read_csv(REMIT_PATH)
+    return df if not df.empty else pd.DataFrame(columns=REMIT_COLUMNS)
+
+
+def remittance_file_bytes(source_file: str):
+    """The original remittance PDF from Storage, so the app can offer it as a download.
+    After ingest the file is archived under remittance/done/<...>; try there first, then
+    the pre-ingest path. Returns bytes, or None if unavailable."""
+    if not (source_file and _use_supabase()):
+        return None
+    bucket = _client().storage.from_(CATERING_BUCKET)
+    done = source_file.replace("remittance/", "remittance/done/", 1)
+    for path in (done, source_file):
+        try:
+            data = bucket.download(path)
+            if data:
+                return data
+        except Exception:
+            continue
+    return None
+
+
+def remittance_already_ingested(source_file: str) -> bool:
+    """True if a remittance with this source_file is already saved (lets the ingest
+    Action skip work it's already done)."""
+    if _use_supabase():
+        try:
+            data = (_client().table("platform_remittances").select("source_file")
+                    .eq("source_file", source_file).limit(1).execute().data)
+            return bool(data)
+        except Exception:
+            return False
+    if not os.path.exists(REMIT_PATH):
+        return False
+    df = pd.read_csv(REMIT_PATH)
     return not df.empty and (df["source_file"].astype(str) == source_file).any()
