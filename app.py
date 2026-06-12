@@ -2774,6 +2774,19 @@ if tab_cater is not None:
             if win.empty:
                 st.info(f"No catering deliveries in {period_label}.")
             else:
+                # $ at a glance for the shown window (inc GST), split by platform —
+                # the money to expect back in payouts (Eat First arrives net of
+                # ~14.5% commission, so its deposit will be less than shown here).
+                _wtot = pd.to_numeric(win["items_total"], errors="coerce").fillna(0)
+                _wplats = [p for p in win["platform"].dropna().unique() if str(p).strip()]
+                _wcols = st.columns(1 + min(len(_wplats), 4))
+                _wcols[0].metric("Orders total", f"${_wtot.sum():,.0f}",
+                                 f"{len(win)} order(s) · {period_label}",
+                                 delta_color="off")
+                for _wcol, _wplat in zip(_wcols[1:], _wplats):
+                    _wm = (win["platform"] == _wplat).values
+                    _wcol.metric(str(_wplat), f"${_wtot[_wm].sum():,.0f}",
+                                 f"{int(_wm.sum())} order(s)", delta_color="off")
                 for _, r in win.iterrows():
                     items = _items(r)
                     ot = str(r.get("order_type") or "").lower()
@@ -3019,12 +3032,20 @@ if tab_cater is not None:
                     with st.expander(f"{rr.get('doc_date') or '?'} — {rr.get('platform')}"
                                      f"{ref_bit} · {paid_bit} · {len(_lines)} order(s)"):
                         if _lines:
+                            # Eat First RCTI lines are ex-GST sales with a commission
+                            # column; Hampr/Yordar lines are simply the $ paid.
+                            _has_comm = any(float(li.get("commission") or 0)
+                                            for li in _lines)
+                            _amt_col = "Sales $ ex GST" if _has_comm else "Paid $"
                             st.dataframe(
                                 pd.DataFrame([{
                                     "Order #": li.get("order_ref"),
                                     "Order date": li.get("order_date") or "",
                                     "Company": li.get("company") or "",
-                                    "Paid $": f"{float(li.get('amount') or 0):,.2f}",
+                                    _amt_col: f"{float(li.get('amount') or 0):,.2f}",
+                                    **({"Commission $":
+                                        f"{float(li.get('commission') or 0):,.2f}"}
+                                       if _has_comm else {}),
                                     "Matched": ("✓" if (str(rr.get("platform") or ""),
                                                         _norm_ref(li.get("order_ref")))
                                                 in order_keys
@@ -3033,6 +3054,17 @@ if tab_cater is not None:
                                                 else "— no captured order")
                                 } for li in _lines]),
                                 hide_index=True, width="stretch")
+                            if _has_comm:
+                                _sales = sum(float(li.get("amount") or 0)
+                                             for li in _lines)
+                                _comm = sum(float(li.get("commission") or 0)
+                                            for li in _lines)
+                                st.caption(
+                                    f"${_sales:,.2f} ex-GST sales − ${_comm:,.2f} "
+                                    f"commission (± GST) ≈ {paid_bit} deposited. Each "
+                                    "line is matched to an order by its ORD number, or "
+                                    "— for orders without one — by the order's inc-GST "
+                                    "total ÷ 1.1 equalling the line's ex-GST sales.")
                         _rsrc = rr.get("source_file")
                         if _rsrc:
                             _rorig = c_remittance_file(str(_rsrc))
