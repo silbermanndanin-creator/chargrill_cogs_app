@@ -148,6 +148,19 @@ h1,h2,h3,h4,h5{ color:$text; }
 .appbar-period{ font-size:.78rem; color:$text; font-weight:600; background:$chip_bg;
   border:1px solid $border; padding:7px 14px; border-radius:999px; white-space:nowrap; }
 
+/* month-total stat chips in the header — fixed to the selected month */
+.appbar-stats{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
+.hstat{ background:$surface; border:1px solid $border; border-radius:12px;
+  padding:5px 12px 6px; text-align:right; box-shadow:$shadow_sm; }
+.hstat .hl{ display:block; font-family:'JetBrains Mono',monospace; font-size:.55rem;
+  font-weight:600; letter-spacing:.12em; text-transform:uppercase; color:$muted; }
+.hstat .hv{ font-family:'JetBrains Mono',monospace; font-variant-numeric:tabular-nums;
+  font-size:.92rem; font-weight:600; color:$text; }
+@media (max-width:640px){
+  .appbar{ flex-wrap:wrap; gap:8px; }
+  .appbar-stats{ justify-content:flex-start; }
+}
+
 /* floating metric cards — rounded-xl, shadow-sm, hover:elevate + accent border */
 .kpi{ background:$card_grad; border:1px solid $border; border-radius:16px; padding:16px 18px;
   height:100%; box-shadow:$shadow_sm; transition:all .2s ease-in-out; }
@@ -216,8 +229,9 @@ section[data-testid="stSidebar"] h3{ color:$text; }
 hr{ border-color:$border; }
 [data-testid="stAlert"]{ border-radius:12px; }
 
-/* dark-mode toggle — pinned top-right of the nav bar */
-.st-key-theme_toggle{ position:fixed; top:.5rem; right:4.5rem; z-index:1000; width:auto; }
+/* dark-mode toggle — pinned top-right, ABOVE Streamlit's fixed header overlay
+   (the header's z-index is ~999990 and silently swallows taps on anything under it) */
+.st-key-theme_toggle{ position:fixed; top:.5rem; right:4.5rem; z-index:1000001; width:auto; }
 .st-key-theme_toggle button{ border-radius:999px !important; padding:3px 14px !important;
   min-height:auto !important; font-size:.85rem !important; font-weight:600 !important;
   background:$surface !important; color:$text !important; border:1px solid $border !important;
@@ -695,6 +709,17 @@ with st.sidebar:
 df = c_load_invoices()
 lines = c_explode_lines()
 
+# Header month totals — pinned to the month containing the selected period, so
+# they hold steady while toggling between weeks of that month. Same sources as
+# the dashboard: food_cogs_for_period (headline COGS) + labour_for_period.
+_hdr_month_key = ref.strftime("%Y-%m")
+_hdr_month_cogs = metrics.food_cogs_for_period(df, "month", _hdr_month_key)
+_hdr_lab_cost, _hdr_lab_hours, _hdr_foh, _hdr_boh = c_labour_for_period("Month", _hdr_month_key)
+if owner:  # wages are owner-only; chef sees hours (matches sidebar/dashboard gating)
+    _hdr_lab_val = f"${_hdr_lab_cost:,.0f}" if _hdr_lab_cost else "—"
+else:
+    _hdr_lab_val = f"{_hdr_lab_hours:g} hrs" if _hdr_lab_hours else "—"
+
 st.markdown(f"""<div class="appbar">
   <div class="brand">
     <svg width="36" height="36" viewBox="0 0 34 34" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -708,7 +733,13 @@ st.markdown(f"""<div class="appbar">
     <div><div class="brand-name">Chargrill COGS</div>
     <div class="brand-sub">Cost &amp; labour intelligence</div></div>
   </div>
-  <div class="appbar-period">{period_label}</div>
+  <div class="appbar-stats">
+    <div class="hstat"><span class="hl">{ref:%b} COGS</span>
+      <span class="hv">{f"${_hdr_month_cogs:,.0f}" if _hdr_month_cogs else "—"}</span></div>
+    <div class="hstat"><span class="hl">{ref:%b} labour</span>
+      <span class="hv">{_hdr_lab_val}</span></div>
+    <div class="appbar-period">{period_label}</div>
+  </div>
 </div>""", unsafe_allow_html=True)
 
 # Dark-mode toggle — pinned top-right of the nav bar (CSS: .st-key-theme_toggle)
