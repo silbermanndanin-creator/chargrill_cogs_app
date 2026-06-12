@@ -22,3 +22,6 @@ __pycache__/
 Thumbs.db
 desktop.ini
 **/desktop.ini
+
+# re-include the vendored UI/UX Pro Max skill database (the bare "data/" rule above is for app data)
+!.claude/skills/ui-ux-pro-max/data/
