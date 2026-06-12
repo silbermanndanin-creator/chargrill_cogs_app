@@ -43,25 +43,33 @@ if "theme" not in st.session_state:
 THEME = st.session_state["theme"]
 
 _THEMES = {
-    "light": {  # warm stone / off-white
-        "bg": "#faf9f7", "surface": "#ffffff", "surface2": "#f5f5f4",
-        "border": "#e7e5e4", "border_hov": "#d6d3d1",
-        "text": "#1c1917", "muted": "#78716c",
-        "accent": "#d97706", "accent2": "#ea580c",
-        "card_grad": "#ffffff",
-        "shadow_sm": "0 1px 2px rgba(28,25,23,.06),0 1px 3px rgba(28,25,23,.07)",
-        "shadow_md": "0 10px 25px rgba(28,25,23,.10),0 4px 10px rgba(28,25,23,.06)",
-        "pri_btn_text": "#ffffff",
+    "light": {  # warm cream / bistro daylight
+        "bg": "#faf6f0",
+        "bg_decor": "radial-gradient(900px 420px at 85% -10%, rgba(194,65,12,.06), transparent 70%), #faf6f0",
+        "surface": "#fffdfa", "surface2": "#f4ede3",
+        "border": "#e8ddcf", "border_hov": "#d3c3ae",
+        "text": "#231a12", "muted": "#857463",
+        "accent": "#c2410c", "accent2": "#ea580c",
+        "card_grad": "linear-gradient(170deg,#fffdfa,#fbf6ee)",
+        "shadow_sm": "0 1px 2px rgba(60,38,20,.05),0 2px 6px rgba(60,38,20,.06)",
+        "shadow_md": "0 14px 30px rgba(60,38,20,.12),0 5px 12px rgba(60,38,20,.07)",
+        "pri_btn_text": "#fffaf4",
+        "ring": "rgba(194,65,12,.35)",
+        "chip_bg": "rgba(194,65,12,.08)",
     },
-    "dark": {  # warm charcoal / stone-950 + ember accent
-        "bg": "#0c0a09", "surface": "#1c1917", "surface2": "#292524",
-        "border": "#292524", "border_hov": "#44403c",
-        "text": "#fafaf9", "muted": "#a8a29e",
-        "accent": "#f59e0b", "accent2": "#fb923c",
-        "card_grad": "linear-gradient(180deg,#1c1917,#141110)",
-        "shadow_sm": "0 1px 2px rgba(0,0,0,.4),0 1px 3px rgba(0,0,0,.5)",
-        "shadow_md": "0 12px 30px rgba(0,0,0,.55),0 4px 10px rgba(0,0,0,.4)",
-        "pri_btn_text": "#1c1207",
+    "dark": {  # charcoal ember — warm near-black with a faint grill-glow wash
+        "bg": "#0b0907",
+        "bg_decor": "radial-gradient(1100px 520px at 75% -12%, rgba(245,158,11,.08), transparent 65%), #0b0907",
+        "surface": "#171210", "surface2": "#231b16",
+        "border": "#2b211a", "border_hov": "#54402f",
+        "text": "#f8f3ec", "muted": "#a99a8a",
+        "accent": "#f59e0b", "accent2": "#fb7c33",
+        "card_grad": "linear-gradient(170deg,#1b1411,#110d0b)",
+        "shadow_sm": "0 1px 2px rgba(0,0,0,.45),0 2px 6px rgba(0,0,0,.45)",
+        "shadow_md": "0 16px 36px rgba(0,0,0,.6),0 6px 14px rgba(0,0,0,.45)",
+        "pri_btn_text": "#1b1004",
+        "ring": "rgba(245,158,11,.4)",
+        "chip_bg": "rgba(245,158,11,.10)",
     },
 }
 T = _THEMES[THEME]
@@ -85,24 +93,40 @@ _CHARTS = {
 C = _CHARTS[THEME]
 
 _CSS = Template("""
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Calistoga&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap');
 
 :root{
   --bg:$bg; --surface:$surface; --surface2:$surface2; --border:$border;
   --text:$text; --muted:$muted; --accent:$accent; --accent2:$accent2;
-  --radius:14px; --shadow:$shadow_sm;
+  --radius:16px; --shadow:$shadow_sm;
 }
 
-/* typography */
+/* typography — Inter for UI, Calistoga for display, JetBrains Mono for data */
 html, body, .stApp, [data-testid="stAppViewContainer"],
 button, input, select, textarea, .stMarkdown, p, span, label, div{
   font-family:'Inter',-apple-system,'Segoe UI',Roboto,sans-serif;
 }
-h1,h2,h3,h4,.hdr,.brand-name,.kpi .v,.tub .v{
-  font-family:'Space Grotesk','Inter',sans-serif; letter-spacing:-.01em;
+h1,h2,h3,h4,.hdr,.brand-name{
+  font-family:'Calistoga','Space Grotesk',serif; font-weight:400; letter-spacing:.01em;
 }
-.stApp,[data-testid="stAppViewContainer"]{ background:$bg; color:$text; }
+.kpi .v,.tub .v,[data-testid="stMetricValue"]{
+  font-family:'JetBrains Mono','Space Grotesk',monospace; font-variant-numeric:tabular-nums;
+}
+.stApp,[data-testid="stAppViewContainer"]{ background:$bg_decor; background-attachment:fixed; color:$text; }
 h1,h2,h3,h4,h5{ color:$text; }
+
+/* accessibility — visible keyboard focus + reduced-motion support */
+*:focus-visible{ outline:none !important; box-shadow:0 0 0 3px $ring !important; border-radius:8px; }
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{ transition:none !important; animation:none !important; }
+}
+.stButton>button, .stDownloadButton>button, .stTabs [data-baseweb="tab"],
+[data-testid="stExpander"] summary, .stRadio [role="radiogroup"] label{ cursor:pointer; }
+
+/* slim themed scrollbars */
+::-webkit-scrollbar{ width:10px; height:10px; }
+::-webkit-scrollbar-thumb{ background:$border_hov; border-radius:8px; }
+::-webkit-scrollbar-track{ background:transparent; }
 
 /* blend Streamlit's top toolbar, keep room for it */
 [data-testid="stHeader"]{ background:transparent; }
@@ -112,40 +136,46 @@ h1,h2,h3,h4,h5{ color:$text; }
 .block-container [data-testid="stVerticalBlock"]{ gap:1.5rem; }
 [data-testid="stHorizontalBlock"]{ gap:1rem; }
 
-/* branded app header bar */
+/* branded app header bar — gradient ember hairline under the brand */
 .appbar{ display:flex; align-items:center; justify-content:space-between;
-  padding:8px 2px 14px; border-bottom:1px solid $border; margin-bottom:14px; }
+  padding:8px 2px 14px; border-bottom:1px solid $border; margin-bottom:14px; position:relative; }
+.appbar::after{ content:""; position:absolute; left:0; bottom:-1px; width:190px; height:2px;
+  background:linear-gradient(90deg,$accent,$accent2,transparent); border-radius:2px; }
 .brand{ display:flex; align-items:center; gap:12px; }
-.brand-name{ font-size:1.18rem; font-weight:700; color:$text; line-height:1.05; }
-.brand-sub{ font-size:.72rem; color:$muted; font-weight:500; margin-top:2px; }
-.appbar-period{ font-size:.78rem; color:$text; font-weight:600; background:$surface;
+.brand-name{ font-size:1.28rem; color:$text; line-height:1.05; }
+.brand-sub{ font-family:'JetBrains Mono',monospace; font-size:.6rem; color:$muted;
+  font-weight:600; letter-spacing:.16em; text-transform:uppercase; margin-top:3px; }
+.appbar-period{ font-size:.78rem; color:$text; font-weight:600; background:$chip_bg;
   border:1px solid $border; padding:7px 14px; border-radius:999px; white-space:nowrap; }
 
 /* floating metric cards — rounded-xl, shadow-sm, hover:elevate + accent border */
-.kpi{ background:$card_grad; border:1px solid $border; border-radius:14px; padding:16px 18px;
+.kpi{ background:$card_grad; border:1px solid $border; border-radius:16px; padding:16px 18px;
   height:100%; box-shadow:$shadow_sm; transition:all .2s ease-in-out; }
 .kpi:hover{ box-shadow:$shadow_md; border-color:$accent; transform:translateY(-2px); }
-.kpi .t{ color:$muted; font-size:.67rem; font-weight:700; letter-spacing:.08em; text-transform:uppercase; }
-.kpi .v{ font-size:1.72rem; font-weight:700; color:$text; line-height:1.15; margin-top:8px; }
+.kpi .t{ font-family:'JetBrains Mono',monospace; color:$muted; font-size:.62rem;
+  font-weight:600; letter-spacing:.12em; text-transform:uppercase; }
+.kpi .v{ font-size:1.66rem; font-weight:600; color:$text; line-height:1.15; margin-top:8px; }
 .kpi .s{ font-size:.77rem; margin-top:6px; font-weight:600; }
 
-.hdr{ font-size:1.6rem; font-weight:700; color:$text; margin-bottom:.3rem; }
+.hdr{ font-size:1.6rem; color:$text; margin-bottom:.3rem; }
 
 /* tub cards */
-.tub{ background:$card_grad; border:1px solid $border; border-radius:14px;
+.tub{ background:$card_grad; border:1px solid $border; border-radius:16px;
   padding:14px 6px; text-align:center; box-shadow:$shadow_sm; transition:all .2s ease-in-out; }
 .tub:hover{ box-shadow:$shadow_md; border-color:$accent; transform:translateY(-2px); }
-.tub .v{ font-size:1.85rem; font-weight:700; color:$text; }
-.tub .t{ color:$muted; font-size:.67rem; font-weight:700; text-transform:uppercase; letter-spacing:.06em; }
+.tub .v{ font-size:1.78rem; font-weight:600; color:$text; }
+.tub .t{ font-family:'JetBrains Mono',monospace; color:$muted; font-size:.62rem;
+  font-weight:600; text-transform:uppercase; letter-spacing:.1em; }
 
-/* tabs -> pill style with accent underline + hover transition */
-.stTabs [data-baseweb="tab-list"]{ gap:4px; border-bottom:1px solid $border; }
+/* tabs -> pill style with gradient accent underline + hover transition */
+.stTabs [data-baseweb="tab-list"]{ gap:6px; border-bottom:1px solid $border; }
 .stTabs [data-baseweb="tab"]{ height:auto; padding:9px 14px; background:transparent;
   border-radius:10px 10px 0 0; color:$muted; font-weight:600; font-size:.9rem;
   transition:all .2s ease-in-out; }
 .stTabs [data-baseweb="tab"]:hover{ color:$text; background:$surface2; }
-.stTabs [aria-selected="true"]{ color:$text; background:$surface; }
-.stTabs [data-baseweb="tab-highlight"]{ background:$accent; height:3px; }
+.stTabs [aria-selected="true"]{ color:$accent; background:$chip_bg; }
+.stTabs [data-baseweb="tab-highlight"]{ background:linear-gradient(90deg,$accent,$accent2);
+  height:3px; border-radius:3px; }
 .stTabs [data-baseweb="tab-border"]{ background:transparent; }
 
 /* buttons (incl. sidebar nav items) — smooth hover, subtle lift */
@@ -153,7 +183,8 @@ h1,h2,h3,h4,h5{ color:$text; }
   background:$surface; color:$text; border:1px solid $border; transition:all .2s ease-in-out; }
 .stButton>button:hover, .stDownloadButton>button:hover{ border-color:$accent; color:$accent;
   box-shadow:$shadow_sm; transform:translateY(-1px); }
-.stButton>button[kind="primary"]{ background:$accent; border-color:$accent; color:$pri_btn_text; }
+.stButton>button[kind="primary"]{ background:linear-gradient(135deg,$accent,$accent2);
+  border:1px solid transparent; color:$pri_btn_text; box-shadow:0 4px 14px $ring; }
 .stButton>button[kind="primary"]:hover{ filter:brightness(1.08); color:$pri_btn_text; }
 
 /* radio / nav options hover */
@@ -168,10 +199,11 @@ h1,h2,h3,h4,h5{ color:$text; }
 input::placeholder, textarea::placeholder{ color:$muted !important; }
 
 /* st.metric cards — floating + hover */
-[data-testid="stMetric"]{ background:$surface; border:1px solid $border;
-  border-radius:14px; padding:14px 18px; box-shadow:$shadow_sm; transition:all .2s ease-in-out; }
+[data-testid="stMetric"]{ background:$card_grad; border:1px solid $border;
+  border-radius:16px; padding:14px 18px; box-shadow:$shadow_sm; transition:all .2s ease-in-out; }
 [data-testid="stMetric"]:hover{ box-shadow:$shadow_md; border-color:$accent; transform:translateY(-2px); }
-[data-testid="stMetricValue"]{ font-family:'Space Grotesk',sans-serif; color:$text; }
+[data-testid="stMetricValue"]{ color:$text; }
+[data-testid="stMetricLabel"]{ color:$muted; }
 
 /* bordered containers, expanders, sidebar, tables */
 [data-testid="stExpander"]{ border:1px solid $border; border-radius:12px; background:$surface;
@@ -282,8 +314,15 @@ if "role_chosen" not in st.session_state:
 # ---- Landing gate: pick Chef or Owner (PIN) before the app loads ----
 if not st.session_state["role_chosen"]:
     st.markdown(f"""<div style='max-width:460px;margin:7vh auto .5rem;text-align:center'>
-      <div style='font-size:3rem'>🍗</div>
-      <div style='font-size:1.55rem;font-weight:700;color:{T["text"]};margin:.2rem 0'>Chargrill COGS</div>
+      <svg width="56" height="56" viewBox="0 0 34 34" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <rect width="34" height="34" rx="9" fill="url(#gateg)"/>
+        <rect x="9" y="18" width="3.6" height="7" rx="1.5" fill="#1c1207"/>
+        <rect x="15.2" y="13" width="3.6" height="12" rx="1.5" fill="#1c1207"/>
+        <rect x="21.4" y="9" width="3.6" height="16" rx="1.5" fill="#1c1207"/>
+        <defs><linearGradient id="gateg" x1="0" y1="0" x2="34" y2="34" gradientUnits="userSpaceOnUse">
+          <stop stop-color="{T['accent']}"/><stop offset="1" stop-color="{T['accent2']}"/></linearGradient></defs>
+      </svg>
+      <div style='font-family:Calistoga,serif;font-size:1.6rem;color:{T["text"]};margin:.55rem 0 .1rem'>Chargrill COGS</div>
       <div style='color:{T["muted"]};margin-bottom:1.2rem'>Choose how you want to sign in</div>
     </div>""", unsafe_allow_html=True)
     _g = st.columns([1, 2, 1])[1]
@@ -664,7 +703,7 @@ st.markdown(f"""<div class="appbar">
       <rect x="15.2" y="13" width="3.6" height="12" rx="1.5" fill="#1c1207"/>
       <rect x="21.4" y="9" width="3.6" height="16" rx="1.5" fill="#1c1207"/>
       <defs><linearGradient id="brandg" x1="0" y1="0" x2="34" y2="34" gradientUnits="userSpaceOnUse">
-        <stop stop-color="#f59e0b"/><stop offset="1" stop-color="#fb923c"/></linearGradient></defs>
+        <stop stop-color="{T['accent']}"/><stop offset="1" stop-color="{T['accent2']}"/></linearGradient></defs>
     </svg>
     <div><div class="brand-name">Chargrill COGS</div>
     <div class="brand-sub">Cost &amp; labour intelligence</div></div>
