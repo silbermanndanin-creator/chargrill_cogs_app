@@ -12,8 +12,13 @@ Decisions baked in (confirmed by the owner, 12 Jun 2026):
     invoice PDFs carry no platform order numbers — only inv #, customer, totals).
   - The two flagged duplicates are EXCLUDED: INV1038 (= INV1052, only one Hampr
     order 100158 exists for BCG 21 May) and INV995 (= INV1007, already paid).
-  - The two delivered-but-not-yet-invoiced Hampr orders ARE included (100390 Rokt
-    15 May, 103670 Commerce 11 Jun) with $0 until their invoices are raised.
+  - PLATFORM invoices only — anything in the folder not prefixed Hampr / Yordar /
+    Eat First (OLSH, UNSW, Swans, EHC, schools, …) is a direct customer, paid
+    directly, and stays out of the platform receivables count.
+  - "Hampt Rokt 15 May INV1037" is a typo'd Hampr invoice the sheet missed (it
+    flagged order 100390 as not-yet-invoiced) — included at its real $737.17.
+  - The one genuinely uninvoiced delivered Hampr order IS included (103670
+    Commerce 11 Jun) with $0 until its invoice is raised.
   - Amounts are inc-GST invoice values (what Hampr/Yordar actually deposit).
 
 Re-running is safe: rows are upserted on source_file ('driveback/INV1061').
@@ -35,6 +40,10 @@ HAMPR = [
     ("1027", "Riot Games", "06/05/2026", "99099", 2190.18),
     ("1041", "Okta", "06/05/2026", "99714", 785.98),
     ("1036", "Immutable", "08/05/2026", "100031", 526.02),
+    # The recon sheet flagged order 100390 as "not yet invoiced", but the invoice
+    # exists — filed as "Hampt Rokt 15 May INV1037.pdf" (typo'd platform prefix),
+    # confirmed Hampr / Rokt / 15-05 / $737.17 inside the PDF.
+    ("1037", "Rokt", "15/05/2026", "100390", 737.17),
     ("1050", "Klaviyo", "20/05/2026", "101284", 1318.98),
     ("1051", "Finder", "20/05/2026", "101022", 778.44),
     ("1052", "BCG", "21/05/2026", "100158", 710.12),
@@ -50,12 +59,11 @@ HAMPR = [
     ("1077", "BCG", "09/06/2026", "103033", 1113.63),
     ("1083", "Nearmap", "09/06/2026", "103371", 1572.63),
 ]
-HAMPR_TOTAL = 29091.30
+HAMPR_TOTAL = 29091.30 + 737.17  # sheet total + INV1037, which the sheet missed
 
 # Delivered but no invoice raised yet — included at $0 so the order exists for the
-# remittance to match; the owed $ understates until the invoices are raised.
+# remittance to match; the owed $ understates until the invoice is raised.
 HAMPR_UNINVOICED = [
-    ("Rokt", "15/05/2026", "100390"),
     ("Commerce", "11/06/2026", "103670"),
 ]
 
@@ -141,7 +149,7 @@ def main():
     for plat, want in (("Hampr", HAMPR_TOTAL), ("Eat First", EATFIRST_TOTAL),
                        ("Yordar", YORDAR_TOTAL)):
         got = round(sum(o["items_total"] for o, _ in orders if o["platform"] == plat), 2)
-        assert got == want, f"{plat}: ${got:,.2f} != sheet ${want:,.2f}"
+        assert got == round(want, 2), f"{plat}: ${got:,.2f} != sheet ${want:,.2f}"
 
     for order, source_file in orders:
         storage.save_catering_order(order, source_file=source_file)
@@ -150,7 +158,8 @@ def main():
               f"${order['items_total']:,.2f}  {order['company']}")
     total = round(sum(o["items_total"] for o, _ in orders), 2)
     print(f"[backfill] done: {len(orders)} orders, ${total:,.2f} inc GST "
-          f"(sheet TOTAL OWED $57,499.07 + $0 for the 2 uninvoiced)")
+          f"(sheet TOTAL OWED $57,499.07 + INV1037 $737.17 the sheet missed "
+          f"+ $0 for uninvoiced order 103670)")
 
 
 if __name__ == "__main__":
