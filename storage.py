@@ -65,6 +65,9 @@ CATERING_BUCKET = os.environ.get("SUPABASE_BUCKET") or "invoices"
 REMIT_PATH = os.path.join(DATA_DIR, "platform_remittances.csv")
 REMIT_COLUMNS = ["saved_at", "platform", "doc_ref", "doc_date", "total_paid",
                  "lines", "confidence", "source_file"]
+DRIVE_INV_PATH = os.path.join(DATA_DIR, "drive_invoices.csv")
+DRIVE_INV_COLUMNS = ["saved_at", "invoice_no", "platform", "company", "invoice_date",
+                     "total_inc_gst", "confidence", "source_file"]
 
 
 def iso_week_of(d: dt.date) -> str:
@@ -1437,6 +1440,63 @@ def catering_already_ingested(source_file: str) -> bool:
     if not os.path.exists(CATERING_PATH):
         return False
     df = pd.read_csv(CATERING_PATH)
+    return not df.empty and (df["source_file"].astype(str) == source_file).any()
+
+
+# ---------- our invoices to the catering platforms (mirrored from the Drive folder) ----------
+# A Power Automate flow copies each new PDF in the Google Drive "Catering" folder into
+# drive_invoices/ of the catering bucket; drive_invoice_ingest.py (GitHub Actions cron)
+# reads the platform ones and records them here, so the app can flag delivered platform
+# orders that have NO invoice raised yet and keep the receivables complete.
+def save_drive_invoice(inv: dict, source_file: str):
+    """Upsert one of our platform invoices, keyed by source_file (the bucket path) so
+    the ingest Action can re-run safely without creating duplicates."""
+    row = {
+        "saved_at": dt.datetime.now().isoformat(timespec="seconds"),
+        "invoice_no": str(inv.get("invoice_no") or ""),
+        "platform": inv.get("platform"),
+        "company": inv.get("company") or "",
+        "invoice_date": inv.get("invoice_date") or "",
+        "total_inc_gst": round(float(inv.get("total_inc_gst") or 0), 2),
+        "confidence": inv.get("confidence"),
+        "source_file": source_file,
+    }
+    if _use_supabase():
+        _client().table("drive_invoices").upsert(row, on_conflict="source_file").execute()
+    else:
+        _ensure_csv(DRIVE_INV_PATH, DRIVE_INV_COLUMNS)
+        df = pd.read_csv(DRIVE_INV_PATH)
+        df = df[df["source_file"].astype(str) != source_file]
+        df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+        df.to_csv(DRIVE_INV_PATH, index=False)
+    return row
+
+
+def load_drive_invoices() -> pd.DataFrame:
+    if _use_supabase():
+        try:
+            data = _client().table("drive_invoices").select("*").execute().data
+        except Exception:
+            return pd.DataFrame(columns=DRIVE_INV_COLUMNS)  # table not created yet -> degrade
+        return (pd.DataFrame(data, columns=DRIVE_INV_COLUMNS) if data
+                else pd.DataFrame(columns=DRIVE_INV_COLUMNS))
+    _ensure_csv(DRIVE_INV_PATH, DRIVE_INV_COLUMNS)
+    df = pd.read_csv(DRIVE_INV_PATH)
+    return df if not df.empty else pd.DataFrame(columns=DRIVE_INV_COLUMNS)
+
+
+def drive_invoice_already_ingested(source_file: str) -> bool:
+    """True if this bucket file is already recorded (lets the ingest skip re-reads)."""
+    if _use_supabase():
+        try:
+            data = (_client().table("drive_invoices").select("source_file")
+                    .eq("source_file", source_file).limit(1).execute().data)
+            return bool(data)
+        except Exception:
+            return False
+    if not os.path.exists(DRIVE_INV_PATH):
+        return False
+    df = pd.read_csv(DRIVE_INV_PATH)
     return not df.empty and (df["source_file"].astype(str) == source_file).any()
 
 

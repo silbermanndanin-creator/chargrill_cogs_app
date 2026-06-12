@@ -95,6 +95,37 @@ hit **Run workflow** on the GitHub Action) it appears in the app.
 
 ---
 
+## Second flow: Drive Catering folder → app (keeps receivables current)
+
+Every invoice you file in the Google Drive **Catering** folder gets mirrored into the
+app: platform invoices (Hampr / Yordar / Eat First — read from the bill-to INSIDE the
+PDF, so a typo'd filename still counts) are recorded so the 💰 payments & outstanding
+table can flag delivered orders with **no invoice raised yet**; direct-customer
+invoices (OLSH, UNSW, Swans…) are ignored automatically.
+
+At **make.powerautomate.com** → **Create** → **Automated cloud flow**:
+
+**Trigger:** *Google Drive — When a file is created* (sign in with the Drive account)
+- Folder: the **Catering** folder
+
+**Action 1:** *Google Drive — Get file content* — File: the trigger's **File ID**.
+
+**Action 2:** *HTTP* — same headers as the invoices flow (`apikey`, `Authorization`,
+`Content-Type: application/octet-stream`, `x-upsert: true`), Method `POST`,
+**Body**: the *File content* output of Action 1, and **URI** (via the **fx** editor):
+
+```
+concat('https://zelbbsvthqbxelraogac.supabase.co/storage/v1/object/invoices/drive_invoices/', encodeUriComponent(triggerOutputs()?['body/Name']))
+```
+
+That's it — the "Drive invoice ingest" GitHub Action (every ~6 h, or run it on demand)
+reads each new PDF, records platform invoices, and parks everything else in
+`drive_invoices/ignored/`. No PDF condition is needed in the flow; the ingest sorts
+that out. Only files added AFTER the flow goes live arrive — the existing backlog is
+already covered by the one-off "Catering backfill" Action.
+
+---
+
 ## What lands where in the bucket
 - **(root)** — new PDFs waiting for the next ingest run.
 - **processed/** — PDFs saved as invoices (including review files you accepted).

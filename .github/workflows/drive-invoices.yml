@@ -1,0 +1,34 @@
+name: Drive invoice ingest
+
+# Reads the platform invoices that Power Automate mirrors from the Google Drive
+# "Catering" folder into drive_invoices/ of the catering bucket, records them, and
+# flags delivered orders with no invoice raised. Every 6 hours is plenty — a few
+# invoices a week are filed. Run on demand from the Actions tab any time.
+#
+# Requires repo secrets: SUPABASE_URL, SUPABASE_KEY, ANTHROPIC_API_KEY
+
+on:
+  schedule:
+    - cron: "20 */6 * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: drive-invoices
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: pip install anthropic supabase pandas pydantic Pillow
+      - name: Ingest Drive invoices
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python drive_invoice_ingest.py

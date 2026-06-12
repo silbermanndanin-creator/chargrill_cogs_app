@@ -1,0 +1,26 @@
+name: Catering backfill
+
+# One-shot: loads the outstanding catering platform invoices from the Drive
+# reconciliation (Catering Platform Reconciliation.xlsx, 11 Jun 2026) into
+# catering_orders, so incoming Hampr/Yordar/Eat First remittances have orders
+# to tick off. Run it from the Actions tab ("Run workflow"). Safe to re-run —
+# rows upsert on source_file.
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: pip install supabase pandas
+      - name: Backfill catering orders
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python catering_backfill.py
