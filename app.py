@@ -3039,7 +3039,9 @@ if tab_cater is not None:
                        "money received will be less than the order totals shown here.")
 
             if not unpaid.empty:
-                show = unpaid.sort_values("_dd")
+                # Newest delivery first — the fresh orders are the ones being acted
+                # on; the old stragglers sink to the bottom of the table.
+                show = unpaid.sort_values("_dd", ascending=False)
                 # Which unpaid orders have one of OUR invoices raised? Rows that were
                 # created from an invoice (source driveback/INV…) trivially have; rows
                 # from the order feed are matched against the Drive Catering-folder
