@@ -1,7 +1,8 @@
 """Drive Catering-folder invoice ingest — runs headless (GitHub Actions cron).
 
-A Power Automate flow watches the Google Drive "Catering" folder (where the owner
-files every invoice raised to a catering platform) and copies each new PDF into
+A Google Apps Script (see POWER_AUTOMATE_SETUP.md) watches the Google Drive
+"Catering" folder (where the owner files every invoice raised to a catering
+platform) and copies each new PDF into
   drive_invoices/<file>
 of the catering Storage bucket. This script reads each new file with Claude and:
 
@@ -148,6 +149,20 @@ def order_exists(orders_df, platform, total, date_iso) -> bool:
     return False
 
 
+def _move(bucket, src, dest):
+    """Best-effort bucket move: on a name clash (the same file mirrored twice — once
+    before and once after it was archived) suffix with a timestamp rather than crash,
+    so one stuck file can never wedge the whole run."""
+    try:
+        bucket.move(src, dest)
+    except Exception:
+        try:
+            stamp = date_mod.datetime.now().strftime("%Y%m%d-%H%M%S")
+            bucket.move(src, f"{dest}.{stamp}")
+        except Exception:
+            pass  # leave it; the next run retries
+
+
 def main():
     url, key = os.environ.get("SUPABASE_URL"), os.environ.get("SUPABASE_KEY")
     if not (url and key):
@@ -174,12 +189,12 @@ def main():
     for name in names:
         path = f"{FOLDER}/{name}"
         if not name.lower().endswith(".pdf"):
-            bucket.move(path, f"{FOLDER}/ignored/{name}")
+            _move(bucket, path, f"{FOLDER}/ignored/{name}")
             ignored += 1
             print(f"[drive-inv] ignored {name}: not a PDF -> ignored/")
             continue
         if storage.drive_invoice_already_ingested(path):
-            bucket.move(path, f"{FOLDER}/done/{name}")
+            _move(bucket, path, f"{FOLDER}/done/{name}")
             print(f"[drive-inv] skip   {name}: already recorded -> done/")
             continue
         try:
@@ -189,7 +204,7 @@ def main():
             if platform is None:
                 # Billed direct (OLSH, UNSW, Swans…) — paid direct, not a platform
                 # receivable. Parked unrecorded, recoverable from the bucket.
-                bucket.move(path, f"{FOLDER}/ignored/{name}")
+                _move(bucket, path, f"{FOLDER}/ignored/{name}")
                 ignored += 1
                 print(f"[drive-inv] ignored {name}: billed to {inv.bill_to!r} "
                       "(direct customer) -> ignored/")
@@ -214,7 +229,7 @@ def main():
                 print(f"[drive-inv] saved  {line} — no captured order, added as receivable")
             else:
                 print(f"[drive-inv] saved  {line} — matches a captured order")
-            bucket.move(path, f"{FOLDER}/done/{name}")
+            _move(bucket, path, f"{FOLDER}/done/{name}")
         except Exception as e:
             failed += 1
             print(f"[drive-inv] FAILED {name}: {e!r} — left in place for retry")

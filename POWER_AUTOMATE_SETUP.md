@@ -95,7 +95,7 @@ hit **Run workflow** on the GitHub Action) it appears in the app.
 
 ---
 
-## Second flow: Drive Catering folder → app (keeps receivables current)
+## Drive Catering folder → app (keeps receivables current)
 
 Every invoice you file in the Google Drive **Catering** folder gets mirrored into the
 app: platform invoices (Hampr / Yordar / Eat First — read from the bill-to INSIDE the
@@ -103,26 +103,63 @@ PDF, so a typo'd filename still counts) are recorded so the 💰 payments & outs
 table can flag delivered orders with **no invoice raised yet**; direct-customer
 invoices (OLSH, UNSW, Swans…) are ignored automatically.
 
-At **make.powerautomate.com** → **Create** → **Automated cloud flow**:
+The mirror is a small **Google Apps Script** running inside the Google account that
+owns the folder (Power Automate's Google Drive trigger isn't available on all
+tenants, and this needs no premium connector at all):
 
-**Trigger:** *Google Drive — When a file is created* (sign in with the Drive account)
-- Folder: the **Catering** folder
+1. Go to **script.google.com** (signed in as the Drive account) → **New project**.
+2. Replace the editor contents with the script below.
+3. **Project Settings (⚙) → Script properties → Add script property**:
+   name `SUPABASE_KEY`, value = the Supabase service_role key (kept out of the code).
+4. Back in the editor: **Run** once → grant the Drive + external-request permissions
+   it asks for → check the log says `uploaded N new file(s)`.
+5. **Triggers (⏰) → Add trigger**: function `syncCateringFolder`, event source
+   *Time-driven*, *Hour timer*, *Every hour* → **Save**.
 
-**Action 1:** *Google Drive — Get file content* — File: the trigger's **File ID**.
+```javascript
+// Mirrors new PDFs from the Drive "Catering" folder into the Supabase bucket
+// folder invoices/drive_invoices/, where the app's "Drive invoice ingest"
+// GitHub Action picks them up. Uploaded file ids are remembered in Script
+// Properties so each file is sent once; x-upsert makes any repeat harmless.
+const FOLDER_ID = '1k9hW0r-9XqhIKykG5vfIe5_5oGD0Xyjd';   // the Catering folder
+const SUPABASE_URL = 'https://zelbbsvthqbxelraogac.supabase.co';
 
-**Action 2:** *HTTP* — same headers as the invoices flow (`apikey`, `Authorization`,
-`Content-Type: application/octet-stream`, `x-upsert: true`), Method `POST`,
-**Body**: the *File content* output of Action 1, and **URI** (via the **fx** editor):
-
+function syncCateringFolder() {
+  const props = PropertiesService.getScriptProperties();
+  const key = props.getProperty('SUPABASE_KEY');
+  if (!key) throw new Error('Add SUPABASE_KEY under Project Settings -> Script properties');
+  const doneSet = new Set(JSON.parse(props.getProperty('UPLOADED_IDS') || '[]'));
+  const files = DriveApp.getFolderById(FOLDER_ID).getFiles();  // top level only
+  let uploaded = 0;
+  while (files.hasNext()) {
+    const f = files.next();
+    if (doneSet.has(f.getId())) continue;
+    if (f.getMimeType() !== 'application/pdf') { doneSet.add(f.getId()); continue; }
+    const resp = UrlFetchApp.fetch(
+      SUPABASE_URL + '/storage/v1/object/invoices/drive_invoices/' +
+        encodeURIComponent(f.getName()),
+      { method: 'post',
+        contentType: 'application/octet-stream',
+        headers: { apikey: key, Authorization: 'Bearer ' + key, 'x-upsert': 'true' },
+        payload: f.getBlob().getBytes(),
+        muteHttpExceptions: true });
+    if (resp.getResponseCode() < 300) { doneSet.add(f.getId()); uploaded++; }
+    else console.error(f.getName() + ': HTTP ' + resp.getResponseCode() + ' ' +
+                       resp.getContentText());
+  }
+  props.setProperty('UPLOADED_IDS', JSON.stringify([...doneSet]));
+  console.log('uploaded ' + uploaded + ' new file(s)');
+}
 ```
-concat('https://zelbbsvthqbxelraogac.supabase.co/storage/v1/object/invoices/drive_invoices/', encodeUriComponent(triggerOutputs()?['body/Name']))
-```
 
-That's it — the "Drive invoice ingest" GitHub Action (every ~6 h, or run it on demand)
-reads each new PDF, records platform invoices, and parks everything else in
-`drive_invoices/ignored/`. No PDF condition is needed in the flow; the ingest sorts
-that out. Only files added AFTER the flow goes live arrive — the existing backlog is
-already covered by the one-off "Catering backfill" Action.
+Notes:
+- The FIRST run uploads every PDF already at the top level of the folder (subfolders
+  like paid/ are not touched). The ingest dedupes against the backfill, so nothing
+  double-counts — but move known duplicate PDFs (e.g. an invoice you've voided) into
+  the paid/ subfolder first so they aren't recorded.
+- The "Drive invoice ingest" GitHub Action (every ~6 h, or run on demand) reads each
+  new PDF, records platform invoices, and parks everything else in
+  `drive_invoices/ignored/`.
 
 ---
 
