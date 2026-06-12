@@ -710,13 +710,16 @@ df = c_load_invoices()
 lines = c_explode_lines()
 
 # Header month totals — pinned to the month containing the selected period, so
-# they hold steady while toggling between weeks of that month. Same sources as
-# the dashboard: food_cogs_for_period (headline COGS) + labour_for_period.
+# they hold steady while toggling between weeks of that month. Shown as % of
+# month revenue (POS slips first, manual entry fallback — same as chef logic).
 _hdr_month_key = ref.strftime("%Y-%m")
 _hdr_month_cogs = metrics.food_cogs_for_period(df, "month", _hdr_month_key)
 _hdr_lab_cost, _hdr_lab_hours, _hdr_foh, _hdr_boh = c_labour_for_period("Month", _hdr_month_key)
+_hdr_month_rev = (float(metrics.pos_revenue_map(pos_df, "month").get(_hdr_month_key, 0.0))
+                  or float(c_revenue_map("month").get(_hdr_month_key, 0.0)))
+_hdr_cogs_val = f"{_hdr_month_cogs/_hdr_month_rev*100:.1f}%" if _hdr_month_rev > 0 else "—"
 if owner:  # wages are owner-only; chef sees hours (matches sidebar/dashboard gating)
-    _hdr_lab_val = f"${_hdr_lab_cost:,.0f}" if _hdr_lab_cost else "—"
+    _hdr_lab_val = f"{_hdr_lab_cost/_hdr_month_rev*100:.1f}%" if _hdr_month_rev > 0 and _hdr_lab_cost else "—"
 else:
     _hdr_lab_val = f"{_hdr_lab_hours:g} hrs" if _hdr_lab_hours else "—"
 
@@ -735,7 +738,7 @@ st.markdown(f"""<div class="appbar">
   </div>
   <div class="appbar-stats">
     <div class="hstat"><span class="hl">{ref:%b} COGS</span>
-      <span class="hv">{f"${_hdr_month_cogs:,.0f}" if _hdr_month_cogs else "—"}</span></div>
+      <span class="hv">{_hdr_cogs_val}</span></div>
     <div class="hstat"><span class="hl">{ref:%b} labour</span>
       <span class="hv">{_hdr_lab_val}</span></div>
     <div class="appbar-period">{period_label}</div>
