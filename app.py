@@ -1949,6 +1949,34 @@ with tab_list:
                 st.session_state.pop("review_sel", None)
                 st.rerun()
 
+            # ---- Bulk delete: tick several files, clear them in one click. A form so
+            # ticking boxes doesn't rerun the app until the button is pressed. Deleted
+            # files go to ignored/ like a Dismiss (never counted, recoverable from the
+            # bucket), so a mis-tick is never data loss.
+            st.markdown("---")
+            with st.form("review_bulk_form", clear_on_submit=True):
+                st.markdown("**Delete several at once** — tick files, then press the "
+                            "button. They're set aside without being counted (moved to "
+                            "ignored/ in storage, so nothing is ever lost).")
+                _rticks = []
+                for _ri, _rn in enumerate(_rnames):
+                    _rlbl = storage.display_name(_rn) + (
+                        f"  ·  received {_rwhen[_rn]}" if _rwhen.get(_rn) else "")
+                    if st.checkbox(_rlbl, key=f"review_bulk_{_ri}"):
+                        _rticks.append(_rn)
+                if st.form_submit_button("🗑 Delete selected"):
+                    if _rticks:
+                        for _rn in _rticks:
+                            storage.review_dismiss(_rn)
+                        bust_caches()
+                        st.session_state["review_flash"] = (
+                            f"Deleted {len(_rticks)} file(s) — moved to ignored/, "
+                            "not counted.")
+                        st.session_state.pop("review_sel", None)
+                        st.rerun()
+                    else:
+                        st.warning("Nothing ticked — tick at least one file first.")
+
     if df.empty:
         st.info("No invoices submitted yet — add one in **📸 Add invoice**.")
     else:

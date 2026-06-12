@@ -69,16 +69,26 @@ At **make.powerautomate.com** → **Create** → **Automated cloud flow**.
 | Field | Value |
 |---|---|
 | **Method** | `POST` |
-| **URI** | `https://zelbbsvthqbxelraogac.supabase.co/storage/v1/object/invoice_inbox/@{guid()}_@{encodeUriComponent(items('Apply_to_each')?['Name'])}` |
+| **URI** | the expression in the block below (copy it exactly) |
 | **Headers** | `apikey` = `<YOUR SUPABASE SERVICE_ROLE KEY>`<br>`Authorization` = `Bearer <YOUR SUPABASE SERVICE_ROLE KEY>`<br>`Content-Type` = `application/octet-stream`<br>`x-upsert` = `true` |
 | **Body** | expression: `base64ToBinary(items('Apply_to_each')?['ContentBytes'])` |
+
+```
+https://zelbbsvthqbxelraogac.supabase.co/storage/v1/object/invoice_inbox/@{ticks(utcNow())}_b64_@{replace(replace(replace(base64(concat(triggerOutputs()?['body/from'], '|', items('Apply_to_each')?['Name'])), '+', '-'), '/', '_'), '=', '')}.pdf
+```
 
 - The **service_role key** is in Supabase dashboard → **Settings** → **API** →
   `service_role` (the secret one). It's the same key as `SUPABASE_KEY`. **Never** paste
   it into a file that gets committed to GitHub — only into the Power Automate header box.
-- `@{guid()}_…` just gives every file a unique name so two invoices never clash. The
-  original filename (and its `.pdf`/`.jpg` extension) is kept on the end, which the
-  reader needs.
+- The URI expression packs `<sender email>|<attachment name>` into an ASCII-safe
+  base64 token (Supabase rejects keys with special characters), with `ticks(utcNow())`
+  in front so two uploads never clash. The app decodes it back and shows
+  **sender — attachment.pdf** everywhere (review queue, downloads, logs) — e.g.
+  `bidfood — Invoice 12345.pdf` — so files are identifiable without opening them.
+
+**Already have the flow running?** Only the **URI** changed — open the flow, edit the
+HTTP action, and replace the URI with the value above (everything else stays the same).
+Files uploaded before the change just keep showing the attachment name without a sender.
 
 **Save**, then send a test email with a PDF to that inbox. Within ~15 min (or after you
 hit **Run workflow** on the GitHub Action) it appears in the app.
@@ -89,10 +99,13 @@ hit **Run workflow** on the GitHub Action) it appears in the app.
 - **(root)** — new PDFs waiting for the next ingest run.
 - **processed/** — PDFs saved as invoices (including review files you accepted).
 - **review/** — PDFs the ingest didn't auto-save: statements, credit notes, orders, or an
-  invoice from a supplier the app doesn't recognise. Handle these in the app:
+  invoice from a supplier the app doesn't recognise. The ingest renames each file with
+  what it found (e.g. `Statement · Bidfood — <original name>.pdf`), so the queue is
+  identifiable at a glance without downloading anything. Handle these in the app:
   **📋 Invoices → 📥 Emailed invoices needing review** → view the PDF, then **Accept**
   (reads + saves it as an invoice and moves the PDF to processed/) or **Dismiss**
-  (moves it to ignored/ without counting it).
+  (moves it to ignored/ without counting it). To clear several at once, tick them in
+  the **Delete several at once** list and press **🗑 Delete selected**.
 - **ignored/** — non-PDF attachments that slipped past the flow's PDF condition, plus
   anything you dismissed. Never read, never shown; kept in case it's ever needed.
 

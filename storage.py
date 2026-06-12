@@ -296,6 +296,23 @@ def _is_pdf(name) -> bool:
     return str(name).lower().endswith(".pdf")
 
 
+# Freemail domains where the mailbox name (not the domain) identifies the sender.
+_FREEMAIL = {"gmail", "googlemail", "hotmail", "outlook", "live", "msn", "yahoo",
+             "icloud", "me", "aol", "proton", "protonmail", "bigpond", "optusnet",
+             "tpg", "iinet", "westnet"}
+
+
+def sender_name(addr) -> str:
+    """Short human name pulled from an email address: the company domain for business
+    senders ('accounts@bidfood.com.au' -> 'bidfood'), or the mailbox name for
+    personal/freemail senders ('jo.bloggs@gmail.com' -> 'jo.bloggs')."""
+    local, _, domain = str(addr).strip().strip("<>").partition("@")
+    root = domain.split(".")[0].strip().lower()
+    if not root or root in _FREEMAIL:
+        return local.strip() or str(addr).strip()
+    return root
+
+
 def display_name(name) -> str:
     """Human-readable form of a bucket file name.
 
@@ -303,7 +320,11 @@ def display_name(name) -> str:
     apostrophe in an attachment name 400s the upload), so the Power Automate flows
     upload as '<ticks>_b64_<urlsafe-base64-of-original-name>.pdf'. Decode that back to
     the original attachment name for anything a human reads (the app's review queue,
-    ingest/triage logs). Plain names (older uploads) pass through unchanged."""
+    ingest/triage logs). Plain names (older uploads) pass through unchanged.
+
+    Newer flows prepend the sender's email address inside the encoded name as
+    '<sender@addr>|<attachment name>' (see POWER_AUTOMATE_SETUP.md) — rendered here as
+    'sender — attachment.pdf' so every file says who emailed it."""
     s = str(name)
     m = re.match(r"^\d+_b64_(.+)\.pdf$", s, re.IGNORECASE)
     if not m:
@@ -311,9 +332,31 @@ def display_name(name) -> str:
     token = m.group(1).replace("-", "+").replace("_", "/")
     token += "=" * (-len(token) % 4)
     try:
-        return base64.b64decode(token).decode("utf-8", "replace")
+        decoded = base64.b64decode(token).decode("utf-8", "replace")
     except Exception:
         return s
+    sender, sep, rest = decoded.partition("|")
+    if sep and "@" in sender:
+        return f"{sender_name(sender)} — {rest.strip()}"
+    return decoded
+
+
+def encode_name(display, ticks=None) -> str:
+    """Inverse of display_name(): pack any human-readable name into the ASCII-safe
+    '<ticks>_b64_<urlsafe-base64>.pdf' form that Supabase Storage accepts as a key."""
+    token = base64.urlsafe_b64encode(str(display).encode("utf-8")).decode("ascii").rstrip("=")
+    if ticks is None:
+        ticks = int(dt.datetime.now().timestamp())
+    return f"{ticks}_b64_{token}.pdf"
+
+
+def relabel(name, label) -> str:
+    """Bucket name for `name` with a human-readable label stitched in front of the
+    original attachment name, e.g. 'Statement · Bidfood — scan0042.pdf' — so the
+    review queue is identifiable without downloading anything. The original ticks
+    are kept, preserving received-order on a rename-in-place."""
+    m = re.match(r"^(\d+)_b64_", str(name))
+    return encode_name(f"{label} — {display_name(name)}", m.group(1) if m else None)
 
 
 # Supabase Storage list() returns only 100 entries by default — with a backlog in the
@@ -361,11 +404,11 @@ def inbox_download(name) -> bytes:
     return _client().storage.from_(INBOX_BUCKET).download(name)
 
 
-def _inbox_move(path, folder):
+def _inbox_move(path, folder, new_name=None):
     """Move a handled file (root name or subfolder path like 'review/x.pdf') into a
-    subfolder of the inbox bucket so it isn't read again.
+    subfolder of the inbox bucket so it isn't read again, optionally renaming it.
     Best-effort: on a name clash (same file moved before) suffix with a timestamp."""
-    dest = f"{folder}/{os.path.basename(str(path))}"
+    dest = f"{folder}/{new_name or os.path.basename(str(path))}"
     bucket = _client().storage.from_(INBOX_BUCKET)
     try:
         bucket.move(path, dest)
@@ -382,11 +425,13 @@ def inbox_archive(name):
     _inbox_move(name, "processed")
 
 
-def inbox_review(name):
+def inbox_review(name, label=None):
     """Move a file that ISN'T a savable COGS invoice (a statement, credit note, or an
     unrecognised / non-COGS supplier) into review/ — surfaced in the app's review queue
-    for a human to accept or dismiss, but never counted until accepted."""
-    _inbox_move(name, "review")
+    for a human to accept or dismiss, but never counted until accepted. When the
+    triage knows WHY (a `label` like 'Statement · Bidfood'), it's stitched into the
+    filename so the queue is identifiable without downloading anything."""
+    _inbox_move(name, "review", new_name=relabel(name, label) if label else None)
 
 
 def inbox_ignore(name):
@@ -422,6 +467,12 @@ def review_accept(name):
     """An accepted review file has been saved as an invoice — archive it to processed/
     so the review queue (and the next ingest run) never sees it again."""
     _inbox_move(f"review/{name}", "processed")
+
+
+def review_relabel(name, label):
+    """Rename a file already sitting in review/ so its name carries a classification
+    label (see relabel) — used by review_triage.py to make the backlog identifiable."""
+    _inbox_move(f"review/{name}", "review", new_name=relabel(name, label))
 
 
 def review_dismiss(name):
