@@ -476,6 +476,11 @@ def c_catering_file(source_file):
 
 
 @st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def c_load_drive_invoices():
+    return storage.load_drive_invoices()
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
 def c_load_platform_remittances():
     return storage.load_platform_remittances()
 
@@ -2832,9 +2837,12 @@ if tab_cater is not None:
         st.divider()
         st.markdown("#### 💰 Platform payments & outstanding")
         st.caption("Hampr remittance advices, Yordar RGIs and Eat First RCTIs are pulled "
-                   "from your inbox and matched to the orders above by order number. A "
-                   "delivered order that isn't on any payment document yet is outstanding. "
-                   "Only orders captured since the catering feed went live are counted.")
+                   "from your inbox and matched to the orders above by order number — or "
+                   "by amount + date when the document carries none. A delivered order "
+                   "that isn't on any payment document yet is outstanding; **Invoiced** "
+                   "shows whether one of your invoices exists for it (mirrored from the "
+                   "Drive Catering folder), so '— raise invoice' means money you can't "
+                   "be paid yet.")
 
         rdf = c_load_platform_remittances()
         RECON_PLATFORMS = ("Hampr", "Eat First", "Yordar")
@@ -2946,6 +2954,42 @@ if tab_cater is not None:
 
             if not unpaid.empty:
                 show = unpaid.sort_values("_dd")
+                # Which unpaid orders have one of OUR invoices raised? Rows that were
+                # created from an invoice (source driveback/INV…) trivially have; rows
+                # from the order feed are matched against the Drive Catering-folder
+                # mirror (drive_invoices) by platform + inc-GST total (±2c) + date
+                # (±7 days), each invoice vouching for at most one order.
+                _inv_sp = []
+                _ddf = c_load_drive_invoices()
+                if not _ddf.empty:
+                    for _, _ir in _ddf.iterrows():
+                        try:
+                            _ia = float(_ir.get("total_inc_gst") or 0)
+                        except (TypeError, ValueError):
+                            _ia = 0.0
+                        _inv_sp.append({"platform": str(_ir.get("platform") or ""),
+                                        "amount": _ia,
+                                        "date": _d(_ir.get("invoice_date")),
+                                        "used": False})
+
+                def _invoiced(r):
+                    if str(r.get("source_file") or "").startswith("driveback/INV"):
+                        return True
+                    try:
+                        _tot = float(r.get("items_total") or 0)
+                    except (TypeError, ValueError):
+                        return False
+                    for _sp in _inv_sp:
+                        if _sp["used"] or _sp["platform"] != str(r.get("platform") or ""):
+                            continue
+                        if abs(_sp["amount"] - _tot) > 0.02:
+                            continue
+                        if _sp["date"] and abs((_sp["date"] - r["_dd"]).days) > 7:
+                            continue
+                        _sp["used"] = True
+                        return True
+                    return False
+
                 st.dataframe(
                     pd.DataFrame({
                         "Delivered": show["_dd"].map(lambda d_: f"{d_:%a %d %b}"),
@@ -2954,6 +2998,8 @@ if tab_cater is not None:
                         "Order #": show["order_ref"],
                         "Total $": pd.to_numeric(show["items_total"], errors="coerce")
                                      .fillna(0).map(lambda v: f"{v:,.2f}"),
+                        "Invoiced": ["✓" if _invoiced(r) else "— raise invoice"
+                                     for _, r in show.iterrows()],
                     }),
                     hide_index=True, width="stretch")
             elif not odf.empty:

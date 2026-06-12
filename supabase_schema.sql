@@ -247,6 +247,22 @@ create table if not exists platform_remittances (
     source_file   text unique           -- bucket path; enables upsert / dedupe
 );
 
+-- Our own invoices TO the catering platforms, mirrored from the Google Drive
+-- "Catering" folder (Power Automate copies new PDFs into drive_invoices/ of the
+-- catering bucket; drive_invoice_ingest.py reads the platform ones). Lets the app
+-- flag delivered platform orders with no invoice raised yet.
+create table if not exists drive_invoices (
+    id             bigint generated always as identity primary key,
+    saved_at       text,
+    invoice_no     text,                -- our invoice number ('1061')
+    platform       text,                -- 'Hampr' | 'Eat First' | 'Yordar'
+    company        text,                -- end customer in the line description (Rokt, DHL…)
+    invoice_date   text,                -- YYYY-MM-DD
+    total_inc_gst  numeric,             -- BALANCE DUE inc GST (what the platform deposits)
+    confidence     text,
+    source_file    text unique          -- bucket path; enables upsert / dedupe
+);
+
 -- This app runs server-side on Streamlit Cloud and connects with the service_role
 -- key, so Row Level Security is not required. If you prefer to enable RLS, add
 -- policies that allow the service role full access.
