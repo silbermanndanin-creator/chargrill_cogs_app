@@ -338,44 +338,67 @@ def display_name(name) -> str:
 
     Supabase Storage rejects keys with characters outside a small ASCII set (a curly
     apostrophe in an attachment name 400s the upload), so the Power Automate flows
-    upload as '<ticks>_b64_<urlsafe-base64-of-original-name>.pdf'. Decode that back to
+    upload as '<prefix>_b64_<urlsafe-base64-of-original-name>.pdf'. Decode that back to
     the original attachment name for anything a human reads (the app's review queue,
     ingest/triage logs). Plain names (older uploads) pass through unchanged.
 
     Newer flows prepend the sender's email address inside the encoded name as
     '<sender@addr>|<attachment name>' (see POWER_AUTOMATE_SETUP.md) — rendered here as
     'sender — attachment.pdf' so every file says who emailed it."""
-    s = str(name)
-    m = re.match(r"^\d+_b64_(.+)\.pdf$", s, re.IGNORECASE)
-    if not m:
-        return s
-    token = m.group(1).replace("-", "+").replace("_", "/")
-    token += "=" * (-len(token) % 4)
-    try:
-        decoded = base64.b64decode(token).decode("utf-8", "replace")
-    except Exception:
-        return s
+    decoded = _decode_name(name)
+    if decoded is None:
+        return str(name)
     sender, sep, rest = decoded.partition("|")
     if sep and "@" in sender:
         return f"{sender_name(sender)} — {rest.strip()}"
     return decoded
 
 
-def encode_name(display, ticks=None) -> str:
+def _decode_name(name):
+    """The decoded '<sender>|<attachment>' (or plain attachment) string packed into a
+    '<prefix>_b64_<urlsafe-base64>.pdf' bucket key, or None for a plain/older name.
+    The prefix is upload-specific (a per-email message id on current uploads, an epoch
+    timestamp on older ones) and is underscore-free, so the first '_b64_' is the real
+    delimiter even though the urlsafe token after it may contain underscores."""
+    m = re.match(r"^[^_]+_b64_(.+)\.pdf$", str(name), re.IGNORECASE)
+    if not m:
+        return None
+    token = m.group(1).replace("-", "+").replace("_", "/")
+    token += "=" * (-len(token) % 4)
+    try:
+        return base64.b64decode(token).decode("utf-8", "replace")
+    except Exception:
+        return None
+
+
+def sender_of(name):
+    """The raw sender email packed into a bucket file name ('<sender>|<attachment>'),
+    or None for older uploads that don't encode one. Lets the inbox decide whether a
+    file is from a known supplier before paying for a Claude read."""
+    decoded = _decode_name(name)
+    if decoded is None:
+        return None
+    sender, sep, _ = decoded.partition("|")
+    return sender.strip() if (sep and "@" in sender) else None
+
+
+def encode_name(display, prefix=None) -> str:
     """Inverse of display_name(): pack any human-readable name into the ASCII-safe
-    '<ticks>_b64_<urlsafe-base64>.pdf' form that Supabase Storage accepts as a key."""
+    '<prefix>_b64_<urlsafe-base64>.pdf' form that Supabase Storage accepts as a key.
+    `prefix` must be underscore-free (it delimits the token); defaults to an epoch
+    timestamp for app-side renames, where uniqueness — not idempotency — is wanted."""
     token = base64.urlsafe_b64encode(str(display).encode("utf-8")).decode("ascii").rstrip("=")
-    if ticks is None:
-        ticks = int(dt.datetime.now().timestamp())
-    return f"{ticks}_b64_{token}.pdf"
+    if prefix is None:
+        prefix = str(int(dt.datetime.now().timestamp()))
+    return f"{prefix}_b64_{token}.pdf"
 
 
 def relabel(name, label) -> str:
     """Bucket name for `name` with a human-readable label stitched in front of the
     original attachment name, e.g. 'Statement · Bidfood — scan0042.pdf' — so the
-    review queue is identifiable without downloading anything. The original ticks
-    are kept, preserving received-order on a rename-in-place."""
-    m = re.match(r"^(\d+)_b64_", str(name))
+    review queue is identifiable without downloading anything. The original upload
+    prefix is kept so a rename-in-place doesn't change the file's identity."""
+    m = re.match(r"^([^_]+)_b64_", str(name))
     return encode_name(f"{label} — {display_name(name)}", m.group(1) if m else None)
 
 

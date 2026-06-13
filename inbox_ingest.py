@@ -11,6 +11,9 @@ Design choices for "never miss / 100% accurate":
   - PDF-ONLY: real supplier invoices arrive as PDF attachments. Anything else that
     rides along on an email (signature logos, inline images, calendar invites) is swept
     into ignored/ unread — so only PDFs ever reach processed/ or review/.
+  - SENDER GATE FIRST (config.supplier_for_sender): the upload name carries the sender
+    email, so mail from anyone who isn't a known supplier is moved to review/ UNREAD —
+    we never pay Claude to read a newsletter. Only our suppliers' mail reaches the triage.
   - TRIAGE FIRST (extract.classify_document): suppliers also email statements (which
     sum a whole month into one big total), credit notes and the odd non-COGS expense.
     Only a single invoice from a recognised COGS supplier (config.SUPPLIERS) is saved;
@@ -143,7 +146,7 @@ def main():
 
     print(f"[inbox] {len(files)} file(s) to process")
     client = anthropic.Anthropic()
-    saved = dups = reviewed = failed = ignored = 0
+    saved = dups = reviewed = failed = ignored = nonsupplier = 0
     # Exact byte-duplicates (the same attachment uploaded under several names —
     # the backlog from before the flows used deterministic filenames) are detected
     # by hash BEFORE the Claude read, so each unique document is paid for once.
@@ -164,6 +167,17 @@ def main():
             print(f"[inbox] ignored {disp}: exact copy of {storage.display_name(first)} -> ignored/")
             continue
         seen_hashes[digest] = name
+        # Sender gate BEFORE any Claude read: the upload name carries the sender email, so
+        # mail from anyone who isn't a known supplier (newsletters, the odd PDF on a normal
+        # email) goes straight to review/ unread — we only pay to extract our suppliers'
+        # invoices. A human can still rescue a real invoice from review/. Older uploads with
+        # no encoded sender fall through to the full triage, so nothing is missed.
+        sender = storage.sender_of(name)
+        if sender and config.supplier_for_sender(sender) is None:
+            storage.inbox_review(name, label=f"Non-supplier sender · {storage.sender_name(sender)}")
+            nonsupplier += 1
+            print(f"[inbox] review {disp}: {sender} is not a known supplier -> review/ (no read)")
+            continue
         try:
             status, supplier, total, conf, reason, label = process_one(name, mt, client, raw=raw)
         except Exception as e:
@@ -190,6 +204,7 @@ def main():
             print(f"[inbox] duplicate {disp}: {supplier} ${total:,.2f} — skipped")
 
     print(f"[inbox] done: {saved} saved, {dups} duplicate(s), {reviewed} for review, "
+          f"{nonsupplier} non-supplier sender(s) -> review (unread), "
           f"{ignored} exact cop(ies) ignored, {failed} failed")
 
 

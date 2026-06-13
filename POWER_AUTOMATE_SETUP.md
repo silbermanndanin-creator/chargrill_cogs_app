@@ -74,21 +74,28 @@ At **make.powerautomate.com** → **Create** → **Automated cloud flow**.
 | **Body** | expression: `base64ToBinary(items('Apply_to_each')?['ContentBytes'])` |
 
 ```
-https://zelbbsvthqbxelraogac.supabase.co/storage/v1/object/invoice_inbox/@{ticks(utcNow())}_b64_@{replace(replace(replace(base64(concat(triggerOutputs()?['body/from'], '|', items('Apply_to_each')?['Name'])), '+', '-'), '/', '_'), '=', '')}.pdf
+https://zelbbsvthqbxelraogac.supabase.co/storage/v1/object/invoice_inbox/@{replace(replace(replace(base64(triggerOutputs()?['body/internetMessageId']), '+', '-'), '/', '-'), '=', '')}_b64_@{replace(replace(replace(base64(concat(triggerOutputs()?['body/from'], '|', items('Apply_to_each')?['Name'])), '+', '-'), '/', '_'), '=', '')}.pdf
 ```
 
 - The **service_role key** is in Supabase dashboard → **Settings** → **API** →
   `service_role` (the secret one). It's the same key as `SUPABASE_KEY`. **Never** paste
   it into a file that gets committed to GitHub — only into the Power Automate header box.
-- The URI expression packs `<sender email>|<attachment name>` into an ASCII-safe
-  base64 token (Supabase rejects keys with special characters), with `ticks(utcNow())`
-  in front so two uploads never clash. The app decodes it back and shows
-  **sender — attachment.pdf** everywhere (review queue, downloads, logs) — e.g.
-  `bidfood — Invoice 12345.pdf` — so files are identifiable without opening them.
+- The URI has two base64 parts split by `_b64_`. The part **after** it packs
+  `<sender email>|<attachment name>` (Supabase rejects keys with special characters); the
+  app decodes it and shows **sender — attachment.pdf** everywhere (review queue, downloads,
+  logs) — e.g. `bidfood — Invoice 12345.pdf`. The part **before** it is the email's
+  `internetMessageId`, base64'd and made underscore-free.
+- **Why the message id, not `ticks(utcNow())`?** The key is now *deterministic*: if the
+  flow fires more than once for the same email (retries, re-delivery), every upload lands
+  on the **same** object name, so `x-upsert: true` overwrites it instead of dropping
+  another copy. With the old `ticks(utcNow())` prefix each fire made a new file, so the
+  same invoice piled up dozens of times in the bucket. (A genuinely re-sent invoice in a
+  *new* email is still caught later by the content dedupe, so it's never double-counted.)
 
 **Already have the flow running?** Only the **URI** changed — open the flow, edit the
 HTTP action, and replace the URI with the value above (everything else stays the same).
-Files uploaded before the change just keep showing the attachment name without a sender.
+The `x-upsert` header must be `true` (it already is in the table above). Files uploaded
+before the change keep working; new uploads simply stop duplicating.
 
 **Save**, then send a test email with a PDF to that inbox. Within ~15 min (or after you
 hit **Run workflow** on the GitHub Action) it appears in the app.

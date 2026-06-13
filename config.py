@@ -27,6 +27,10 @@ PRIME_RED = TOTAL_COGS_RED + LABOUR_RED
 # green_pct/red_pct = optional per-category COGS target (fraction of net ex-GST revenue);
 # omit when not yet calibrated. cogs=False = tracked but NOT counted toward food-COGS %
 # (packaging, cleaning). Order matters: canonicalize() returns the first matching category.
+# senders = optional list of extra email domains/addresses this supplier mails from, used
+# by supplier_for_sender() to let the inbox process their mail (and skip everyone else's)
+# WITHOUT a Claude read. Aliases are matched too, so add `senders` only when the sending
+# domain doesn't contain the supplier's name (e.g. "senders": ["bidfood.com.au"]).
 SUPPLIERS = {
     "Packaging": {"aliases": ["gleam", "horizon", "a-z packaging", "a z packaging",
                               "az packaging", "a-z paper", "az paper", "paper product",
@@ -63,6 +67,28 @@ def canonicalize(raw_name: str) -> str:
         if any(alias in n for alias in cfg["aliases"]):
             return canonical
     return FALLBACK_SUPPLIER
+
+
+def supplier_for_sender(addr: str):
+    """Canonical supplier this email address belongs to, or None if the sender isn't a
+    known supplier. Lets the inbox skip a (paid) Claude read on mail from anyone we're
+    not tracking — only our suppliers' emails get the full extraction pipeline.
+
+    Matches each category's aliases (and any extra addresses/domains in its optional
+    `senders` list) as substrings of the sender address. Separators are stripped too, so
+    a multi-word name like 'st george' matches a domain such as 'stgeorgefoods.com.au'.
+    To onboard a supplier whose sending domain doesn't contain its name, add the domain
+    (or full address) to that category's `senders` list above — no code change needed."""
+    full = (addr or "").strip().lower().strip("<>")
+    if "@" not in full:
+        return None
+    squashed = full.replace(".", "").replace("-", "").replace("_", "")
+    for canonical, cfg in SUPPLIERS.items():
+        for needle in list(cfg.get("aliases", [])) + list(cfg.get("senders", [])):
+            nd = needle.lower().strip()
+            if nd and (nd in full or nd.replace(" ", "") in squashed):
+                return canonical
+    return None
 
 
 def is_cogs(supplier: str) -> bool:
