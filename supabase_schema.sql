@@ -10,8 +10,19 @@ create table if not exists invoices (
     total_ex_gst  numeric,
     iso_week      text,
     month         text,
-    line_items    text          -- JSON string of [{description, quantity, unit, amount}, ...]
+    line_items    text,         -- JSON string of [{description, quantity, unit, amount}, ...]
+    source_file   text          -- inbox bucket key; deduped by the unique index below
 );
+
+-- Add the dedupe key on databases created before this column existed (the
+-- create-table above is a no-op once the table exists). The inbox cron stamps each
+-- saved invoice with the bucket file it came from and upserts on this key, so a file
+-- whose move to processed/ failed and gets re-read on the next run overwrites its own
+-- row instead of inserting a duplicate. NULL for manual / in-app uploads that have no
+-- bucket file — Postgres allows many NULLs under a UNIQUE index, and the app's content
+-- check (find_duplicate) still guards those.
+alter table invoices add column if not exists source_file text;
+create unique index if not exists invoices_source_file_key on invoices (source_file);
 
 create table if not exists revenue (
     period_type  text,

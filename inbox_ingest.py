@@ -119,7 +119,12 @@ def process_one(name, media_type, client, raw=None):
     if storage.find_duplicate(canonicalize(supplier_raw), invoice_date, total):
         return ("duplicate", supplier_raw, total, conf, "", None)
 
-    row = storage.save_invoice(supplier_raw, invoice_date, total, inv["line_items"])
+    # source_file=name stamps the bucket key onto the row and upserts on it, so if this
+    # file's move to processed/ fails and the next run re-reads it, it overwrites its own
+    # row instead of inserting a duplicate — the durable backstop behind find_duplicate,
+    # whose content match can miss when Claude re-reads the same scan slightly differently.
+    row = storage.save_invoice(supplier_raw, invoice_date, total, inv["line_items"],
+                               source_file=name)
     storage.save_invoice_image(row["saved_at"], raw, media_type)
     return ("saved", supplier_raw, total, conf, "", None)
 
