@@ -345,20 +345,38 @@ def display_name(name) -> str:
     Newer flows prepend the sender's email address inside the encoded name as
     '<sender@addr>|<attachment name>' (see POWER_AUTOMATE_SETUP.md) — rendered here as
     'sender — attachment.pdf' so every file says who emailed it."""
-    s = str(name)
-    m = re.match(r"^\d+_b64_(.+)\.pdf$", s, re.IGNORECASE)
-    if not m:
-        return s
-    token = m.group(1).replace("-", "+").replace("_", "/")
-    token += "=" * (-len(token) % 4)
-    try:
-        decoded = base64.b64decode(token).decode("utf-8", "replace")
-    except Exception:
-        return s
+    decoded = _decode_name(name)
+    if decoded is None:
+        return str(name)
     sender, sep, rest = decoded.partition("|")
     if sep and "@" in sender:
         return f"{sender_name(sender)} — {rest.strip()}"
     return decoded
+
+
+def _decode_name(name):
+    """The decoded '<sender>|<attachment>' (or plain attachment) string packed into a
+    '<ticks>_b64_<urlsafe-base64>.pdf' bucket key, or None for a plain/older name."""
+    m = re.match(r"^\d+_b64_(.+)\.pdf$", str(name), re.IGNORECASE)
+    if not m:
+        return None
+    token = m.group(1).replace("-", "+").replace("_", "/")
+    token += "=" * (-len(token) % 4)
+    try:
+        return base64.b64decode(token).decode("utf-8", "replace")
+    except Exception:
+        return None
+
+
+def sender_of(name):
+    """The raw sender email packed into a bucket file name ('<sender>|<attachment>'),
+    or None for older uploads that don't encode one. Lets the inbox decide whether a
+    file is from a known supplier before paying for a Claude read."""
+    decoded = _decode_name(name)
+    if decoded is None:
+        return None
+    sender, sep, _ = decoded.partition("|")
+    return sender.strip() if (sep and "@" in sender) else None
 
 
 def encode_name(display, ticks=None) -> str:
