@@ -28,7 +28,7 @@ LETTERS_COLUMNS = ["filename", "employee", "label", "file_b64", "saved_at"]
 EMP_DETAILS_PATH = os.path.join(DATA_DIR, "emp_details.csv")
 EMP_DETAILS_COLUMNS = ["employee", "agreement_date", "address1", "address2", "updated_at"]
 COLUMNS = ["saved_at", "supplier_raw", "supplier", "invoice_date",
-           "total_ex_gst", "iso_week", "month", "line_items"]
+           "total_ex_gst", "iso_week", "month", "line_items", "source_file"]
 REV_COLUMNS = ["period_type", "period_key", "revenue", "updated_at"]
 LABOUR_COLUMNS = ["period_type", "period_key", "labour_cost", "hours",
                   "foh_hours", "boh_hours", "updated_at"]
@@ -98,7 +98,12 @@ def _ensure_csv(path, columns):
 
 
 # ---------- invoices ----------
-def save_invoice(supplier_raw, invoice_date, total_ex_gst, line_items):
+def save_invoice(supplier_raw, invoice_date, total_ex_gst, line_items, source_file=None):
+    """Save one invoice. `source_file` (the inbox bucket key it was read from) is the
+    durable dedupe key: when set, the row is UPSERTED on it, so re-reading the same
+    bucket file — e.g. the inbox cron retrying a file whose move to processed/ failed —
+    overwrites its own row instead of inserting a duplicate. Manual / in-app uploads
+    have no bucket file and pass None (a plain insert; find_duplicate guards those)."""
     d = pd.to_datetime(invoice_date).date()
     supplier = canonicalize(supplier_raw)
     ed = config.effective_date(d, supplier)  # bucket by delivery date (BPL Sat -> Mon)
@@ -113,12 +118,24 @@ def save_invoice(supplier_raw, invoice_date, total_ex_gst, line_items):
         "month": ed.strftime("%Y-%m"),
         "line_items": json.dumps([li if isinstance(li, dict) else li.model_dump()
                                   for li in line_items]),
+        "source_file": source_file,
     }
     if _use_supabase():
-        _client().table("invoices").insert(row).execute()
+        tbl = _client().table("invoices")
+        if source_file:
+            tbl.upsert(row, on_conflict="source_file").execute()
+        else:
+            tbl.insert(row).execute()
     else:
         _ensure_csv(CSV_PATH, COLUMNS)
-        pd.DataFrame([row]).to_csv(CSV_PATH, mode="a", header=False, index=False)
+        if source_file:
+            df = pd.read_csv(CSV_PATH)
+            if "source_file" in df.columns:
+                df = df[df["source_file"].astype(str) != str(source_file)]
+            df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+            df.to_csv(CSV_PATH, index=False)
+        else:
+            pd.DataFrame([row]).to_csv(CSV_PATH, mode="a", header=False, index=False)
     return row
 
 

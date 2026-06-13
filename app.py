@@ -2003,7 +2003,8 @@ with tab_list:
                                     "— file moved to processed/ without double-counting.")
                             else:
                                 _rrow = storage.save_invoice(
-                                    _rsup, _rinv["invoice_date"], _rtot, _rinv["line_items"])
+                                    _rsup, _rinv["invoice_date"], _rtot, _rinv["line_items"],
+                                    source_file=f"review/{rsel}")
                                 storage.save_invoice_image(
                                     _rrow["saved_at"], _rbytes, "application/pdf")
                                 storage.review_accept(rsel)
