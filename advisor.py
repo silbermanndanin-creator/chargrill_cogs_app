@@ -47,7 +47,8 @@ def _pct(num, den, n=1):
 
 def build_facts(*, df, lines, rev_map, labour_cost_map, period_col, period_key,
                 revenue, total_cogs, labour_cost, mode,
-                weekly_sales=None, catering=None, remittances=None, n_periods=8):
+                weekly_sales=None, catering=None, remittances=None, delivery=None,
+                n_periods=8):
     """Compact snapshot of the venue's cost picture for the advisor. All money is ex-GST
     unless a field name says otherwise. Returns a small JSON-serialisable dict.
 
@@ -150,6 +151,7 @@ def build_facts(*, df, lines, rev_map, labour_cost_map, period_col, period_key,
         "baida_chicken": baida,
         "catering": catering_summary,
         "platform_payments_received": outstanding,
+        "delivery_payouts": delivery,  # actual Uber/DoorDash net vs the 40% assumption
     }
 
 
@@ -169,7 +171,10 @@ $/period) saving where the numbers allow. Prefer "switch X, ~$Y/wk" over vague a
 reacting to. NEVER invent numbers, suppliers, or items that aren't in the snapshot.
 - Prioritise: (1) categories over their target %, (2) silent price rises (price_rises / \
 veggie_movers), (3) over-ordering vs guides (e.g. Baida chickens vs the recommendation), \
-(4) labour when prime cost is the binding constraint.
+(4) labour when prime cost is the binding constraint, (5) delivery economics — if \
+delivery_payouts shows the actual Uber/DoorDash net is well below gross, the platform \
+commission and ad_spend are real margin leaks worth calling out (these are now ACTUAL \
+figures, not estimates).
 - If a key input is missing (e.g. revenue is null so COGS% can't be computed, or no labour \
 logged), say so briefly and tell them what to enter — don't guess.
 - Keep it tight: a few high-value recommendations, not a wall of text. Lead with the single \

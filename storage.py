@@ -68,6 +68,10 @@ REMIT_COLUMNS = ["saved_at", "platform", "doc_ref", "doc_date", "total_paid",
 DRIVE_INV_PATH = os.path.join(DATA_DIR, "drive_invoices.csv")
 DRIVE_INV_COLUMNS = ["saved_at", "invoice_no", "platform", "company", "invoice_date",
                      "total_inc_gst", "confidence", "source_file"]
+DELIVERY_PATH = os.path.join(DATA_DIR, "delivery_payouts.csv")
+DELIVERY_COLUMNS = ["saved_at", "platform", "platform_key", "period_start", "period_end",
+                    "iso_week", "gross_incl_gst", "net_payout", "ad_spend", "fees_total",
+                    "orders", "confidence", "source_file"]
 
 
 def iso_week_of(d: dt.date) -> str:
@@ -1630,4 +1634,94 @@ def remittance_already_ingested(source_file: str) -> bool:
     if not os.path.exists(REMIT_PATH):
         return False
     df = pd.read_csv(REMIT_PATH)
+    return not df.empty and (df["source_file"].astype(str) == source_file).any()
+
+
+# ---------- delivery payouts (Uber Eats / DoorDash weekly payment summaries) ----------
+def delivery_platform_key(platform) -> str:
+    """Normalise a platform name to the POS-column key ('ubereats' / 'doordash') so a
+    payout can be matched to the POS slips' gross figures for the same week."""
+    p = (platform or "").lower()
+    if "uber" in p:
+        return "ubereats"
+    if "door" in p:
+        return "doordash"
+    return p.replace(" ", "") or "other"
+
+
+def save_delivery_payout(doc, source_file: str):
+    """Upsert one weekly delivery payment summary (Uber Eats / DoorDash), keyed by
+    source_file so the ingest Action re-runs safely. A re-issued statement for the same
+    (platform, ISO week) REPLACES the earlier one rather than double-counting the payment.
+    `doc` may be a delivery_extract.DeliveryPayout or a plain dict with the same fields.
+    The ISO week (derived from period_start) is how the app maps the actual net back onto
+    the matching POS week."""
+    d = doc.model_dump() if hasattr(doc, "model_dump") else dict(doc)
+    platform = d.get("platform") or ""
+    pkey = delivery_platform_key(platform)
+    try:
+        iso = iso_week_of(pd.to_datetime(d.get("period_start")).date())
+    except Exception:
+        iso = ""
+    row = {
+        "saved_at": dt.datetime.now().isoformat(timespec="seconds"),
+        "platform": platform,
+        "platform_key": pkey,
+        "period_start": d.get("period_start") or "",
+        "period_end": d.get("period_end") or "",
+        "iso_week": iso,
+        "gross_incl_gst": round(float(d.get("gross_incl_gst") or 0), 2),
+        "net_payout": round(float(d.get("net_payout") or 0), 2),
+        "ad_spend": round(float(d.get("ad_spend") or 0), 2),
+        "fees_total": round(float(d.get("fees_total") or 0), 2),
+        "orders": int(d.get("orders") or 0),
+        "confidence": d.get("confidence"),
+        "source_file": source_file,
+    }
+    if _use_supabase():
+        if iso:
+            try:
+                (_client().table("delivery_payouts").delete()
+                 .eq("platform", platform).eq("iso_week", iso)
+                 .neq("source_file", source_file).execute())
+            except Exception:
+                pass
+        _client().table("delivery_payouts").upsert(row, on_conflict="source_file").execute()
+    else:
+        _ensure_csv(DELIVERY_PATH, DELIVERY_COLUMNS)
+        df = pd.read_csv(DELIVERY_PATH)
+        df = df[df["source_file"].astype(str) != source_file]  # one row per source file
+        if iso:  # also drop any earlier statement for the same platform + week
+            df = df[~((df["iso_week"].astype(str) == iso)
+                      & (df["platform"].astype(str) == str(platform)))]
+        df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+        df.to_csv(DELIVERY_PATH, index=False)
+    return row
+
+
+def load_delivery_payouts() -> pd.DataFrame:
+    if _use_supabase():
+        try:
+            data = _client().table("delivery_payouts").select("*").execute().data
+        except Exception:
+            return pd.DataFrame(columns=DELIVERY_COLUMNS)  # table not created yet -> degrade
+        return (pd.DataFrame(data, columns=DELIVERY_COLUMNS) if data
+                else pd.DataFrame(columns=DELIVERY_COLUMNS))
+    _ensure_csv(DELIVERY_PATH, DELIVERY_COLUMNS)
+    df = pd.read_csv(DELIVERY_PATH)
+    return df if not df.empty else pd.DataFrame(columns=DELIVERY_COLUMNS)
+
+
+def delivery_payout_already_ingested(source_file: str) -> bool:
+    """True if a payout with this source_file is already saved (ingest Action dedup)."""
+    if _use_supabase():
+        try:
+            data = (_client().table("delivery_payouts").select("source_file")
+                    .eq("source_file", source_file).limit(1).execute().data)
+            return bool(data)
+        except Exception:
+            return False
+    if not os.path.exists(DELIVERY_PATH):
+        return False
+    df = pd.read_csv(DELIVERY_PATH)
     return not df.empty and (df["source_file"].astype(str) == source_file).any()
