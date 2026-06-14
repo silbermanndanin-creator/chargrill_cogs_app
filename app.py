@@ -321,10 +321,34 @@ def _owner_pin():
     return str(p or os.environ.get("OWNER_PIN") or "1811")
 
 
+def _owner_key():
+    """Token for the owner's personal auto-sign-in link (?owner=<key>). Defaults to the
+    PIN so it works out of the box; set a stronger OWNER_KEY secret to decouple the two."""
+    try:
+        k = st.secrets.get("OWNER_KEY")
+    except Exception:
+        k = None
+    return str(k or os.environ.get("OWNER_KEY") or _owner_pin())
+
+
 if "is_owner" not in st.session_state:
     st.session_state["is_owner"] = False
 if "role_chosen" not in st.session_state:
     st.session_state["role_chosen"] = False
+
+# ---- Personal owner link: ?owner=<key> skips the PIN on the owner's own device ----
+# The owner ticks "Remember me" once; their bookmarked URL then carries the key, so they
+# never re-enter the PIN. The key only lives in their own link — everyone else still hits
+# the gate below. Only auto-unlocks on a fresh session (before a role is chosen), so an
+# in-session switch to Chef still sticks.
+if not st.session_state["role_chosen"]:
+    try:
+        _qp_owner = st.query_params.get("owner")
+    except Exception:
+        _qp_owner = None
+    if _qp_owner and _qp_owner == _owner_key():
+        st.session_state["is_owner"] = True
+        st.session_state["role_chosen"] = True
 
 # ---- Landing gate: pick Chef or Owner (PIN) before the app loads ----
 if not st.session_state["role_chosen"]:
@@ -351,11 +375,20 @@ if not st.session_state["role_chosen"]:
             st.session_state["gate_pin_open"] = True
         if st.session_state.get("gate_pin_open"):
             _pin = st.text_input("Owner PIN", type="password", key="gate_pin")
+            _remember = st.checkbox("Remember me on this device (skip the PIN next time)",
+                                    value=True, key="gate_remember")
             if st.button("Enter as owner", type="primary", width="stretch", key="gate_enter"):
                 if _pin == _owner_pin():
                     st.session_state["is_owner"] = True
                     st.session_state["role_chosen"] = True
                     st.session_state.pop("gate_pin_open", None)
+                    # Persist sign-in by writing the key into the URL. The owner then
+                    # bookmarks/keeps this link and is auto-signed-in on future visits.
+                    if _remember:
+                        try:
+                            st.query_params["owner"] = _owner_key()
+                        except Exception:
+                            pass
                     st.rerun()
                 else:
                     st.error("Incorrect PIN.")
@@ -738,6 +771,11 @@ with st.sidebar:
     if st.button("↩️ Switch user", width="stretch", key="switchuser"):
         for _k in ("role_chosen", "is_owner", "gate_pin_open"):
             st.session_state.pop(_k, None)
+        try:  # forget the remembered owner link so sign-out is real
+            if "owner" in st.query_params:
+                del st.query_params["owner"]
+        except Exception:
+            pass
         st.rerun()
 
 df = c_load_invoices()
