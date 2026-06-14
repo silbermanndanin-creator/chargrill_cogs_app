@@ -511,6 +511,105 @@ def baida_tubs(lines, period_col, period_key):
     return out
 
 
+# ============ Order guide — aimed vs actual quantities per item ============
+# "Aimed" = what the venue typically uses at a given level of sales, learned from history:
+# total quantity of an item divided by total weekly GROSS sales (incl GST) over the weeks
+# that have POS takings. Multiplying that per-$ rate by a week's sales gives the expected
+# (aimed) order; comparing to what was actually ordered surfaces over-ordering to trim.
+def _gross_sales_by_week(pos_df):
+    """{iso_week: gross incl-GST takings} and (weeks_with_sales, total_gross)."""
+    if pos_df is None or pos_df.empty or "iso_week" not in pos_df.columns:
+        return {}, 0, 0.0
+    wk = (pd.to_numeric(pos_df["total_incl_gst"], errors="coerce").fillna(0)
+          .groupby(pos_df["iso_week"].astype(str)).sum())
+    wk = wk[wk > 0]
+    return {k: float(v) for k, v in wk.items()}, int(len(wk)), float(wk.sum())
+
+
+def usage_rate_per_1000(lines, pos_df, classifier, supplier):
+    """Learn each item's usage rate: quantity per $1000 of gross sales, from history.
+
+    rate = (total qty of the item over weeks with sales) / (total gross sales) * 1000.
+    Summing over ALL sales weeks (not just weeks the item was bought) smooths lumpy
+    ordering — a chip box bought fortnightly still yields a correct per-week average.
+    Returns (rate_map {label: per-$1000 rate}, n_weeks, total_gross) — n_weeks signals how
+    much history backs the estimate (small = treat as indicative)."""
+    wk_sales, n_weeks, total_gross = _gross_sales_by_week(pos_df)
+    if not wk_sales or total_gross <= 0 or lines is None or lines.empty:
+        return {}, n_weeks, total_gross
+    sub = lines[(lines["supplier"] == supplier)
+                & (lines["iso_week"].astype(str).isin(wk_sales))].copy()
+    if sub.empty:
+        return {}, n_weeks, total_gross
+    sub["_lab"] = sub["description"].map(classifier)
+    sub = sub[sub["_lab"].notna()]
+    if sub.empty:
+        return {}, n_weeks, total_gross
+    sub["_q"] = pd.to_numeric(sub["quantity"], errors="coerce").fillna(0)
+    g = sub.groupby("_lab")["_q"].sum()
+    return {lab: float(q) / total_gross * 1000 for lab, q in g.items()}, n_weeks, total_gross
+
+
+def _last_unit_prices(sub):
+    """{label: most-recent per-unit price} for a labelled invoice-line subset (for $ impact)."""
+    out = {}
+    for lab, g in sub.groupby("_lab"):
+        g = g.sort_values("invoice_date")
+        up = pd.to_numeric(g["unit_price"], errors="coerce")
+        if up.notna().any():
+            out[lab] = float(up.dropna().iloc[-1])
+        else:
+            q = pd.to_numeric(g["quantity"], errors="coerce").fillna(0).sum()
+            a = pd.to_numeric(g["amount"], errors="coerce").fillna(0).sum()
+            out[lab] = float(a / q) if q else 0.0
+    return out
+
+
+def order_guide(lines, pos_df, classifier, supplier, period_col, period_key, gross_sales):
+    """Per-item aimed-vs-actual for one period. aimed = usage rate x this period's GROSS
+    sales; actual = quantity ordered this period. Returns (DataFrame, n_weeks) with columns
+    [Item, Aimed, Actual, Diff, Over %, ~$ over, $/unit], biggest $ over-order first."""
+    rate, n_weeks, _ = usage_rate_per_1000(lines, pos_df, classifier, supplier)
+    cols = ["Item", "Aimed", "Actual", "Diff", "Over %", "~$ over", "$/unit"]
+    sub = (lines[(lines["supplier"] == supplier) & (lines[period_col] == period_key)].copy()
+           if lines is not None and not lines.empty else pd.DataFrame())
+    actual, prices = {}, {}
+    if not sub.empty:
+        sub["_lab"] = sub["description"].map(classifier)
+        sub = sub[sub["_lab"].notna()]
+        if not sub.empty:
+            sub["_q"] = pd.to_numeric(sub["quantity"], errors="coerce").fillna(0)
+            actual = sub.groupby("_lab")["_q"].sum().to_dict()
+            prices = _last_unit_prices(sub)
+    rows = []
+    for lab in sorted(set(rate) | set(actual)):
+        aim = round(rate.get(lab, 0.0) * (gross_sales or 0) / 1000, 1)
+        act = round(float(actual.get(lab, 0.0)), 1)
+        diff = round(act - aim, 1)
+        over = round(diff / aim * 100, 0) if aim > 0 else (100.0 if act > 0 else 0.0)
+        dollar = round(diff * prices.get(lab, 0.0), 0) if diff > 0 else 0.0
+        rows.append({"Item": lab, "Aimed": aim, "Actual": act, "Diff": diff,
+                     "Over %": over, "~$ over": dollar, "$/unit": round(prices.get(lab, 0.0), 2)})
+    df = pd.DataFrame(rows, columns=cols)
+    if not df.empty:
+        df = df.sort_values(["~$ over", "Diff"], ascending=False).reset_index(drop=True)
+    return df, n_weeks
+
+
+def order_guide_levels(lines, pos_df, classifier, supplier, levels):
+    """Reference 'ideal order at various weekly sales' table: one row per item, a column per
+    sales level (aimed qty = usage rate x level). Mirrors the winter Baida order sheet but
+    learned from data and extended to every tracked item."""
+    rate, _, _ = usage_rate_per_1000(lines, pos_df, classifier, supplier)
+    rows = []
+    for lab, r in sorted(rate.items(), key=lambda kv: -kv[1]):
+        row = {"Item": lab}
+        for lv in levels:
+            row[f"${int(lv / 1000)}k"] = round(r * lv / 1000, 1)
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
 # ============ Invoice completeness tracker (learned supplier cadence) ============
 # These power the owner's weekly "have all this week's invoices been uploaded?" check.
 # The cadence is LEARNED from the invoice history: how often each supplier delivers,

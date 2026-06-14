@@ -743,6 +743,26 @@ with st.sidebar:
 df = c_load_invoices()
 lines = c_explode_lines()
 
+
+def _period_gross_sales():
+    """The selected period's GROSS (incl-GST) takings, for scaling the order guide's 'aimed'
+    quantities. Falls back to the average sales week when no takings are entered for the
+    period yet (so a part-week with no slip doesn't make every item read as over-ordered).
+    Returns (gross, using_avg)."""
+    try:
+        pg = float(metrics.pos_breakdown(pos_df, p_col, period_key).get("gross_incl") or 0.0)
+    except Exception:
+        pg = 0.0
+    if pg > 0:
+        return pg, False
+    if pos_df is None or pos_df.empty:
+        return 0.0, True
+    s = (pd.to_numeric(pos_df["total_incl_gst"], errors="coerce").fillna(0)
+         .groupby(pos_df["iso_week"].astype(str)).sum())
+    s = s[s > 0]
+    return (float(s.mean()) if len(s) else 0.0), True
+
+
 # Header month totals — pinned to the month containing the selected period, so
 # they hold steady while toggling between weeks of that month. Shown as % of
 # month revenue (POS slips first, manual entry fallback — same as chef logic).
@@ -846,13 +866,26 @@ if tab_adv is not None:
                             "gross_incl_gst": _r.get("gross_incl_gst"),
                             "net_payout": _r.get("net_payout"),
                             "ad_spend": _r.get("ad_spend")})
+            # Over-ordering: items bought above the aimed qty for this period's sales.
+            _adv_gross, _ = _period_gross_sales()
+            _adv_over = []
+            for _onm, _ocl, _osup in [("Baida", config.baida_cut, config.BAIDA_SUPPLIER),
+                                      ("Blueseas", config.blueseas_main, config.BLUESEAS_SUPPLIER)]:
+                _ogdf, _ = metrics.order_guide(lines, pos_df, _ocl, _osup,
+                                               p_col, period_key, _adv_gross)
+                for _orow in _ogdf.to_dict("records"):
+                    if _orow["Diff"] > 0 and _orow["~$ over"] > 0:
+                        _adv_over.append({"supplier": _onm, "item": _orow["Item"],
+                                          "aimed": _orow["Aimed"], "actual": _orow["Actual"],
+                                          "est_$_over": _orow["~$ over"]})
+            _adv_over.sort(key=lambda x: -x["est_$_over"])
             _adv_facts = advisor.build_facts(
                 df=df, lines=lines, rev_map=trend_rev_map, labour_cost_map=_adv_labmap,
                 period_col=p_col, period_key=period_key, revenue=revenue,
                 total_cogs=_adv_cogs, labour_cost=labour_cost, mode=mode,
                 weekly_sales=_adv_weekly_sales,
                 catering=c_load_catering_orders(), remittances=c_load_platform_remittances(),
-                delivery=_adv_delivery or None)
+                delivery=_adv_delivery or None, over_ordering=_adv_over or None)
             _adv_facts_json = json.dumps(_adv_facts, default=str, sort_keys=True)
 
             if revenue <= 0:
@@ -2716,11 +2749,64 @@ if tab_order is not None:
 
 
 # ============ Ordering tab: packaging stocktake -> split supplier order (#9) ============
+def _render_order_guide(name, classifier, supplier, icon):
+    """Aimed-vs-actual order guide for one supplier: a bar chart + over-order table for the
+    selected period, plus a reference table of aimed quantities at various weekly sales."""
+    levels = [s for s, _, _ in config.BAIDA_ORDER_GUIDE]
+    gross, using_avg = _period_gross_sales()
+    g, nwk = metrics.order_guide(lines, pos_df, classifier, supplier, p_col, period_key, gross)
+    st.markdown(f"**{icon} {name} — aimed vs actual ({period_label})**")
+    if nwk < 6:
+        st.caption(f"⚠️ Only {nwk} week(s) of sales + invoice history so far — treat **aimed** "
+                   "as indicative; it sharpens automatically as more weeks of takings build up.")
+    if g.empty:
+        st.info(f"No {name} order lines found for this period yet.")
+    else:
+        if using_avg:
+            st.caption(f"No takings entered for this {mode.lower()} yet — **aimed** uses your "
+                       f"average sales week (~${gross:,.0f} gross incl GST). Enter takings in "
+                       "**💰 Daily takings** for an exact comparison.")
+        else:
+            st.caption(f"**Aimed** = your typical usage scaled to this {mode.lower()}'s sales "
+                       f"(~${gross:,.0f} gross incl GST). **Actual** = what was ordered.")
+        _m = g.melt(id_vars="Item", value_vars=["Aimed", "Actual"],
+                    var_name="Type", value_name="Qty")
+        fig = px.bar(_m, x="Item", y="Qty", color="Type", barmode="group",
+                     color_discrete_map={"Aimed": "#8b95a7", "Actual": "#2563eb"})
+        fig.update_layout(height=320, margin=dict(l=0, r=0, t=10, b=0),
+                          legend_title="", plot_bgcolor="rgba(0,0,0,0)",
+                          paper_bgcolor="rgba(0,0,0,0)")
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        over = g[(g["Diff"] > 0) & (g["~$ over"] > 0)]
+        if not over.empty:
+            st.markdown(f"🔴 **Likely over-ordered: ~${float(over['~$ over'].sum()):,.0f}** this "
+                        f"{mode.lower()} across {len(over)} item(s) — trim these on the next order.")
+        st.dataframe(g, use_container_width=True, hide_index=True)
+        st.caption("Diff = Actual − Aimed (positive = over). ~$ over = Diff × last unit price.")
+    with st.expander(f"📋 {name} order guide — aimed quantity at various weekly sales"):
+        ref = metrics.order_guide_levels(lines, pos_df, classifier, supplier, levels)
+        if ref.empty:
+            st.caption("Not enough history yet to build the reference table.")
+        else:
+            st.dataframe(ref, use_container_width=True, hide_index=True)
+            st.caption("Recommended weekly quantity at each gross-sales level (incl GST), "
+                       "learned from your purchase history. Read across to your expected week.")
+
+
 if tab_pack is not None:
     with tab_pack:
         st.markdown("#### 📦 Ordering")
-        # Packaging is the first ordering section; more can be added as sub-tabs.
-        sub_pack, sub_drink = st.tabs(["Packaging", "Drinks"])
+        # Packaging + Drinks par-level ordering; the owner also gets the Baida/Blueseas
+        # aimed-vs-actual order guides (these use sales levels, so they're owner-only).
+        _sub_labels = ["Packaging", "Drinks"] + (["🍗 Baida", "🐟 Blueseas"] if owner else [])
+        _subs = st.tabs(_sub_labels)
+        sub_pack, sub_drink = _subs[0], _subs[1]
+        if owner:
+            with _subs[2]:
+                _render_order_guide("Baida", config.baida_cut, config.BAIDA_SUPPLIER, "🍗")
+            with _subs[3]:
+                _render_order_guide("Blueseas", config.blueseas_main,
+                                    config.BLUESEAS_SUPPLIER, "🐟")
         with sub_pack:
             st.caption("Count what's on the shelf and enter **QTY on hand** — you can use halves "
                        "(e.g. 2.5) for part-used boxes. The app refills each item to par, rounds "
