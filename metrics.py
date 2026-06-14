@@ -127,12 +127,73 @@ def labour_prime_trend(df, rev_map, labour_cost_map, period_col, periods):
     return pd.DataFrame(rows)
 
 
-def pos_revenue_map(pos_df, period_col):
-    """{period_key: net ex-GST revenue} summed from daily POS slips."""
+def _f(v):
+    """Float or 0.0 (NaN/None/blank-safe) — POS values may be CSV strings or DB numbers."""
+    try:
+        x = float(v)
+        return 0.0 if x != x else x  # NaN -> 0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def delivery_keep_map(payouts_df, pos_df):
+    """{(platform_key, iso_week): keep_fraction} where keep = actual_net / gross — the real
+    share of delivery sales the venue keeps that week, from the platforms' weekly payment
+    summaries. Uber's gross comes from its own payout; DoorDash's email has no gross, so its
+    gross is taken from the POS slips for that week (the app already records DoorDash gross
+    there). Used by pos_revenue_map to replace the flat config.DELIVERY_COMMISSION estimate
+    for any week a real payout has landed. Empty -> nothing to override."""
+    out = {}
+    if payouts_df is None or payouts_df.empty:
+        return out
+    # POS gross per (platform_key, iso_week), to back the platforms whose email omits gross.
+    pos_gross = {}
+    if pos_df is not None and not pos_df.empty and "iso_week" in pos_df.columns:
+        for pk in ("ubereats", "doordash"):
+            if pk in pos_df.columns:
+                g = (pd.to_numeric(pos_df[pk], errors="coerce").fillna(0)
+                     .groupby(pos_df["iso_week"].astype(str)).sum())
+                for wk, v in g.items():
+                    pos_gross[(pk, str(wk))] = float(v)
+    for _, r in payouts_df.iterrows():
+        pk = str(r.get("platform_key") or "").strip()
+        wk = str(r.get("iso_week") or "").strip()
+        if not pk or not wk:
+            continue
+        net = _f(r.get("net_payout"))
+        gross = _f(r.get("gross_incl_gst"))
+        if gross <= 0:  # email carried no gross (DoorDash) -> use POS gross for that week
+            gross = pos_gross.get((pk, wk), 0.0)
+        if net > 0 and gross > 0:
+            out[(pk, wk)] = max(0.0, min(net / gross, 1.0))  # clamp to a sane 0..1 keep
+    return out
+
+
+def pos_revenue_map(pos_df, period_col, keep_map=None):
+    """{period_key: net ex-GST revenue} from daily POS slips.
+
+    Without keep_map: sums the stored adjusted_ex_gst (the flat-commission estimate) —
+    unchanged behaviour. With keep_map (from delivery_keep_map): recomputes each day's net,
+    replacing the flat config.DELIVERY_COMMISSION cut on Uber/DoorDash sales with the ACTUAL
+    keep fraction for that day's ISO week wherever a real payout exists — so revenue (and
+    COGS %) is true, not assumed. Works in Week and Month views alike (each POS day carries
+    its own iso_week, so the right week's actual rate is applied even when bucketing by month)."""
     if pos_df.empty:
         return {}
-    g = pos_df.groupby(period_col)["adjusted_ex_gst"].sum()
-    return {k: float(v) for k, v in g.items()}
+    if not keep_map:
+        g = pos_df.groupby(period_col)["adjusted_ex_gst"].sum()
+        return {k: float(v) for k, v in g.items()}
+    default_keep = 1.0 - config.DELIVERY_COMMISSION
+    out = {}
+    for _, r in pos_df.iterrows():
+        wk = str(r.get("iso_week") or "")
+        tot, dd, ue = _f(r.get("total_incl_gst")), _f(r.get("doordash")), _f(r.get("ubereats"))
+        k_ue = keep_map.get(("ubereats", wk), default_keep)
+        k_dd = keep_map.get(("doordash", wk), default_keep)
+        adj_incl = tot - ue - dd + ue * k_ue + dd * k_dd   # non-delivery + actual delivery net
+        key = r.get(period_col)
+        out[key] = out.get(key, 0.0) + adj_incl / (1.0 + config.GST_RATE)
+    return {k: float(v) for k, v in out.items() if k is not None and str(k) != "nan"}
 
 
 def pos_breakdown(pos_df, period_col, period_key):

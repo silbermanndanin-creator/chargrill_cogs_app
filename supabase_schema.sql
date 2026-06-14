@@ -274,6 +274,29 @@ create table if not exists drive_invoices (
     source_file    text unique          -- bucket path; enables upsert / dedupe
 );
 
+-- Weekly delivery-platform PAYMENT summaries (Uber Eats / DoorDash), ingested from the
+-- Storage bucket by delivery_ingest.py. These carry the ACTUAL net the platform pays the
+-- venue, so the app replaces its flat 40%-commission estimate with the real figure for the
+-- matching ISO week (gross_incl_gst is present for Uber, 0 for DoorDash whose email only
+-- states the net — the app pairs that net with the DoorDash gross from the POS slips).
+-- source_file is UNIQUE so the ingest Action can re-run without creating duplicates.
+create table if not exists delivery_payouts (
+    id             bigint generated always as identity primary key,
+    saved_at       text,
+    platform       text,                -- 'Uber Eats' | 'DoorDash'
+    platform_key   text,                -- 'ubereats' | 'doordash' (matches the POS columns)
+    period_start   text,                -- YYYY-MM-DD pay-week start
+    period_end     text,                -- YYYY-MM-DD pay-week end
+    iso_week       text,                -- YYYY-Www derived from period_start (join key to POS)
+    gross_incl_gst numeric,             -- week's sales incl GST (Uber); 0 if not in the email
+    net_payout     numeric,             -- ACTUAL money deposited this week
+    ad_spend       numeric,             -- marketing/ad spend (positive); 0 if none
+    fees_total     numeric,             -- platform service/commission fee (positive); 0 if not shown
+    orders         integer,
+    confidence     text,
+    source_file    text unique          -- bucket path; enables upsert / dedupe
+);
+
 -- This app runs server-side on Streamlit Cloud and connects with the service_role
 -- key, so Row Level Security is not required. If you prefer to enable RLS, add
 -- policies that allow the service role full access.

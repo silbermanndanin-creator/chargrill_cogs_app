@@ -1,11 +1,11 @@
-name: Ingest (invoices · catering · remittances)
+name: Ingest (invoices · catering · remittances · delivery payouts)
 
-# One scheduled run drives all three Power Automate -> Supabase ingests, every 30 min.
-# This REPLACES three separate */15 workflows (inbox, catering-ingest, remittance-ingest):
-# one checkout + one dependency install per run instead of three, at half the frequency —
-# roughly a 6x cut in GitHub Actions minutes — while emailed invoices and catering/payment
-# documents still appear in the app within ~30 minutes. Run any time from the Actions tab
-# ("Run workflow").
+# One scheduled run drives every Power Automate -> Supabase ingest, every 30 min: emailed
+# invoices, catering orders, platform remittances, and delivery payouts (Uber Eats/DoorDash).
+# This REPLACED three separate */15 workflows (inbox, catering-ingest, remittance-ingest):
+# one checkout + one dependency install per run instead of three+, at half the frequency —
+# roughly a 6x cut in GitHub Actions minutes — while emailed documents still appear in the
+# app within ~30 minutes. Run any time from the Actions tab ("Run workflow").
 #
 # Each ingest is its own step with `if: ${{ !cancelled() }}`, so one ingest failing never
 # stops the others from running; a failed step still fails the job, so a real problem stays
@@ -52,3 +52,6 @@ jobs:
       - name: Ingest platform remittances
         if: ${{ !cancelled() }}
         run: python remittance_ingest.py
+      - name: Ingest delivery payouts (Uber Eats / DoorDash)
+        if: ${{ !cancelled() }}
+        run: python delivery_ingest.py

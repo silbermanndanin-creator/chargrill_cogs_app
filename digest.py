@@ -41,9 +41,13 @@ def build_digest(today=None):
     def _sum(frame, col):
         return float(pd.to_numeric(frame[col], errors="coerce").fillna(0).sum()) if not frame.empty else 0.0
 
+    # Use ACTUAL Uber/DoorDash payouts where a weekly statement has landed (else the flat
+    # 40% estimate) — keeps the digest's revenue/COGS% in step with the app.
+    deliv = storage.load_delivery_payouts()
+    keep = metrics.delivery_keep_map(deliv, pos)
     yrow = pos[pos["date"].astype(str) == yest.isoformat()] if not pos.empty else pos
-    wk_pos = pos[pos["iso_week"] == wk] if not pos.empty else pos
-    wk_rev = _sum(wk_pos, "adjusted_ex_gst")
+    wk_rev = metrics.pos_revenue_map(pos, "iso_week", keep_map=keep).get(wk, 0.0)
+    day_net = metrics.pos_revenue_map(pos, "date", keep_map=keep) if not pos.empty else {}
     wk_cogs = metrics.food_cogs_for_period(df, "iso_week", wk)
     lab = storage.labour_map("week").get(wk, {}).get("cost", 0.0)
 
@@ -92,7 +96,7 @@ def build_digest(today=None):
 
     return {
         "today": today, "yesterday": yest, "week": wk,
-        "y_net": _sum(yrow, "adjusted_ex_gst"), "y_incl": _sum(yrow, "total_incl_gst"),
+        "y_net": day_net.get(yest.isoformat(), 0.0), "y_incl": _sum(yrow, "total_incl_gst"),
         "wk_rev": wk_rev, "wk_cogs": wk_cogs,
         "cogs_pct": (wk_cogs / wk_rev) if wk_rev > 0 else None,
         "lab": lab, "lab_pct": (lab / wk_rev) if wk_rev > 0 else None,

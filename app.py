@@ -540,6 +540,11 @@ def c_load_platform_remittances():
 
 
 @st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def c_load_delivery_payouts():
+    return storage.load_delivery_payouts()
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
 def c_remittance_file(source_file):
     return storage.remittance_file_bytes(source_file)
 
@@ -636,8 +641,23 @@ with st.sidebar:
     st.caption(f"📆 Showing: **{period_label}**")
 
     pos_df = c_load_pos_days()
-    pos_map = metrics.pos_revenue_map(pos_df, p_col)
+    # Replace the flat 40% delivery-commission estimate with the ACTUAL Uber Eats / DoorDash
+    # net for any week a payment summary has landed (delivery_payouts); falls back to the
+    # estimate elsewhere. Makes POS revenue — and therefore COGS % — true, not assumed.
+    _deliv_payouts = c_load_delivery_payouts()
+    _deliv_keep = metrics.delivery_keep_map(_deliv_payouts, pos_df)
+    pos_map = metrics.pos_revenue_map(pos_df, p_col, keep_map=_deliv_keep)
     manual_map = c_revenue_map(p_type)
+    # Let the owner know when this period's delivery revenue is REAL (a payout has landed)
+    # rather than the flat 40% estimate.
+    if owner and _deliv_payouts is not None and not _deliv_payouts.empty:
+        _ap = [r for r in _deliv_payouts.to_dict("records")
+               if (str(r.get("iso_week")) == period_key if mode == "Week"
+                   else str(r.get("period_start") or "").startswith(period_key))]
+        if _ap:
+            _plats = ", ".join(sorted({str(r.get("platform")) for r in _ap}))
+            st.caption(f"✅ Delivery revenue uses **actual {_plats} payouts** for this "
+                       f"{mode.lower()} (not the 40% estimate).")
 
     # Revenue: owner picks the source and sees the figure. Chef never sees revenue,
     # but we still compute it silently so COGS % / Labour % can be shown.
@@ -812,12 +832,27 @@ if tab_adv is not None:
                                          .get("gross_incl") or None)
                 except Exception:
                     _adv_weekly_sales = None
+            # Actual Uber/DoorDash payouts that fall in this period (week = exact iso_week;
+            # month = any pay-week starting in the month) — gives the advisor real delivery
+            # economics (net vs gross, ad spend) instead of the 40% assumption.
+            _adv_delivery = []
+            if _deliv_payouts is not None and not _deliv_payouts.empty:
+                for _r in _deliv_payouts.to_dict("records"):
+                    _inper = (str(_r.get("iso_week")) == period_key if mode == "Week"
+                              else str(_r.get("period_start") or "").startswith(period_key))
+                    if _inper:
+                        _adv_delivery.append({
+                            "platform": _r.get("platform"), "week": _r.get("iso_week"),
+                            "gross_incl_gst": _r.get("gross_incl_gst"),
+                            "net_payout": _r.get("net_payout"),
+                            "ad_spend": _r.get("ad_spend")})
             _adv_facts = advisor.build_facts(
                 df=df, lines=lines, rev_map=trend_rev_map, labour_cost_map=_adv_labmap,
                 period_col=p_col, period_key=period_key, revenue=revenue,
                 total_cogs=_adv_cogs, labour_cost=labour_cost, mode=mode,
                 weekly_sales=_adv_weekly_sales,
-                catering=c_load_catering_orders(), remittances=c_load_platform_remittances())
+                catering=c_load_catering_orders(), remittances=c_load_platform_remittances(),
+                delivery=_adv_delivery or None)
             _adv_facts_json = json.dumps(_adv_facts, default=str, sort_keys=True)
 
             if revenue <= 0:
