@@ -323,13 +323,13 @@ def blueseas_main(description) -> str | None:
 #   1  -> already per single unit (the default; leaves the price untouched)
 #   N  -> billed per N-unit container; the price is divided by N before comparison
 #
-# It is deliberately conservative so a GENUINE rise is never masked: a line billed in a
-# clear single unit (ea / kg / litre / ...) always returns 1, so a real per-each delivery
-# is never divided. For every other (pack) unit the count is read PRIMARILY from the UOM
-# code, which on these invoices carries the pack size as its number — "CTN-6", "CTN-12",
-# "MUSTARD-6", "6PK" all mean "6/12 inner units". Failing that it falls back to a count
-# printed in the description ("6 x 2.5kg") and finally to an owner-curated override. An
-# unrecognised pack unit stays at 1 (no change) and simply shows up for manual review.
+# It is deliberately conservative so a GENUINE rise is never masked. The count comes from,
+# in order: the line's explicit pack_size (captured at extraction from a "CTN-6"/"CTN-12"
+# UOM code — the reliable source on these Blue Seas invoices, since the unit itself is
+# normalised to "carton" and loses the number); then the UOM string when it still carries
+# the count; then a count printed in the description ("6 x 2.5kg"); then an owner-curated
+# override. A clear single unit (ea / kg / litre / ...) always returns 1, so a real
+# per-each delivery is never divided, and an unrecognised pack stays at 1 (manual review).
 
 # Units that denote a single sellable unit — these are never divided.
 SINGLE_UNITS = {"ea", "each", "unit", "units", "kg", "g", "gram", "grams",
@@ -386,10 +386,22 @@ def _parse_pack_count(text) -> int | None:
     return None
 
 
-def units_per_pack(description, unit=None) -> int:
+def _sane_count(value) -> int | None:
+    """value as an inner-unit count (1 < n <= 144), else None."""
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return None
+    return n if 1 < n <= 144 else None
+
+
+def units_per_pack(description, unit=None, pack_size=None) -> int:
     """Inner single-unit count for one billed line (>= 1). 1 means the line is already
     priced per single unit. See the module note above — used only by the price-rise
     detector to put every delivery on a true per-unit basis before comparing."""
+    n = _sane_count(pack_size)  # explicit pack size captured at extraction (CTN-6 -> 6)
+    if n:
+        return n
     u = str(unit or "").strip().lower()
     if u in SINGLE_UNITS:
         return 1  # billed per single unit -> never divide (protects genuine per-each lines)

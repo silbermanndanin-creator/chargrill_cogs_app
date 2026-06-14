@@ -43,13 +43,14 @@ def explode_lines(df: pd.DataFrame) -> pd.DataFrame:
                 "description": it.get("description"),
                 "quantity": it.get("quantity"),
                 "unit": norm_unit(it.get("unit")),
+                "pack_size": it.get("pack_size"),    # inner-unit count from a pack UOM (CTN-6 -> 6)
                 "unit_price": it.get("unit_price"),  # printed per-unit price (per-kg when shown)
                 "amount": it.get("amount"),
                 # stored override (from review screen) else detect from description
                 "tub_type": it.get("tub_type") or config.tub_type(it.get("description")),
             })
     cols = ["supplier", "invoice_date", "iso_week", "month", "description",
-            "quantity", "unit", "unit_price", "amount", "tub_type"]
+            "quantity", "unit", "pack_size", "unit_price", "amount", "tub_type"]
     return pd.DataFrame(recs, columns=cols)
 
 
@@ -339,17 +340,20 @@ def item_price_history(lines):
               & (sub["qnum"] > 0)]
     if sub.empty:
         return pd.DataFrame(columns=cols)
-    if "unit" not in sub.columns:
-        sub["unit"] = None
+    for c in ("unit", "pack_size"):
+        if c not in sub.columns:
+            sub[c] = None
     meta = (sub.groupby(["supplier", "item", "invoice_date"])
-            .agg(description=("description", "first"), unit=("unit", "first")).reset_index())
+            .agg(description=("description", "first"), unit=("unit", "first"),
+                 pack_size=("pack_size", "first")).reset_index())
     g = (sub.groupby(["supplier", "item", "invoice_date"])[["quantity", "amount", "unit_price"]]
          .apply(_group_price).reset_index())  # prefers printed per-unit (per-kg) price
     g = g.merge(meta, on=["supplier", "item", "invoice_date"])
     g = g[g["qty"] > 0]
-    # Divide each delivery down to a true per-single-unit price so a change in billing
-    # unit (per-each one week, per-carton the next) doesn't masquerade as a price move.
-    pack = [config.units_per_pack(d, u) for d, u in zip(g["description"], g["unit"])]
+    # Divide each delivery down to a true per-single-unit price so a carton-of-N price
+    # (or a change in billing unit between deliveries) doesn't masquerade as a price move.
+    pack = [config.units_per_pack(d, u, ps)
+            for d, u, ps in zip(g["description"], g["unit"], g["pack_size"])]
     g["unit_price_each"] = g["unit_price"] / pd.Series(pack, index=g.index)
     g = g.rename(columns={"invoice_date": "date"})
     return g[cols].sort_values(["supplier", "item", "date"]).reset_index(drop=True)

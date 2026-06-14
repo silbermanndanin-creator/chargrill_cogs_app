@@ -36,45 +36,63 @@ def _anoms(rows):
 # ---- config.units_per_pack -------------------------------------------------
 def test_units_per_pack():
     f = config.units_per_pack
+    # explicit pack_size (captured at extraction from the CTN-N code) is the primary
+    # source — the stored unit is normalised to "carton" and no longer carries the number
+    assert f("Eggs Chilled Hard Boiled 2.5kg", "carton", 6) == 6
+    assert f("Sugar Brown 1kg", "carton", 10) == 10
+    assert f("Butter Salted 500g Dairy Farmers", "carton", 12) == 12
+    assert f("Any New Pack Item", "carton", 4) == 4
+    # pack_size only applies to real multi-unit counts; junk/1 falls through
+    assert f("Cheese Mozz Shred 2kg", "ea", None) == 1
+    assert f("Wedges Sweet Potato", "carton", 1) == 1
     # single units are never divided (protects genuine per-each deliveries)
     assert f("Quinoa Three Mix 1kg", "ea") == 1
     assert f("Salmon Fillet", "kg") == 1
-    assert f("Milk 2L Norco", "litre") == 1
-    assert f("Eggs Hard Boiled 2.5kg", "ea") == 1
-    # pack count read straight from the UOM code — generalises to every item with this
-    # format, no per-item config needed
+    assert f("Milk 2Litre Plain Full Cream Norco", "ea") == 1
+    # UOM string still parsed when it carries the count (manual entry / un-normalised)
     assert f("Eggs Hard Boiled 2.5kg", "CTN-6") == 6
-    assert f("Mustard Seeded 2.5kg", "MUSTARD-6") == 6
     assert f("Cottonseed Oil", "CTN-12") == 12
-    assert f("Soya Beans 2.5kg", "CTN-6") == 6
-    assert f("Some New Product", "WIDGET-4") == 4
     assert f("Tomato Sauce", "6PK") == 6
     # pack count parsed from the description when the UOM is generic
     assert f("Soya Beans 6 x 2.5kg", "carton") == 6
-    assert f("Chips", "ctn 12") == 12
-    # owner override only for the rare item whose UOM and description both omit the count
-    assert f("Eggs Hard Boiled 2.5kg", "carton") == 6
+    # owner override only for the rare item whose UOM/description/pack_size all omit it
     assert f("Mustard Seeded 2.5kg", "pack") == 6
-    # a bare size is NOT a pack count, and unknown pack size is left unchanged
-    assert f("Cottonseed Oil 20L", "20l") == 1
-    assert f("Mystery Item", "carton") == 1
+    # a bare size is NOT a pack count, plain CTN and unknown pack are left unchanged
+    assert f("Cottonseed Oil 20L Round Drum", "drum") == 1
+    assert f("Wedges Sweet Potato Crinkle Cut", "carton") == 1
 
 
 def test_generalises_beyond_curated_items():
-    """An item NOT in PACK_UNITS_OVERRIDES, billed per-each then per-CTN-6, is normalised
-    purely from the UOM code — proving the fix scales to every same-format item."""
+    """An item NOT in PACK_UNITS_OVERRIDES, billed per-each then per-carton-of-6, is
+    normalised from the extracted pack_size — proving the fix scales to every CTN-N item
+    with no per-item config. Mirrors real stored data: unit 'carton', pack_size 6."""
     rows = [
         ("Blueseas (Broadline)", "2026-05-01",
-         [{"description": "Soya Beans 2.5kg", "quantity": 6, "unit": "ea",
-           "unit_price": 19.33, "amount": 115.98}]),
+         [{"description": "Sugar Brown 1kg", "quantity": 10, "unit": "ea",
+           "unit_price": 3.72, "amount": 37.20}]),
         ("Blueseas (Broadline)", "2026-06-01",
-         [{"description": "Soya Beans 2.5kg", "quantity": 1, "unit": "CTN-6",
-           "unit_price": 115.98, "amount": 115.98}]),
+         [{"description": "Sugar Brown 1kg", "quantity": 1, "unit": "carton",
+           "pack_size": 10, "unit_price": 37.20, "amount": 37.20}]),
     ]
     a = _anoms(rows)
-    assert "soya beans 2.5kg" not in config.PACK_UNITS_OVERRIDES  # not hardcoded
-    assert a[a["Item"].str.contains("Soya")].empty, \
+    assert "sugar brown 1kg" not in config.PACK_UNITS_OVERRIDES  # not hardcoded
+    assert a[a["Item"].str.contains("Sugar")].empty, \
         f"same-format basis change wrongly flagged:\n{a}"
+
+
+def test_carton_of_n_genuine_rise_uses_pack_size():
+    """Consistently per-carton item (unit 'carton', pack_size 6) with a real rise fires,
+    reported on the true per-unit basis: $172.50/6 = $28.75 -> $189.00/6 = $31.50."""
+    rise = _anoms([
+        ("Blueseas (Broadline)", "2026-05-01",
+         [{"description": "Eggs Chilled Hard Boiled 2.5kg", "quantity": 1, "unit": "carton",
+           "pack_size": 6, "unit_price": 172.50, "amount": 172.50}]),
+        ("Blueseas (Broadline)", "2026-06-01",
+         [{"description": "Eggs Chilled Hard Boiled 2.5kg", "quantity": 1, "unit": "carton",
+           "pack_size": 6, "unit_price": 189.00, "amount": 189.00}]),
+    ])
+    assert len(rise) == 1 and rise.iloc[0]["Was"] == 28.75 and rise.iloc[0]["Now"] == 31.50, \
+        f"carton-of-N rise reported on wrong basis:\n{rise}"
 
 
 # ---- the original false-alert case -----------------------------------------

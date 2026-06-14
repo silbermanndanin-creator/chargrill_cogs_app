@@ -2403,15 +2403,20 @@ with tab_list:
                     except Exception:
                         _items = []
                     _idf = pd.DataFrame(_items)
-                    for _c in ["description", "quantity", "unit", "amount"]:
+                    # pack_size and unit_price are kept so a correction doesn't drop them —
+                    # losing pack_size reverts a carton-of-N line to a per-carton price and
+                    # can re-trigger a false price-rise alert.
+                    _ecols = ["description", "quantity", "unit", "pack_size", "unit_price", "amount"]
+                    for _c in _ecols:
                         if _c not in _idf.columns:
                             _idf[_c] = None
-                    _idf = _idf[["description", "quantity", "unit", "amount"]]
+                    _idf = _idf[_ecols]
                     edf = st.data_editor(_idf, num_rows="dynamic", hide_index=True,
                                          width="stretch", key="edit_items")
                     if st.button("💾 Save corrections", type="primary", key="edit_save"):
                         new_items = [{"description": r["description"], "quantity": r["quantity"],
-                                      "unit": r["unit"], "amount": r["amount"]}
+                                      "unit": r["unit"], "pack_size": r["pack_size"],
+                                      "unit_price": r["unit_price"], "amount": r["amount"]}
                                      for _, r in edf.iterrows()
                                      if str(r.get("description") or "").strip()
                                      or pd.notna(r.get("amount"))]

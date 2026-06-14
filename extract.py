@@ -99,6 +99,11 @@ weight are shown, use the kg weight as the quantity and set unit to kg.
 box, case, tray, bag, litre, dozen, tub. Map "each"/"unit"/"units" -> ea, "ctn" -> \
 carton, "kgs"/"kilo" -> kg, "tubs" -> tub. Use kg whenever the line is priced per kg. \
 Otherwise record the unit as printed — do not convert between units. Null if not shown.
+    - pack_size: when the UOM code carries an inner-unit count — e.g. "CTN-6", "CTN-12", \
+"CTN-4", "CTN-3" — the INTEGER number printed after the code (6, 12, 4, 3): how many \
+single sellable units are in one billed carton/pack. For those lines the unit_price is the \
+price of the WHOLE carton, so this lets the app compare prices on a true per-unit basis. \
+Null for single units (EA, kg, litre) and for a plain "CTN"/"CARTON" with no number.
     - unit_price: the printed PRICE PER UNIT for this line. If the line shows a per-kg \
 price (e.g. "$12.50/kg", "12.50 P/KG", "@ 12.50 kg"), record THAT per-kg figure here \
 and set unit to kg — this is the number to prefer. If instead only a per-each/per-carton \
@@ -127,6 +132,7 @@ class LineItem(BaseModel):
     description: str
     quantity: Optional[float] = None
     unit: Optional[str] = None
+    pack_size: Optional[int] = None     # inner-unit count from a pack UOM (CTN-6 -> 6); null otherwise
     unit_price: Optional[float] = None  # printed per-unit price; per-kg rate when shown
     discount: Optional[float] = None    # per-line discount (positive $); amount is already net of it
     amount: float
