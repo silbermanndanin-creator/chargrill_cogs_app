@@ -325,32 +325,52 @@ def blueseas_main(description) -> str | None:
 #
 # It is deliberately conservative so a GENUINE rise is never masked: a line billed in a
 # clear single unit (ea / kg / litre / ...) always returns 1, so a real per-each delivery
-# is never divided. Only non-single ("container") units are eligible, and then the count
-# is taken from the unit/description (e.g. "ctn 6", "6 x 2.5kg", "6pk") or, when the pack
-# size isn't printed anywhere, from the owner-curated overrides below. An unrecognised
-# container size stays at 1 (no change) and simply shows up for manual review.
+# is never divided. For every other (pack) unit the count is read PRIMARILY from the UOM
+# code, which on these invoices carries the pack size as its number — "CTN-6", "CTN-12",
+# "MUSTARD-6", "6PK" all mean "6/12 inner units". Failing that it falls back to a count
+# printed in the description ("6 x 2.5kg") and finally to an owner-curated override. An
+# unrecognised pack unit stays at 1 (no change) and simply shows up for manual review.
 
 # Units that denote a single sellable unit — these are never divided.
 SINGLE_UNITS = {"ea", "each", "unit", "units", "kg", "g", "gram", "grams",
                 "l", "litre", "liter", "ml", "dozen", "doz"}
 
-# Owner-validated pack sizes that previously fired false price-rise alerts, for products
-# whose container line does NOT print the pack count. Keyed by a lowercase description
-# keyword; extend as more pack lines are confirmed. Kept explicit (not guessed) because
-# pack size is product-specific and can't be read from the text reliably.
+# Owner-curated pack sizes for the rare item whose UOM and description BOTH omit the pack
+# count. Keyed by a lowercase description keyword. Most pack lines never reach this —
+# their UOM already carries the number (CTN-6, MUSTARD-6, ...) — so this stays small.
 PACK_UNITS_OVERRIDES = {
     "mustard seeded": 6,    # Mustard Seeded 2.5kg billed per 6-pack ($115.98 / 6 = $19.33)
     "eggs hard boiled": 6,  # Eggs Hard Boiled 2.5kg billed per carton of 6 ($172.50 / 6 = $28.75)
 }
 
-# Pack count embedded in a unit/description: "ctn 6", "carton of 12", "6 x 2.5kg",
-# "6pk", "6 pack", "x12". The captured number is the count of inner units.
+# A UOM is a pack code when it carries a pack indicator: a dash (CTN-6, MUSTARD-6) or a
+# pack word (ctn / carton / case / box / pk / pack / tray / bag / pcs). The number in such
+# a code is the inner-unit count. Requiring an indicator stops a bare size like "20l"
+# being mistaken for a 20-pack.
+_UOM_PACK_HINT = re.compile(r"-|ctn|carton|case|box|pk|pkt|pack|pcs|tray|bag")
+
+# Pack count printed in a description: "ctn 6", "carton of 12", "6 x 2.5kg", "6pk",
+# "6 pack", "x12". The captured number is the count of inner units.
 _PACK_PATTERNS = (
     re.compile(r"(?:ctn|carton|case|box)\s*(?:of\s*)?(\d{1,3})\b"),
     re.compile(r"\b(\d{1,3})\s*x\s*\d"),          # "6 x 2.5kg"
     re.compile(r"\b(\d{1,3})\s*(?:pk|pkt|pack)\b"),
     re.compile(r"\bx\s*(\d{1,3})\b"),             # "...x12"
 )
+
+
+def _uom_pack_count(unit) -> int | None:
+    """Inner-unit count encoded in a pack UOM code (CTN-6, CTN-12, MUSTARD-6, 6PK, ...),
+    or None when the unit carries no pack indicator. Returns the first sane number
+    (1 < n <= 144) so a real per-each line ('ea'/'kg') is never divided."""
+    u = str(unit or "").strip().lower()
+    if not _UOM_PACK_HINT.search(u):
+        return None  # no pack indicator -> a stray size number is not a pack count
+    for raw in re.findall(r"\d{1,3}", u):
+        n = int(raw)
+        if 1 < n <= 144:
+            return n
+    return None
 
 
 def _parse_pack_count(text) -> int | None:
@@ -373,11 +393,11 @@ def units_per_pack(description, unit=None) -> int:
     u = str(unit or "").strip().lower()
     if u in SINGLE_UNITS:
         return 1  # billed per single unit -> never divide (protects genuine per-each lines)
-    n = _parse_pack_count(f"{u} {description or ''}")
+    n = _uom_pack_count(u) or _parse_pack_count(f"{u} {description or ''}")
     if n:
         return n
-    d = str(description or "").lower()
+    d = f"{u} {str(description or '').lower()}"
     for key, cnt in PACK_UNITS_OVERRIDES.items():
         if key in d:
             return cnt
-    return 1  # unknown container size -> leave unchanged (manual review)
+    return 1  # unknown pack size -> leave unchanged (manual review)

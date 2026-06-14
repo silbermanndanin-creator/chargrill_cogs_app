@@ -41,16 +41,40 @@ def test_units_per_pack():
     assert f("Salmon Fillet", "kg") == 1
     assert f("Milk 2L Norco", "litre") == 1
     assert f("Eggs Hard Boiled 2.5kg", "ea") == 1
-    # container units: pack count parsed from the unit or description
+    # pack count read straight from the UOM code — generalises to every item with this
+    # format, no per-item config needed
+    assert f("Eggs Hard Boiled 2.5kg", "CTN-6") == 6
+    assert f("Mustard Seeded 2.5kg", "MUSTARD-6") == 6
+    assert f("Cottonseed Oil", "CTN-12") == 12
+    assert f("Soya Beans 2.5kg", "CTN-6") == 6
+    assert f("Some New Product", "WIDGET-4") == 4
+    assert f("Tomato Sauce", "6PK") == 6
+    # pack count parsed from the description when the UOM is generic
     assert f("Soya Beans 6 x 2.5kg", "carton") == 6
     assert f("Chips", "ctn 12") == 12
-    assert f("Anything", "box of 24") == 24
-    assert f("Tomato Sauce", "6pk") == 6
-    # container units with no printed count: owner-curated override
+    # owner override only for the rare item whose UOM and description both omit the count
     assert f("Eggs Hard Boiled 2.5kg", "carton") == 6
     assert f("Mustard Seeded 2.5kg", "pack") == 6
-    # unknown container size -> unchanged (manual review), never a wrong divide
+    # a bare size is NOT a pack count, and unknown pack size is left unchanged
+    assert f("Cottonseed Oil 20L", "20l") == 1
     assert f("Mystery Item", "carton") == 1
+
+
+def test_generalises_beyond_curated_items():
+    """An item NOT in PACK_UNITS_OVERRIDES, billed per-each then per-CTN-6, is normalised
+    purely from the UOM code — proving the fix scales to every same-format item."""
+    rows = [
+        ("Blueseas (Broadline)", "2026-05-01",
+         [{"description": "Soya Beans 2.5kg", "quantity": 6, "unit": "ea",
+           "unit_price": 19.33, "amount": 115.98}]),
+        ("Blueseas (Broadline)", "2026-06-01",
+         [{"description": "Soya Beans 2.5kg", "quantity": 1, "unit": "CTN-6",
+           "unit_price": 115.98, "amount": 115.98}]),
+    ]
+    a = _anoms(rows)
+    assert "soya beans 2.5kg" not in config.PACK_UNITS_OVERRIDES  # not hardcoded
+    assert a[a["Item"].str.contains("Soya")].empty, \
+        f"same-format basis change wrongly flagged:\n{a}"
 
 
 # ---- the original false-alert case -----------------------------------------
