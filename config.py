@@ -6,6 +6,7 @@ Alerts: spend% <= green -> GREEN, <= red -> AMBER, > red -> RED.
 """
 
 import datetime as dt
+import re
 
 GST_RATE = 0.10  # Australian GST
 
@@ -307,3 +308,76 @@ def blueseas_main(description) -> str | None:
         if any(k in d for k in kws):
             return name
     return None
+
+
+# ---- Pack-size normalisation for price-rise detection ----
+# Some lines are billed per multi-unit CONTAINER (a carton/case/box/pack) while the
+# SAME product is billed per single unit on another delivery. Comparing the raw printed
+# unit price across those two deliveries reads the basis change as a price spike — e.g.
+# $28.75 per 2.5 kg pack one week vs $172.50 per carton-of-6 the next is a phantom +500%,
+# not a real rise. To compare like for like, the price-rise detector (metrics.py) divides
+# each line's unit price down to a TRUE per-single-unit price using the inner-unit count
+# resolved here.
+#
+# units_per_pack() returns how many single sellable units one BILLED unit contains:
+#   1  -> already per single unit (the default; leaves the price untouched)
+#   N  -> billed per N-unit container; the price is divided by N before comparison
+#
+# It is deliberately conservative so a GENUINE rise is never masked: a line billed in a
+# clear single unit (ea / kg / litre / ...) always returns 1, so a real per-each delivery
+# is never divided. Only non-single ("container") units are eligible, and then the count
+# is taken from the unit/description (e.g. "ctn 6", "6 x 2.5kg", "6pk") or, when the pack
+# size isn't printed anywhere, from the owner-curated overrides below. An unrecognised
+# container size stays at 1 (no change) and simply shows up for manual review.
+
+# Units that denote a single sellable unit — these are never divided.
+SINGLE_UNITS = {"ea", "each", "unit", "units", "kg", "g", "gram", "grams",
+                "l", "litre", "liter", "ml", "dozen", "doz"}
+
+# Owner-validated pack sizes that previously fired false price-rise alerts, for products
+# whose container line does NOT print the pack count. Keyed by a lowercase description
+# keyword; extend as more pack lines are confirmed. Kept explicit (not guessed) because
+# pack size is product-specific and can't be read from the text reliably.
+PACK_UNITS_OVERRIDES = {
+    "mustard seeded": 6,    # Mustard Seeded 2.5kg billed per 6-pack ($115.98 / 6 = $19.33)
+    "eggs hard boiled": 6,  # Eggs Hard Boiled 2.5kg billed per carton of 6 ($172.50 / 6 = $28.75)
+}
+
+# Pack count embedded in a unit/description: "ctn 6", "carton of 12", "6 x 2.5kg",
+# "6pk", "6 pack", "x12". The captured number is the count of inner units.
+_PACK_PATTERNS = (
+    re.compile(r"(?:ctn|carton|case|box)\s*(?:of\s*)?(\d{1,3})\b"),
+    re.compile(r"\b(\d{1,3})\s*x\s*\d"),          # "6 x 2.5kg"
+    re.compile(r"\b(\d{1,3})\s*(?:pk|pkt|pack)\b"),
+    re.compile(r"\bx\s*(\d{1,3})\b"),             # "...x12"
+)
+
+
+def _parse_pack_count(text) -> int | None:
+    """First sane pack count (1 < n <= 144) found in `text`, else None. Punctuation is
+    flattened to spaces first so 'CTN-6' / '6pk' / '6 x 2.5kg' all parse."""
+    t = re.sub(r"[^a-z0-9.]+", " ", str(text or "").lower())
+    for pat in _PACK_PATTERNS:
+        m = pat.search(t)
+        if m:
+            n = int(m.group(1))
+            if 1 < n <= 144:
+                return n
+    return None
+
+
+def units_per_pack(description, unit=None) -> int:
+    """Inner single-unit count for one billed line (>= 1). 1 means the line is already
+    priced per single unit. See the module note above — used only by the price-rise
+    detector to put every delivery on a true per-unit basis before comparing."""
+    u = str(unit or "").strip().lower()
+    if u in SINGLE_UNITS:
+        return 1  # billed per single unit -> never divide (protects genuine per-each lines)
+    n = _parse_pack_count(f"{u} {description or ''}")
+    if n:
+        return n
+    d = str(description or "").lower()
+    for key, cnt in PACK_UNITS_OVERRIDES.items():
+        if key in d:
+            return cnt
+    return 1  # unknown container size -> leave unchanged (manual review)
