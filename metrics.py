@@ -324,10 +324,12 @@ def item_price_history(lines):
 
     unit_price       printed per-unit (per-kg/per-carton) price, qty-weighted — the figure
                      to display and order by.
-    unit_price_each  the same price divided down to a true per-SINGLE-unit basis (see
-                     config.units_per_pack), so a delivery billed per carton-of-6 compares
-                     like-for-like against one billed per single pack. Used for price-rise
-                     detection so a change of billing UNIT isn't read as a price change."""
+    unit_price_each  EFFECTIVE price per single sellable unit = line amount / (quantity x
+                     inner units per pack). Computed from the amount (not the printed
+                     unit_price) so a line TOTAL can never be mistaken for a unit price when
+                     the printed price is missing or mis-captured, and divided by the pack
+                     size so a carton-of-N line compares like-for-like against a single
+                     unit. This is the basis price-rise detection uses."""
     cols = ["supplier", "item", "description", "date",
             "unit_price", "unit_price_each", "qty", "amount"]
     if lines.empty:
@@ -350,11 +352,12 @@ def item_price_history(lines):
          .apply(_group_price).reset_index())  # prefers printed per-unit (per-kg) price
     g = g.merge(meta, on=["supplier", "item", "invoice_date"])
     g = g[g["qty"] > 0]
-    # Divide each delivery down to a true per-single-unit price so a carton-of-N price
-    # (or a change in billing unit between deliveries) doesn't masquerade as a price move.
+    # Effective per-single-unit price = amount / (quantity x inner units). Using amount/qty
+    # (not the printed unit_price, which is where mis-captures land) means a line total can
+    # never read as a unit price; dividing by pack size normalises carton-of-N lines.
     pack = [config.units_per_pack(d, u, ps)
             for d, u, ps in zip(g["description"], g["unit"], g["pack_size"])]
-    g["unit_price_each"] = g["unit_price"] / pd.Series(pack, index=g.index)
+    g["unit_price_each"] = g["amount"] / (g["qty"] * pd.Series(pack, index=g.index))
     g = g.rename(columns={"invoice_date": "date"})
     return g[cols].sort_values(["supplier", "item", "date"]).reset_index(drop=True)
 

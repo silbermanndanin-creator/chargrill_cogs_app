@@ -339,8 +339,8 @@ SINGLE_UNITS = {"ea", "each", "unit", "units", "kg", "g", "gram", "grams",
 # count. Keyed by a lowercase description keyword. Most pack lines never reach this —
 # their UOM already carries the number (CTN-6, MUSTARD-6, ...) — so this stays small.
 PACK_UNITS_OVERRIDES = {
-    "mustard seeded": 6,    # Mustard Seeded 2.5kg billed per 6-pack ($115.98 / 6 = $19.33)
-    "eggs hard boiled": 6,  # Eggs Hard Boiled 2.5kg billed per carton of 6 ($172.50 / 6 = $28.75)
+    "mustard seeded": 6,  # Mustard Seeded 2.5kg billed per 6-pack ($115.98 / 6 = $19.33)
+    "hard boiled": 6,     # Eggs Chilled Hard Boiled 2.5kg, carton of 6 ($172.50 / 6 = $28.75)
 }
 
 # A UOM is a pack code when it carries a pack indicator: a dash (CTN-6, MUSTARD-6) or a

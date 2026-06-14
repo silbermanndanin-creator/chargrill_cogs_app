@@ -80,6 +80,22 @@ def test_generalises_beyond_curated_items():
         f"same-format basis change wrongly flagged:\n{a}"
 
 
+def test_line_total_not_used_as_unit_price():
+    """If the printed unit_price is mis-captured as the line TOTAL (e.g. Quinoa qty 10
+    stored with unit_price 69.10 instead of 6.91), detection must still use amount/qty
+    (6.91) and NOT flag a phantom +900%."""
+    a = _anoms([
+        ("Blueseas (Broadline)", "2026-05-01",
+         [{"description": "Quinoa Three Mix 1kg", "quantity": 2, "unit": "ea",
+           "unit_price": 6.91, "amount": 13.82}]),
+        ("Blueseas (Broadline)", "2026-06-01",
+         [{"description": "Quinoa Three Mix 1kg", "quantity": 10, "unit": "ea",
+           "unit_price": 69.10, "amount": 69.10}]),   # unit_price wrongly = line total
+    ])
+    assert a[a["Item"].str.contains("Quinoa")].empty, \
+        f"line total wrongly treated as a unit-price rise:\n{a}"
+
+
 def test_carton_of_n_genuine_rise_uses_pack_size():
     """Consistently per-carton item (unit 'carton', pack_size 6) with a real rise fires,
     reported on the true per-unit basis: $172.50/6 = $28.75 -> $189.00/6 = $31.50."""
