@@ -177,9 +177,10 @@ def tub_type(description) -> str | None:
 
 
 # ---- Baida order-vs-turnover guide (DANIN/baida order.xlsx — winter weekly) ----
-# For a week's gross sales ($ incl GST), the recommended number of whole/charcoal
-# birds ('RSPCA' tubs) and split chickens. Used to flag when an order runs high.
-# (sales, whole_birds, split_chickens)
+# For a week's EX-GST sales — with delivery at full order value (the platform commission
+# is NOT netted off, which is how the spreadsheet was built) — the recommended number of
+# whole/charcoal birds ('RSPCA' tubs) and split chickens. Used to flag when an order runs
+# high. (sales_ex_gst, whole_birds, split_chickens)
 BAIDA_ORDER_GUIDE = [
     (65000, 520, 192), (70000, 560, 204), (75000, 600, 216),
     (80000, 664, 228), (85000, 720, 240), (90000, 736, 252),

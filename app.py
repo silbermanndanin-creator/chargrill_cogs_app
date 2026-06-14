@@ -1833,11 +1833,15 @@ with tab_dash:
                    + (f" · TUB DEPOSIT {dep:g}" if dep else ""))
         # Order-vs-turnover guide references weekly sales $, so owner-only.
         if owner and mode == "Week" and not pos_df.empty:
-            gross_wk = float(pd.to_numeric(
+            # The Baida guide table is keyed on EX-GST weekly sales with delivery at full
+            # order value — the platform commission is NOT netted off (that's how the
+            # spreadsheet was built). POS stores GST-inclusive takings, so divide GST out;
+            # do NOT use the delivery-adjusted revenue here.
+            gross_ex_wk = float(pd.to_numeric(
                 pos_df[pos_df["iso_week"] == period_key]["total_incl_gst"],
-                errors="coerce").fillna(0).sum())
-            rec = config.baida_recommended(gross_wk)
-            if rec and gross_wk > 0:
+                errors="coerce").fillna(0).sum()) / (1 + config.GST_RATE)
+            rec = config.baida_recommended(gross_ex_wk)
+            if rec and gross_ex_wk > 0:
                 rec_bird, rec_split = rec
                 wpt = config.TUB_TYPES["RSPCA"]["per_tub"]   # birds per whole tub (8)
                 spt = config.TUB_TYPES["Split"]["per_tub"]   # birds per split tub (12)
@@ -1852,9 +1856,10 @@ with tab_dash:
                     over.append(f"split **{act_split:.0f} = {act_st:.0f} tubs** "
                                 f"vs guide ~{rec_split:.0f} ({rec_st:.0f} tubs)")
                 if over:
-                    st.warning(f"🐔 Baida order high for ${gross_wk:,.0f} sales — " + " · ".join(over))
+                    st.warning(f"🐔 Baida order high for ${gross_ex_wk:,.0f} ex-GST sales — "
+                               + " · ".join(over))
                 else:
-                    st.caption(f"✅ Order in line with ${gross_wk:,.0f} sales — guide "
+                    st.caption(f"✅ Order in line with ${gross_ex_wk:,.0f} ex-GST sales — guide "
                                f"~{rec_bird:.0f} whole ({rec_wt:.0f} tubs) · "
                                f"{rec_split:.0f} split ({rec_st:.0f} tubs).")
     st.write("")
