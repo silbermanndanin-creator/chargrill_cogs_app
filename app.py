@@ -11,6 +11,7 @@ import plotly.graph_objects as go
 import config
 import storage
 import metrics
+import advisor  # AI COGS-reduction advisor (Sonnet, on-demand + cached)
 import packaging_order as packaging  # NB: file is packaging_order.py — must NOT shadow the 'packaging' PyPI lib
 import drinks
 from extract import extract_invoice, extract_pos_slip
@@ -591,6 +592,14 @@ def c_build_digest(day):
     return _digest.build_digest(day)
 
 
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def c_cogs_report(facts_json):
+    # Cache the AI COGS analysis by its facts content: identical data -> instant replay,
+    # so re-opening the tab or re-running the script never re-charges Claude. The key is the
+    # serialised facts pack; bust_caches() (any data write) clears it so advice stays current.
+    return advisor.cogs_report(json.loads(facts_json))
+
+
 # ============ Sidebar: period + revenue ============
 with st.sidebar:
     st.markdown("### 🍗 Chargrill COGS")
@@ -758,20 +767,106 @@ if st.button(_toggle_label, key="theme_toggle", help="Toggle light / dark mode")
 
 # Owner sees all tabs; chef sees only the cost/operations tabs.
 if owner:
-    (tab_dash, tab_inv, tab_pos, tab_list, tab_track, tab_cater, tab_lab, tab_veg, tab_pack,
-     tab_recon, tab_temp, tab_rep, tab_var) = st.tabs(
-        ["📊 Dashboard", "📸 Add invoice", "💰 Daily takings", "📋 Invoices", "✅ Invoice tracker",
-         "🥗 Catering", "🧮 Labour", "🥬 Veggie prices", "📦 Ordering",
+    (tab_dash, tab_adv, tab_inv, tab_pos, tab_list, tab_track, tab_cater, tab_lab, tab_veg,
+     tab_pack, tab_recon, tab_temp, tab_rep, tab_var) = st.tabs(
+        ["📊 Dashboard", "🤖 Advisor", "📸 Add invoice", "💰 Daily takings", "📋 Invoices",
+         "✅ Invoice tracker", "🥗 Catering", "🧮 Labour", "🥬 Veggie prices", "📦 Ordering",
          "🧾 Reconciliation", "🌡️ Temp records", "📈 Reports", "📝 Variations"])
 else:
     (tab_dash, tab_inv, tab_list, tab_cater, tab_veg, tab_pack,
      tab_temp) = st.tabs(
         ["📊 Dashboard", "📸 Add invoice", "📋 Invoices", "🥗 Catering", "🥬 Veggie prices",
          "📦 Ordering", "🌡️ Temp records"])
-    tab_pos = tab_lab = tab_recon = tab_rep = tab_var = tab_track = None
+    tab_pos = tab_lab = tab_recon = tab_rep = tab_var = tab_track = tab_adv = None
 
 # Order pad + Daily digest tabs removed — these stay None so their (guarded) bodies skip.
 tab_order = tab_digest = None
+
+# ============ AI COGS advisor tab (owner only) ============
+# A "COGS Doctor": one click runs an AI analysis over the period's real cost data and
+# returns ranked, dollar-quantified ways to cut COGS + prime cost; plus a chat box for
+# follow-ups. Cost-safe: the report is cached by its facts content (c_cogs_report) so it
+# only calls Claude on a click with NEW data — never on a plain rerun; chat fires only on
+# submit. Sonnet, pre-aggregated input -> cheap. See advisor.py.
+if tab_adv is not None:
+    with tab_adv:
+        st.markdown(f"<div class='hdr'>🤖 COGS Doctor — {period_label}</div>",
+                    unsafe_allow_html=True)
+        st.caption("AI analysis of your real cost data, with concrete, dollar-quantified ways "
+                   "to bring food COGS and prime cost toward target. It runs only when you click, "
+                   "and the result is cached — so it won't re-charge on every interaction.")
+
+        if not get_api_key():
+            st.warning(_api_key_help())
+        elif df.empty:
+            st.info("No invoices yet — add invoices and daily takings first, then come back "
+                    "for recommendations.")
+        else:
+            # Build the compact facts pack from data already loaded this run (no extra reads).
+            _adv_cogs = metrics.food_cogs_for_period(df, p_col, period_key)
+            _adv_labmap = c_labour_cost_map_for(mode)
+            _adv_weekly_sales = None
+            if mode == "Week":
+                try:
+                    _adv_weekly_sales = (metrics.pos_breakdown(pos_df, "iso_week", period_key)
+                                         .get("gross_incl") or None)
+                except Exception:
+                    _adv_weekly_sales = None
+            _adv_facts = advisor.build_facts(
+                df=df, lines=lines, rev_map=trend_rev_map, labour_cost_map=_adv_labmap,
+                period_col=p_col, period_key=period_key, revenue=revenue,
+                total_cogs=_adv_cogs, labour_cost=labour_cost, mode=mode,
+                weekly_sales=_adv_weekly_sales,
+                catering=c_load_catering_orders(), remittances=c_load_platform_remittances())
+            _adv_facts_json = json.dumps(_adv_facts, default=str, sort_keys=True)
+
+            if revenue <= 0:
+                st.info("Tip: add this period's revenue (sidebar) so the advisor can work in "
+                        "COGS % and quantify savings — it'll still flag price rises without it.")
+
+            _cols = st.columns([1, 1, 2])
+            if _cols[0].button("🩺 Analyse my COGS", key="adv_run", type="primary"):
+                with st.spinner("Analysing your cost data…"):
+                    try:
+                        st.session_state["adv_report"] = c_cogs_report(_adv_facts_json)
+                        st.session_state["adv_report_key"] = period_key
+                    except Exception as e:
+                        st.session_state["adv_report"] = None
+                        st.error(f"Couldn't generate the analysis: {e}")
+            if st.session_state.get("adv_report"):
+                if st.session_state.get("adv_report_key") not in (None, period_key):
+                    st.caption("Showing the last analysis — click **Analyse** to refresh for "
+                               "this period.")
+                st.markdown(st.session_state["adv_report"])
+            else:
+                st.caption("Click **Analyse my COGS** for this period's recommendations.")
+
+            st.divider()
+            st.markdown("**💬 Ask the advisor**")
+            st.caption("Follow-ups about your costs — e.g. *“why is meat over budget?”*, "
+                       "*“which veggie line jumped most?”*, *“what would hit 40% COGS this week?”*")
+            _adv_hist = st.session_state.setdefault("adv_chat", [])
+            for _m in _adv_hist:
+                with st.chat_message(_m["role"]):
+                    st.markdown(_m["content"])
+            # st.form (not st.chat_input — which can't sit inside tabs on some Streamlit
+            # versions); clear_on_submit empties the box, and the Claude call fires only on Send.
+            with st.form("adv_chat_form", clear_on_submit=True):
+                _q = st.text_input("Ask the advisor", label_visibility="collapsed",
+                                   placeholder="Ask about reducing your costs…")
+                _send = st.form_submit_button("Send")
+            if _send and _q.strip():
+                _adv_hist.append({"role": "user", "content": _q.strip()})
+                with st.spinner("Thinking…"):
+                    try:
+                        _ans = advisor.cogs_chat(_adv_facts, _adv_hist[:-1], _q.strip())
+                    except Exception as e:
+                        _ans = f"Sorry — I couldn't answer that just now ({e})."
+                _adv_hist.append({"role": "assistant", "content": _ans})
+                st.rerun()
+            if _adv_hist and st.button("Clear chat", key="adv_chat_clear"):
+                st.session_state["adv_chat"] = []
+                st.rerun()
 
 # ============ Add-invoice tab ============
 with tab_inv:

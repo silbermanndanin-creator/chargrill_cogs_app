@@ -1,0 +1,54 @@
+name: Ingest (invoices · catering · remittances)
+
+# One scheduled run drives all three Power Automate -> Supabase ingests, every 30 min.
+# This REPLACES three separate */15 workflows (inbox, catering-ingest, remittance-ingest):
+# one checkout + one dependency install per run instead of three, at half the frequency —
+# roughly a 6x cut in GitHub Actions minutes — while emailed invoices and catering/payment
+# documents still appear in the app within ~30 minutes. Run any time from the Actions tab
+# ("Run workflow").
+#
+# Each ingest is its own step with `if: ${{ !cancelled() }}`, so one ingest failing never
+# stops the others from running; a failed step still fails the job, so a real problem stays
+# visible in the Actions tab. Each script is independently idempotent (dedup on re-send;
+# transient errors leave the file for the next run), so re-running is always safe.
+#
+# Requires repo secrets (Settings -> Secrets and variables -> Actions):
+#   SUPABASE_URL, SUPABASE_KEY (the service_role key), ANTHROPIC_API_KEY
+# Optional:
+#   SUPABASE_BUCKET  (catering/remittance Storage bucket name; defaults to "invoices")
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch: {}
+
+# Never let two ingest runs overlap (a busy run can exceed 30 min, and they move the same
+# files) — a new run waits for the in-flight one to finish.
+concurrency:
+  group: ingest
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      SUPABASE_BUCKET: ${{ secrets.SUPABASE_BUCKET }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: pip install anthropic supabase pandas pydantic Pillow
+      - name: Ingest emailed invoices
+        if: ${{ !cancelled() }}
+        run: python inbox_ingest.py
+      - name: Ingest catering orders
+        if: ${{ !cancelled() }}
+        run: python catering_ingest.py
+      - name: Ingest platform remittances
+        if: ${{ !cancelled() }}
+        run: python remittance_ingest.py
