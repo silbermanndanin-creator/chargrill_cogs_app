@@ -647,6 +647,11 @@ with st.sidebar:
     _deliv_payouts = c_load_delivery_payouts()
     _deliv_keep = metrics.delivery_keep_map(_deliv_payouts, pos_df)
     pos_map = metrics.pos_revenue_map(pos_df, p_col, keep_map=_deliv_keep)
+    # {date -> actual-adjusted net ex-GST} for per-day displays/exports, so the daily net
+    # column matches the actuals-based weekly revenue. Empty unless a payout has landed
+    # (then per-day falls back to the stored 40% estimate, which is identical anyway).
+    _day_net_actual = (metrics.pos_revenue_map(pos_df, "date", keep_map=_deliv_keep)
+                       if _deliv_keep else {})
     manual_map = c_revenue_map(p_type)
     # Let the owner know when this period's delivery revenue is REAL (a payout has landed)
     # rather than the flat 40% estimate.
@@ -671,9 +676,10 @@ with st.sidebar:
             revenue = float(pos_map.get(period_key, 0.0))
             bd = metrics.pos_breakdown(pos_df, p_col, period_key)
             if bd["days"]:
-                st.caption(f"{bd['days']} day(s) · **${revenue:,.0f}** ex-GST — "
-                           f"net after −{config.DELIVERY_COMMISSION*100:.0f}% on "
-                           f"${bd['delivery_gross']:,.0f} delivery")
+                st.caption(f"{bd['days']} day(s) · **${revenue:,.0f}** ex-GST — net of "
+                           f"delivery commission on ${bd['delivery_gross']:,.0f} delivery "
+                           "(actual payouts where available, else −"
+                           f"{config.DELIVERY_COMMISSION*100:.0f}% estimate)")
             else:
                 st.caption("No POS slips this period — add one in **💰 Daily takings**.")
         elif rev_mode == "Manual entry":
@@ -842,51 +848,52 @@ if tab_adv is not None:
             st.info("No invoices yet — add invoices and daily takings first, then come back "
                     "for recommendations.")
         else:
-            # Build the compact facts pack from data already loaded this run (no extra reads).
-            _adv_cogs = metrics.food_cogs_for_period(df, p_col, period_key)
-            _adv_labmap = c_labour_cost_map_for(mode)
-            _adv_weekly_sales = None
-            if mode == "Week":
-                try:
-                    _adv_weekly_sales = (metrics.pos_breakdown(pos_df, "iso_week", period_key)
-                                         .get("gross_incl") or None)
-                except Exception:
-                    _adv_weekly_sales = None
-            # Actual Uber/DoorDash payouts that fall in this period (week = exact iso_week;
-            # month = any pay-week starting in the month) — gives the advisor real delivery
-            # economics (net vs gross, ad spend) instead of the 40% assumption.
-            _adv_delivery = []
-            if _deliv_payouts is not None and not _deliv_payouts.empty:
-                for _r in _deliv_payouts.to_dict("records"):
-                    _inper = (str(_r.get("iso_week")) == period_key if mode == "Week"
-                              else str(_r.get("period_start") or "").startswith(period_key))
-                    if _inper:
-                        _adv_delivery.append({
-                            "platform": _r.get("platform"), "week": _r.get("iso_week"),
-                            "gross_incl_gst": _r.get("gross_incl_gst"),
-                            "net_payout": _r.get("net_payout"),
-                            "ad_spend": _r.get("ad_spend")})
-            # Over-ordering: items bought above the aimed qty for this period's sales.
-            _adv_gross, _ = _period_gross_sales()
-            _adv_over = []
-            for _onm, _ocl, _osup in [("Baida", config.baida_cut, config.BAIDA_SUPPLIER),
-                                      ("Blueseas", config.blueseas_main, config.BLUESEAS_SUPPLIER)]:
-                _ogdf, _ = metrics.order_guide(lines, pos_df, _ocl, _osup,
-                                               p_col, period_key, _adv_gross)
-                for _orow in _ogdf.to_dict("records"):
-                    if _orow["Diff"] > 0 and _orow["~$ over"] > 0:
-                        _adv_over.append({"supplier": _onm, "item": _orow["Item"],
+            def _build_adv_facts():
+                """Assemble the compact facts pack ON DEMAND. Called only when the user clicks
+                Analyse or sends a chat — never on a plain rerun — so the metric aggregations
+                (trends, price anomalies, order-guide over-ordering) don't run every interaction.
+                Returns (facts dict, facts_json)."""
+                _cogs = metrics.food_cogs_for_period(df, p_col, period_key)
+                _labmap = c_labour_cost_map_for(mode)
+                _wsales = None
+                if mode == "Week":
+                    try:
+                        _wsales = (metrics.pos_breakdown(pos_df, "iso_week", period_key)
+                                   .get("gross_incl") or None)
+                    except Exception:
+                        _wsales = None
+                # Actual Uber/DoorDash payouts that fall in this period (week = exact iso_week;
+                # month = any pay-week starting in the month) — real delivery economics.
+                _deliv = []
+                if _deliv_payouts is not None and not _deliv_payouts.empty:
+                    for _r in _deliv_payouts.to_dict("records"):
+                        _inper = (str(_r.get("iso_week")) == period_key if mode == "Week"
+                                  else str(_r.get("period_start") or "").startswith(period_key))
+                        if _inper:
+                            _deliv.append({"platform": _r.get("platform"), "week": _r.get("iso_week"),
+                                           "gross_incl_gst": _r.get("gross_incl_gst"),
+                                           "net_payout": _r.get("net_payout"),
+                                           "ad_spend": _r.get("ad_spend")})
+                # Over-ordering: items bought above the aimed qty for this period's sales.
+                _gross, _ = _period_gross_sales()
+                _over = []
+                for _onm, _ocl, _osup in [("Baida", config.baida_cut, config.BAIDA_SUPPLIER),
+                                          ("Blueseas", config.blueseas_main, config.BLUESEAS_SUPPLIER)]:
+                    _ogdf, _ = metrics.order_guide(lines, pos_df, _ocl, _osup,
+                                                   p_col, period_key, _gross)
+                    for _orow in _ogdf.to_dict("records"):
+                        if _orow["Diff"] > 0 and _orow["~$ over"] > 0:
+                            _over.append({"supplier": _onm, "item": _orow["Item"],
                                           "aimed": _orow["Aimed"], "actual": _orow["Actual"],
                                           "est_$_over": _orow["~$ over"]})
-            _adv_over.sort(key=lambda x: -x["est_$_over"])
-            _adv_facts = advisor.build_facts(
-                df=df, lines=lines, rev_map=trend_rev_map, labour_cost_map=_adv_labmap,
-                period_col=p_col, period_key=period_key, revenue=revenue,
-                total_cogs=_adv_cogs, labour_cost=labour_cost, mode=mode,
-                weekly_sales=_adv_weekly_sales,
-                catering=c_load_catering_orders(), remittances=c_load_platform_remittances(),
-                delivery=_adv_delivery or None, over_ordering=_adv_over or None)
-            _adv_facts_json = json.dumps(_adv_facts, default=str, sort_keys=True)
+                _over.sort(key=lambda x: -x["est_$_over"])
+                _facts = advisor.build_facts(
+                    df=df, lines=lines, rev_map=trend_rev_map, labour_cost_map=_labmap,
+                    period_col=p_col, period_key=period_key, revenue=revenue,
+                    total_cogs=_cogs, labour_cost=labour_cost, mode=mode, weekly_sales=_wsales,
+                    catering=c_load_catering_orders(), remittances=c_load_platform_remittances(),
+                    delivery=_deliv or None, over_ordering=_over or None)
+                return _facts, json.dumps(_facts, default=str, sort_keys=True)
 
             if revenue <= 0:
                 st.info("Tip: add this period's revenue (sidebar) so the advisor can work in "
@@ -896,7 +903,8 @@ if tab_adv is not None:
             if _cols[0].button("🩺 Analyse my COGS", key="adv_run", type="primary"):
                 with st.spinner("Analysing your cost data…"):
                     try:
-                        st.session_state["adv_report"] = c_cogs_report(_adv_facts_json)
+                        _, _fjson = _build_adv_facts()
+                        st.session_state["adv_report"] = c_cogs_report(_fjson)
                         st.session_state["adv_report_key"] = period_key
                     except Exception as e:
                         st.session_state["adv_report"] = None
@@ -927,7 +935,8 @@ if tab_adv is not None:
                 _adv_hist.append({"role": "user", "content": _q.strip()})
                 with st.spinner("Thinking…"):
                     try:
-                        _ans = advisor.cogs_chat(_adv_facts, _adv_hist[:-1], _q.strip())
+                        _facts, _ = _build_adv_facts()
+                        _ans = advisor.cogs_chat(_facts, _adv_hist[:-1], _q.strip())
                     except Exception as e:
                         _ans = f"Sorry — I couldn't answer that just now ({e})."
                 _adv_hist.append({"role": "assistant", "content": _ans})
@@ -1124,7 +1133,9 @@ if tab_pos is not None:
             if match is not None and not match.empty:
                 r = match.iloc[0]
                 num = lambda c: float(pd.to_numeric(r[c], errors="coerce") or 0)
-                incl, deliv, net = num("total_incl_gst"), num("doordash") + num("ubereats"), num("adjusted_ex_gst")
+                incl, deliv = num("total_incl_gst"), num("doordash") + num("ubereats")
+                # Prefer the actual-payout-adjusted net for the day where a payout has landed.
+                net = _day_net_actual.get(str(r["date"]), num("adjusted_ex_gst"))
             else:
                 incl = deliv = net = 0.0
             rows.append({"Day": dday.strftime("%a %d %b"), "Takings (incl GST)": round(incl, 2),
@@ -2651,7 +2662,13 @@ def _accountant_pack_xlsx(month_key, inv_df, pos_df):
         if lab_rows:
             pd.DataFrame(lab_rows).to_excel(xw, sheet_name="Labour", index=False)
         if not pos.empty:
-            pos[["date", "total_incl_gst", "doordash", "ubereats", "adjusted_ex_gst"]].rename(
+            _pexp = pos[["date", "total_incl_gst", "doordash", "ubereats", "adjusted_ex_gst"]].copy()
+            # Use the actual-payout-adjusted net where a delivery statement has landed, so the
+            # accountant pack matches the dashboard rather than the flat 40% estimate.
+            if _day_net_actual:
+                _pexp["adjusted_ex_gst"] = (_pexp["date"].astype(str).map(_day_net_actual)
+                                            .fillna(_pexp["adjusted_ex_gst"]))
+            _pexp.rename(
                 columns={"date": "Date", "total_incl_gst": "Takings incl GST",
                          "doordash": "DoorDash", "ubereats": "UberEats",
                          "adjusted_ex_gst": "Net ex-GST"}
