@@ -249,3 +249,61 @@ def veggie_item(description) -> str | None:
         if any(k in d for k in kws):
             return name
     return None
+
+
+# ---- Baida cut tracking (order guide: aimed vs actual quantities per cut) ----
+# Real Baida invoice lines look like "FRESH RSPCA CHICKEN CHARCOAL BULK SZ 16 CRTE",
+# "...SPLIT CHICKEN 1.1KG CRT", "...DRUMSTICKS BULK 12KG CRTE", "...CHICKEN STRIPS/TLOIN...",
+# "CGRILL CHARLIES FLATTENED FOB 171-190G 15KG CRT" (large) / "...FOB 95-125G 11.2KG CRT"
+# (small). The order guide buckets each line into one of these cuts and compares the week's
+# actual quantity to the aimed quantity (learned per $ of sales). 'whole' is an alias for the
+# charcoal bird. NB this is broader than TUB_TYPES (which only splits whole vs split tubs).
+def baida_cut(description) -> str | None:
+    """Bucket a Baida line into a cut: Whole/Charcoal | Split | Drums | Strips | Flat-L |
+    Flat-S. None for non-cut lines (e.g. the TUB DEPOSIT). Specific cuts win over generic."""
+    d = (description or "").lower()
+    if "split" in d:
+        return "Split"
+    if "charcoal" in d or "whole" in d:
+        return "Whole/Charcoal"
+    if "drumstick" in d:
+        return "Drums"
+    if "strip" in d or "tloin" in d or "tenderloin" in d:
+        return "Strips"
+    if "flattened" in d or "flat" in d:
+        if "171" in d or "190" in d:
+            return "Flat-L"           # FLATTENED FOB 171-190G (larger bird)
+        if "95" in d or "125" in d or "11.2" in d:
+            return "Flat-S"           # FLATTENED FOB 95-125G (smaller bird)
+        return "Flat"
+    return None
+
+
+# ---- Blueseas (Broadline) main-item tracking (order guide) ----
+# Blueseas is a broadline distributor (hundreds of SKUs); the order guide tracks only the
+# highest-volume "main" items where over-ordering moves the needle. Keyword-matched against
+# the printed description; first match wins, so list more specific names first.
+BLUESEAS_SUPPLIER = "Blueseas (Broadline)"
+BLUESEAS_MAINS = {
+    "Chips":               ["chips"],
+    "Sweet Potato Wedges": ["sweet potato"],
+    "Salmon":              ["salmon"],
+    "Cream":               ["cream"],
+    "Soya Beans":          ["soya"],
+    "Chicken Wings":       ["wings"],
+    "Breadcrumbs":         ["breadcrumb"],
+    "Tomato Sauce":        ["tomato sauce"],
+    "Mayo":                ["mayo"],
+    "Cottonseed Oil":      ["cottonseed"],
+    "Mozzarella":          ["mozz"],
+    "Milk":                ["milk"],
+}
+
+
+def blueseas_main(description) -> str | None:
+    """Match a Blueseas line to a tracked main item (first match wins); None otherwise."""
+    d = (description or "").lower()
+    for name, kws in BLUESEAS_MAINS.items():
+        if any(k in d for k in kws):
+            return name
+    return None
