@@ -3106,10 +3106,12 @@ if tab_cater is not None:
             if win.empty:
                 st.info(f"No catering deliveries in {period_label}.")
             else:
-                # $ at a glance for the shown window (inc GST), split by platform —
-                # the money to expect back in payouts (Eat First arrives net of
-                # ~14.5% commission, so its deposit will be less than shown here).
-                _wtot = pd.to_numeric(win["items_total"], errors="coerce").fillna(0)
+                # $ at a glance for the shown window — the money to expect back in payouts.
+                # Hampr is shown NET of its flat 15% commission (what you ring up); Eat First
+                # also arrives net of ~14.5% commission, so its deposit is less than shown.
+                _wtot = win.apply(
+                    lambda _r: config.net_of_commission(_r["platform"], _r["items_total"]),
+                    axis=1)
                 _wplats = [p for p in win["platform"].dropna().unique() if str(p).strip()]
                 _wcols = st.columns(1 + min(len(_wplats), 4))
                 _wcols[0].metric("Orders total", f"${_wtot.sum():,.0f}",
@@ -3159,10 +3161,14 @@ if tab_cater is not None:
                                               + (f" — *{_tail}*" if _tail else ""))
                             st.markdown("\n".join(_lines))
                         if r.get("items_total"):
-                            try:
-                                st.caption(f"Order total: ${float(r['items_total']):,.2f}")
-                            except (TypeError, ValueError):
-                                pass
+                            _plat = str(r.get("platform") or "").strip()
+                            _net = config.net_of_commission(_plat, r.get("items_total"))
+                            _rate = config.PLATFORM_COMMISSION.get(_plat)
+                            if _rate:
+                                st.caption(f"Order total: ${_net:,.2f} "
+                                           f"(net of {_rate*100:.0f}% {_plat} commission)")
+                            else:
+                                st.caption(f"Order total: ${_net:,.2f}")
                         # Original emailed PDF / order file, fetched from Storage on demand.
                         src_file = r.get("source_file")
                         if src_file:
