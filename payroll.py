@@ -358,7 +358,10 @@ def process_employee(emp_shifts, public_holidays, emp_type, min_weekly_hrs=38):
 
     wk_threshold = min_weekly_hrs if (isinstance(min_weekly_hrs, (int, float))
                                       and min_weekly_hrs > 0) else WEEKLY_OT_THRESHOLD
-    total_ord = hrs['wd'] + hrs['sat'] + hrs['sun'] + hrs['sun_ot'] + hrs['ph']
+    # Public-holiday hours are EXCLUDED from the ordinary-hours count for weekly overtime.
+    # They're already paid the PH premium, so counting them toward the 38h threshold would
+    # double-dip — pushing ordinary hours into overtime on top of the public-holiday rate.
+    total_ord = hrs['wd'] + hrs['sat'] + hrs['sun'] + hrs['sun_ot']
 
     if total_ord > wk_threshold:
         wk_ot = total_ord - wk_threshold
