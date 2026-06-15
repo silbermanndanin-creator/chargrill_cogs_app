@@ -1412,6 +1412,7 @@ if tab_lab is not None:
                     summary_df = pd.DataFrame([{
                         "Employee": r["name"], "Type": r["emp_type"], "Section": r.get("section", ""),
                         "Worked Hrs": round(_hr(r, "total"), 2),
+                        "PH Hrs": round(_hr(r, "ph") + _hr(r, "ph_daily_ot"), 2),
                         "AL hrs": round(r.get("al_hrs", 0), 2), "SL hrs": round(r.get("sl_hrs", 0), 2),
                         "Flat Pay": round(r.get("flat_pay", 0), 2), "Award Pay": round(r.get("award_pay", 0), 2),
                         "Top Up": round(r.get("topup", 0), 2), "Leave Pay": round(r.get("leave_pay", 0), 2),
