@@ -217,6 +217,29 @@ def delivery_adjust(total_incl_gst, doordash, ubereats):
     return round(adj_incl, 2), round(adj_incl / (1 + GST_RATE), 2)
 
 
+# ---- Catering platform commissions ----
+# Some catering platforms pay the venue the order value LESS a flat commission, so the
+# amount actually rung up / deposited is net of that cut. Hampr issues a Recipient Created
+# Tax Invoice (RCTI) per order and deposits the order value (incl GST) less a flat 15%
+# commission — e.g. an $784.45 order nets $666.78. The catering feed shows these orders at
+# the net figure (what you ring up). Platforms not listed here are shown at full value.
+PLATFORM_COMMISSION = {
+    "Hampr": 0.15,
+}
+
+
+def net_of_commission(platform, items_total):
+    """The amount the venue actually rings up for a catering order: the order value less
+    the platform's commission (0 for platforms with no commission entry). Returns a float;
+    0.0 when items_total is blank or unparseable."""
+    try:
+        gross = float(items_total or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    rate = PLATFORM_COMMISSION.get(str(platform or "").strip(), 0.0)
+    return round(gross * (1 - rate), 2)
+
+
 # ---- Veggie item price tracking (St George Food invoices) ----
 # Main produce lines whose unit price we track over time. Order matters: more specific
 # names first (e.g. Broccolini before Broccoli, Eggplant before Eggs, Sweet Potato before
