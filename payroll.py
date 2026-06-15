@@ -87,10 +87,10 @@ def load_setup_from_bytes(xlsx_bytes):
     ph_df = pd.read_excel(buf, sheet_name='PUBLIC HOLIDAYS', skiprows=2, header=0)
     ph_df.columns = [str(c).strip() for c in ph_df.columns]
     ph_df = ph_df.dropna(subset=['Date'])
-    # dayfirst=True: the sheet is hand-typed in AU (dd/mm/yyyy); without it a date like
-    # 8/06 reads as 6 Aug and never matches the worked Monday. Merge the built-in NSW
-    # calendar so common holidays (King's Birthday, Labour Day, …) work with no upkeep.
-    public_holidays = set(pd.to_datetime(ph_df['Date'], dayfirst=True,
+    # Parse without dayfirst: Excel date cells and ISO text both read correctly, and
+    # forcing dayfirst would corrupt ISO (yyyy-mm-dd) dates. The built-in NSW calendar
+    # covers the standard holidays (King's Birthday, Labour Day, …) with no upkeep.
+    public_holidays = set(pd.to_datetime(ph_df['Date'],
                                          errors='coerce').dropna().dt.date)
     public_holidays |= builtin_public_holidays()
 
@@ -175,7 +175,9 @@ def load_csv_from_bytes(csv_bytes):
     df = df.dropna(subset=['Shift Start Time', 'Shift End Time'])
     df = df[df['Shift Start Time'].astype(str).str.strip() != '']
     df = df[df['Shift End Time'].astype(str).str.strip() != '']
-    df['Date'] = pd.to_datetime(df['Date'], dayfirst=True, errors='coerce')
+    # Tanda exports ISO yyyy-mm-dd; parse without dayfirst (dayfirst would swap month/day
+    # on ISO dates, e.g. 2026-06-08 -> 6 Aug, scrambling day-of-week and PH detection).
+    df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
     df = df.dropna(subset=['Date'])  # drop rows whose date couldn't be read
     df['_name_key'] = df['Name'].apply(normalise_name)
     return df
