@@ -43,13 +43,14 @@ def explode_lines(df: pd.DataFrame) -> pd.DataFrame:
                 "description": it.get("description"),
                 "quantity": it.get("quantity"),
                 "unit": norm_unit(it.get("unit")),
+                "pack_size": it.get("pack_size"),    # inner-unit count from a pack UOM (CTN-6 -> 6)
                 "unit_price": it.get("unit_price"),  # printed per-unit price (per-kg when shown)
                 "amount": it.get("amount"),
                 # stored override (from review screen) else detect from description
                 "tub_type": it.get("tub_type") or config.tub_type(it.get("description")),
             })
     cols = ["supplier", "invoice_date", "iso_week", "month", "description",
-            "quantity", "unit", "unit_price", "amount", "tub_type"]
+            "quantity", "unit", "pack_size", "unit_price", "amount", "tub_type"]
     return pd.DataFrame(recs, columns=cols)
 
 
@@ -315,12 +316,22 @@ def _item_key(desc):
 
 
 def item_price_history(lines):
-    """Long df [supplier, item, description, date, unit_price, qty, amount]: one row per
-    (supplier, normalised item, invoice_date) with the weighted PER-UNIT price. Covers
-    every supplier/item. Only lines with a real quantity (>0) are included, so the unit
-    price is genuinely per-unit and comparable across deliveries (lines that carry an
-    amount but no quantity can't be priced per-unit and are skipped here)."""
-    cols = ["supplier", "item", "description", "date", "unit_price", "qty", "amount"]
+    """Long df [supplier, item, description, date, unit_price, unit_price_each, qty, amount]:
+    one row per (supplier, normalised item, invoice_date) with the weighted PER-UNIT price.
+    Covers every supplier/item. Only lines with a real quantity (>0) are included, so the
+    unit price is genuinely per-unit and comparable across deliveries (lines that carry an
+    amount but no quantity can't be priced per-unit and are skipped here).
+
+    unit_price       printed per-unit (per-kg/per-carton) price, qty-weighted — the figure
+                     to display and order by.
+    unit_price_each  EFFECTIVE price per single sellable unit = line amount / (quantity x
+                     inner units per pack). Computed from the amount (not the printed
+                     unit_price) so a line TOTAL can never be mistaken for a unit price when
+                     the printed price is missing or mis-captured, and divided by the pack
+                     size so a carton-of-N line compares like-for-like against a single
+                     unit. This is the basis price-rise detection uses."""
+    cols = ["supplier", "item", "description", "date",
+            "unit_price", "unit_price_each", "qty", "amount"]
     if lines.empty:
         return pd.DataFrame(columns=cols)
     sub = lines.copy()
@@ -331,20 +342,32 @@ def item_price_history(lines):
               & (sub["qnum"] > 0)]
     if sub.empty:
         return pd.DataFrame(columns=cols)
-    desc = (sub.groupby(["supplier", "item", "invoice_date"])["description"]
-            .first().reset_index())
+    for c in ("unit", "pack_size"):
+        if c not in sub.columns:
+            sub[c] = None
+    meta = (sub.groupby(["supplier", "item", "invoice_date"])
+            .agg(description=("description", "first"), unit=("unit", "first"),
+                 pack_size=("pack_size", "first")).reset_index())
     g = (sub.groupby(["supplier", "item", "invoice_date"])[["quantity", "amount", "unit_price"]]
          .apply(_group_price).reset_index())  # prefers printed per-unit (per-kg) price
-    g = g.merge(desc, on=["supplier", "item", "invoice_date"])
+    g = g.merge(meta, on=["supplier", "item", "invoice_date"])
     g = g[g["qty"] > 0]
+    # Effective per-single-unit price = amount / (quantity x inner units). Using amount/qty
+    # (not the printed unit_price, which is where mis-captures land) means a line total can
+    # never read as a unit price; dividing by pack size normalises carton-of-N lines.
+    pack = [config.units_per_pack(d, u, ps)
+            for d, u, ps in zip(g["description"], g["unit"], g["pack_size"])]
+    g["unit_price_each"] = g["amount"] / (g["qty"] * pd.Series(pack, index=g.index))
     g = g.rename(columns={"invoice_date": "date"})
     return g[cols].sort_values(["supplier", "item", "date"]).reset_index(drop=True)
 
 
 def price_anomalies(lines, min_pct=8.0):
-    """Items whose latest unit price ROSE >= min_pct vs the previous purchase of the same
-    item from the same supplier. df [Supplier, Item, Was, Now, Change, _pct, Last buy, Prev buy],
-    biggest rise first — catches silent supplier price creep across the whole catalogue."""
+    """Items whose latest per-unit price ROSE >= min_pct vs the previous purchase of the
+    same item from the same supplier. df [Supplier, Item, Was, Now, Change, _pct, Last buy,
+    Prev buy], biggest rise first — catches silent supplier price creep across the whole
+    catalogue. Prices are compared on a true per-SINGLE-unit basis (unit_price_each), so a
+    line that switches between per-each and per-carton billing isn't flagged as a rise."""
     cols = ["Supplier", "Item", "Was", "Now", "Change", "_pct", "Last buy", "Prev buy"]
     h = item_price_history(lines)
     if h.empty:
@@ -358,8 +381,8 @@ def price_anomalies(lines, min_pct=8.0):
         sub = sub.sort_values("date")
         if len(sub) < 2:
             continue
-        now = float(sub.iloc[-1]["unit_price"])
-        prev = float(sub.iloc[-2]["unit_price"])
+        now = float(sub.iloc[-1]["unit_price_each"])
+        prev = float(sub.iloc[-2]["unit_price_each"])
         if prev <= 0 or now < 1.0 or (now - prev) < 0.5:
             continue  # ignore trivially-priced lines and sub-50c moves (% noise)
         pct = (now - prev) / prev * 100

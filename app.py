@@ -321,10 +321,34 @@ def _owner_pin():
     return str(p or os.environ.get("OWNER_PIN") or "1811")
 
 
+def _owner_key():
+    """Token for the owner's personal auto-sign-in link (?owner=<key>). Defaults to the
+    PIN so it works out of the box; set a stronger OWNER_KEY secret to decouple the two."""
+    try:
+        k = st.secrets.get("OWNER_KEY")
+    except Exception:
+        k = None
+    return str(k or os.environ.get("OWNER_KEY") or _owner_pin())
+
+
 if "is_owner" not in st.session_state:
     st.session_state["is_owner"] = False
 if "role_chosen" not in st.session_state:
     st.session_state["role_chosen"] = False
+
+# ---- Personal owner link: ?owner=<key> skips the PIN on the owner's own device ----
+# The owner ticks "Remember me" once; their bookmarked URL then carries the key, so they
+# never re-enter the PIN. The key only lives in their own link — everyone else still hits
+# the gate below. Only auto-unlocks on a fresh session (before a role is chosen), so an
+# in-session switch to Chef still sticks.
+if not st.session_state["role_chosen"]:
+    try:
+        _qp_owner = st.query_params.get("owner")
+    except Exception:
+        _qp_owner = None
+    if _qp_owner and _qp_owner == _owner_key():
+        st.session_state["is_owner"] = True
+        st.session_state["role_chosen"] = True
 
 # ---- Landing gate: pick Chef or Owner (PIN) before the app loads ----
 if not st.session_state["role_chosen"]:
@@ -351,11 +375,20 @@ if not st.session_state["role_chosen"]:
             st.session_state["gate_pin_open"] = True
         if st.session_state.get("gate_pin_open"):
             _pin = st.text_input("Owner PIN", type="password", key="gate_pin")
+            _remember = st.checkbox("Remember me on this device (skip the PIN next time)",
+                                    value=True, key="gate_remember")
             if st.button("Enter as owner", type="primary", width="stretch", key="gate_enter"):
                 if _pin == _owner_pin():
                     st.session_state["is_owner"] = True
                     st.session_state["role_chosen"] = True
                     st.session_state.pop("gate_pin_open", None)
+                    # Persist sign-in by writing the key into the URL. The owner then
+                    # bookmarks/keeps this link and is auto-signed-in on future visits.
+                    if _remember:
+                        try:
+                            st.query_params["owner"] = _owner_key()
+                        except Exception:
+                            pass
                     st.rerun()
                 else:
                     st.error("Incorrect PIN.")
@@ -738,6 +771,11 @@ with st.sidebar:
     if st.button("↩️ Switch user", width="stretch", key="switchuser"):
         for _k in ("role_chosen", "is_owner", "gate_pin_open"):
             st.session_state.pop(_k, None)
+        try:  # forget the remembered owner link so sign-out is real
+            if "owner" in st.query_params:
+                del st.query_params["owner"]
+        except Exception:
+            pass
         st.rerun()
 
 df = c_load_invoices()
@@ -848,8 +886,10 @@ if tab_adv is not None:
             _adv_weekly_sales = None
             if mode == "Week":
                 try:
-                    _adv_weekly_sales = (metrics.pos_breakdown(pos_df, "iso_week", period_key)
-                                         .get("gross_incl") or None)
+                    # Baida guide expects EX-GST sales with delivery at full value (see the
+                    # dashboard guide and config.BAIDA_ORDER_GUIDE) — strip GST off the gross.
+                    _gi = metrics.pos_breakdown(pos_df, "iso_week", period_key).get("gross_incl")
+                    _adv_weekly_sales = (_gi / (1 + config.GST_RATE)) if _gi else None
                 except Exception:
                     _adv_weekly_sales = None
             # Actual Uber/DoorDash payouts that fall in this period (week = exact iso_week;
@@ -1834,11 +1874,15 @@ with tab_dash:
                    + (f" · TUB DEPOSIT {dep:g}" if dep else ""))
         # Order-vs-turnover guide references weekly sales $, so owner-only.
         if owner and mode == "Week" and not pos_df.empty:
-            gross_wk = float(pd.to_numeric(
+            # The Baida guide table is keyed on EX-GST weekly sales with delivery at full
+            # order value — the platform commission is NOT netted off (that's how the
+            # spreadsheet was built). POS stores GST-inclusive takings, so divide GST out;
+            # do NOT use the delivery-adjusted revenue here.
+            gross_ex_wk = float(pd.to_numeric(
                 pos_df[pos_df["iso_week"] == period_key]["total_incl_gst"],
-                errors="coerce").fillna(0).sum())
-            rec = config.baida_recommended(gross_wk)
-            if rec and gross_wk > 0:
+                errors="coerce").fillna(0).sum()) / (1 + config.GST_RATE)
+            rec = config.baida_recommended(gross_ex_wk)
+            if rec and gross_ex_wk > 0:
                 rec_bird, rec_split = rec
                 wpt = config.TUB_TYPES["RSPCA"]["per_tub"]   # birds per whole tub (8)
                 spt = config.TUB_TYPES["Split"]["per_tub"]   # birds per split tub (12)
@@ -1853,9 +1897,10 @@ with tab_dash:
                     over.append(f"split **{act_split:.0f} = {act_st:.0f} tubs** "
                                 f"vs guide ~{rec_split:.0f} ({rec_st:.0f} tubs)")
                 if over:
-                    st.warning(f"🐔 Baida order high for ${gross_wk:,.0f} sales — " + " · ".join(over))
+                    st.warning(f"🐔 Baida order high for ${gross_ex_wk:,.0f} ex-GST sales — "
+                               + " · ".join(over))
                 else:
-                    st.caption(f"✅ Order in line with ${gross_wk:,.0f} sales — guide "
+                    st.caption(f"✅ Order in line with ${gross_ex_wk:,.0f} ex-GST sales — guide "
                                f"~{rec_bird:.0f} whole ({rec_wt:.0f} tubs) · "
                                f"{rec_split:.0f} split ({rec_st:.0f} tubs).")
     st.write("")
@@ -2442,15 +2487,20 @@ with tab_list:
                     except Exception:
                         _items = []
                     _idf = pd.DataFrame(_items)
-                    for _c in ["description", "quantity", "unit", "amount"]:
+                    # pack_size and unit_price are kept so a correction doesn't drop them —
+                    # losing pack_size reverts a carton-of-N line to a per-carton price and
+                    # can re-trigger a false price-rise alert.
+                    _ecols = ["description", "quantity", "unit", "pack_size", "unit_price", "amount"]
+                    for _c in _ecols:
                         if _c not in _idf.columns:
                             _idf[_c] = None
-                    _idf = _idf[["description", "quantity", "unit", "amount"]]
+                    _idf = _idf[_ecols]
                     edf = st.data_editor(_idf, num_rows="dynamic", hide_index=True,
                                          width="stretch", key="edit_items")
                     if st.button("💾 Save corrections", type="primary", key="edit_save"):
                         new_items = [{"description": r["description"], "quantity": r["quantity"],
-                                      "unit": r["unit"], "amount": r["amount"]}
+                                      "unit": r["unit"], "pack_size": r["pack_size"],
+                                      "unit_price": r["unit_price"], "amount": r["amount"]}
                                      for _, r in edf.iterrows()
                                      if str(r.get("description") or "").strip()
                                      or pd.notna(r.get("amount"))]
