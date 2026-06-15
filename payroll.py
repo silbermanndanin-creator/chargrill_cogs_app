@@ -87,7 +87,12 @@ def load_setup_from_bytes(xlsx_bytes):
     ph_df = pd.read_excel(buf, sheet_name='PUBLIC HOLIDAYS', skiprows=2, header=0)
     ph_df.columns = [str(c).strip() for c in ph_df.columns]
     ph_df = ph_df.dropna(subset=['Date'])
-    public_holidays = set(pd.to_datetime(ph_df['Date']).dt.date)
+    # dayfirst=True: the sheet is hand-typed in AU (dd/mm/yyyy); without it a date like
+    # 8/06 reads as 6 Aug and never matches the worked Monday. Merge the built-in NSW
+    # calendar so common holidays (King's Birthday, Labour Day, …) work with no upkeep.
+    public_holidays = set(pd.to_datetime(ph_df['Date'], dayfirst=True,
+                                         errors='coerce').dropna().dt.date)
+    public_holidays |= builtin_public_holidays()
 
     rates = _parse_rates(rates_df)
     return emp_df, rates, public_holidays
@@ -170,7 +175,8 @@ def load_csv_from_bytes(csv_bytes):
     df = df.dropna(subset=['Shift Start Time', 'Shift End Time'])
     df = df[df['Shift Start Time'].astype(str).str.strip() != '']
     df = df[df['Shift End Time'].astype(str).str.strip() != '']
-    df['Date'] = pd.to_datetime(df['Date'])
+    df['Date'] = pd.to_datetime(df['Date'], dayfirst=True, errors='coerce')
+    df = df.dropna(subset=['Date'])  # drop rows whose date couldn't be read
     df['_name_key'] = df['Name'].apply(normalise_name)
     return df
 
@@ -233,6 +239,62 @@ def day_type(d, public_holidays):
     if wd == 6:
         return 'sun'
     return 'wd'
+
+
+# ── PUBLIC HOLIDAY CALENDAR (NSW) ────────────────────────────────────────────
+# Built-in NSW public holidays so a day like King's Birthday is recognised even
+# when it wasn't typed into the setup sheet. Merged (union) with the sheet's list,
+# so the sheet can only ADD more (e.g. a local show-day, or the weekend-substituted
+# "additional" day when Christmas/New Year/Australia Day fall on a Sat/Sun — those
+# extra days aren't generated here; add them to the sheet if the shop trades them).
+from datetime import date as _date, timedelta as _timedelta
+
+
+def _easter_sunday(year):
+    """Gregorian Easter Sunday (Meeus/Jones/Butcher algorithm)."""
+    a = year % 19
+    b, c = divmod(year, 100)
+    d, e = divmod(b, 4)
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i, k = divmod(c, 4)
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month = (h + l - 7 * m + 114) // 31
+    day = ((h + l - 7 * m + 114) % 31) + 1
+    return _date(year, month, day)
+
+
+def _nth_monday(year, month, n):
+    """The n-th Monday of a month (n=1 → first Monday)."""
+    first = _date(year, month, 1)
+    return first + _timedelta(days=(0 - first.weekday()) % 7 + 7 * (n - 1))
+
+
+def nsw_public_holidays(year):
+    """Set of NSW public-holiday dates (actual days) for one year."""
+    es = _easter_sunday(year)
+    return {
+        _date(year, 1, 1),            # New Year's Day
+        _date(year, 1, 26),           # Australia Day
+        es - _timedelta(days=2),      # Good Friday
+        es - _timedelta(days=1),      # Easter Saturday
+        es,                           # Easter Sunday
+        es + _timedelta(days=1),      # Easter Monday
+        _date(year, 4, 25),           # Anzac Day
+        _nth_monday(year, 6, 2),      # King's Birthday (2nd Monday of June)
+        _nth_monday(year, 10, 1),     # Labour Day (1st Monday of October)
+        _date(year, 12, 25),          # Christmas Day
+        _date(year, 12, 26),          # Boxing Day
+    }
+
+
+def builtin_public_holidays(years=range(2024, 2031)):
+    out = set()
+    for y in years:
+        out |= nsw_public_holidays(y)
+    return out
 
 
 # ── AWARD CALCULATION ────────────────────────────────────────────────────────
@@ -434,8 +496,22 @@ def process_shifts(shift_df, emp_df, all_rates, public_holidays):
 
         flat_pay = hrs['total'] * flat_rate
         award_pay = pay['total']
-        topup = max(0.0, award_pay - flat_pay) if emp_type != 'Casual' else 0.0
-        gross = flat_pay + topup if emp_type != 'Casual' else award_pay
+        if emp_type == 'Casual':
+            topup = 0.0
+            gross = award_pay
+        else:
+            # Public-holiday hours are ALWAYS paid at the award PH rate, kept separate
+            # from the flat rate: the flat rate only covers ordinary/penalty days, so the
+            # PH premium is added on top instead of being absorbed by a high flat rate.
+            # Non-PH hours still get the better-off-overall top-up (flat vs award), and
+            # the flat rate remains an overall floor.
+            ph_pay = pay['ph'] + pay['ph_ot']
+            ph_hours = hrs['ph'] + hrs['ph_daily_ot']
+            non_ph_flat = (hrs['total'] - ph_hours) * flat_rate
+            non_ph_award = award_pay - ph_pay
+            gross = max(non_ph_flat, non_ph_award) + ph_pay
+            gross = max(gross, flat_pay)
+            topup = max(0.0, gross - flat_pay)
 
         display_name = (_get_col(emp_row_dict, 'Employee Name (Display)', 'Employee Name')
                         or emp_shifts['Name'].iloc[0])

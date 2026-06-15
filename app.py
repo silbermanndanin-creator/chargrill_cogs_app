@@ -1387,6 +1387,24 @@ if tab_lab is not None:
                 except Exception as e:
                     st.warning(f"Couldn't render the labour summary: {e}")
 
+                # Show which days were treated as public holidays so a missed PH is obvious.
+                try:
+                    ph_days = sorted({pd.Timestamp(d["date"]).date()
+                                      for r in results for d in (r.get("day_rows") or [])
+                                      if d.get("day_type") == "ph"})
+                    if ph_days:
+                        st.success("🎌 Public holiday(s) this week: "
+                                   + ", ".join(pd.Timestamp(d).strftime("%a %d %b") for d in ph_days)
+                                   + " — worked PH hours are paid at the award public-holiday rate "
+                                   "(added on top of flat pay).")
+                    else:
+                        st.caption("No public holidays detected this week. NSW holidays (King's "
+                                   "Birthday, Labour Day, Anzac, Easter, etc.) are built in; if a "
+                                   "PH is still missing, add its date to the **PUBLIC HOLIDAYS** "
+                                   "sheet in the setup file.")
+                except Exception:
+                    pass
+
                 # Detailed breakdown LAST, collapsed, so the tall tables never bury the
                 # download/save buttons above them on a phone.
                 with st.expander("📋 Detailed breakdown (Summary / Casual / By section / Daily)"):
