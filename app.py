@@ -886,8 +886,10 @@ if tab_adv is not None:
             _adv_weekly_sales = None
             if mode == "Week":
                 try:
-                    _adv_weekly_sales = (metrics.pos_breakdown(pos_df, "iso_week", period_key)
-                                         .get("gross_incl") or None)
+                    # Baida guide expects EX-GST sales with delivery at full value (see the
+                    # dashboard guide and config.BAIDA_ORDER_GUIDE) — strip GST off the gross.
+                    _gi = metrics.pos_breakdown(pos_df, "iso_week", period_key).get("gross_incl")
+                    _adv_weekly_sales = (_gi / (1 + config.GST_RATE)) if _gi else None
                 except Exception:
                     _adv_weekly_sales = None
             # Actual Uber/DoorDash payouts that fall in this period (week = exact iso_week;

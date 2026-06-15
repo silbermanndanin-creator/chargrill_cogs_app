@@ -57,7 +57,8 @@ def build_facts(*, df, lines, rev_map, labour_cost_map, period_col, period_key,
     labour_cost_map   : {period_key: labour cost} for this mode
     period_col        : "iso_week" or "month"; period_key : the current period
     revenue/total_cogs/labour_cost : the current period's headline figures
-    weekly_sales      : gross incl-GST sales for the week (for the Baida order guide); optional
+    weekly_sales      : ex-GST sales for the week, delivery at full value (the basis
+                        config.BAIDA_ORDER_GUIDE is keyed on, for the Baida order guide); optional
     catering          : catering_orders df; remittances : platform_remittances df (optional)
     """
     gp, rp = config.TOTAL_COGS_GREEN, config.TOTAL_COGS_RED
@@ -118,7 +119,7 @@ def build_facts(*, df, lines, rev_map, labour_cost_map, period_col, period_key,
             "actual_split_chickens": _round(tubs.get("Split", {}).get("chickens")),
             "recommended_whole": _round(rec[0]) if rec else None,
             "recommended_split": _round(rec[1]) if rec else None,
-            "weekly_sales_incl_gst": _round(weekly_sales) if weekly_sales else None,
+            "weekly_sales_ex_gst": _round(weekly_sales) if weekly_sales else None,
         }
 
     # --- Catering volume + money still owed by the platforms ---
