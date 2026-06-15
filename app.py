@@ -1276,8 +1276,12 @@ if tab_lab is not None:
 
             out = st.session_state.get("pay")
             if out:
-                wk_end = pd.Timestamp(out["week_ending"])
-                iso = storage.iso_week_of(wk_end.date())
+                # Resolve the week defensively — a bad week_ending must not blank the tab.
+                try:
+                    wk_end = pd.Timestamp(out["week_ending"])
+                    iso = storage.iso_week_of(wk_end.date())
+                except Exception:
+                    wk_end, iso = None, None
 
                 # ---- Annual / sick leave (paid at flat rate, FT/PT only) ----
                 leave, roster = {}, []
@@ -1328,45 +1332,60 @@ if tab_lab is not None:
                 st.session_state["pay"] = out
 
                 st.divider()
-                mc = st.columns(4)
-                mc[0].metric("Week ending", wk_end.strftime("%d %b %Y"))
-                mc[1].metric("Total gross wages", f"${out['total_gross']:,.0f}")
-                mc[2].metric("Total hours", f"{out['total_hours']:,.1f}")
-                mc[3].metric("Top-ups", f"${out['total_topup']:,.0f}")
-                if out.get("total_leave"):
-                    st.caption(f"Gross includes **${out['total_leave']:,.0f}** annual/sick leave.")
-                if out["unmatched"]:
-                    st.warning("Not found in setup (paid on defaults — add them to the setup sheet): "
-                               + ", ".join(out["unmatched"]))
 
-                results = out["results"]
+                # Save-critical values, computed defensively up front. results/_hr are also
+                # reused by the detailed-breakdown expander below.
+                results = out.get("results") or []
                 def _hr(r, k):
                     return float((r.get("hrs") or {}).get(k, 0) or 0)
-
-                # Key actions FIRST so they're always reachable on mobile (above the tall
-                # preview tables): download the report, then save the week's labour.
-                try:
-                    _xlsx = payroll.build_workbook(results, out["week_ending"])
-                    st.download_button(
-                        "⬇️ Download full Excel report", _xlsx,
-                        file_name=f"Payroll_WeekEnding_{wk_end.strftime('%Y-%m-%d')}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-                except Exception as e:
-                    st.error(f"Couldn't build the Excel report: {e}")
-
                 foh_hours = round(sum(_hr(r, "total") for r in results
                                       if str(r.get("section") or "").upper() == "FOH"), 2)
                 boh_hours = round(sum(_hr(r, "total") for r in results
                                       if str(r.get("section") or "").upper() == "BOH"), 2)
-                st.caption(f"Save sets labour for **{iso}** — gross **${out['total_gross']:,.0f}**, "
-                           f"{out['total_hours']:g} hrs → feeds Labour % / Prime cost %.")
-                if st.button(f"✅ Save labour to {iso}", type="primary", key="savelab"):
-                    storage.set_labour("week", iso, out["total_gross"], out["total_hours"],
-                                       foh_hours, boh_hours)
-                    bust_caches()
-                    st.session_state.pop("pay", None)
-                    st.session_state["lab_flash"] = iso
-                    st.rerun()
+                total_gross = float(out.get("total_gross") or 0)
+                total_hours = float(out.get("total_hours") or 0)
+
+                # Key actions FIRST and fully guarded, so they're always reachable on mobile
+                # and a bad value in the metrics/preview below can never blank them out.
+                try:
+                    _xlsx = payroll.build_workbook(results, out["week_ending"])
+                    st.download_button(
+                        "⬇️ Download full Excel report", _xlsx,
+                        file_name=(f"Payroll_WeekEnding_{wk_end.strftime('%Y-%m-%d')}.xlsx"
+                                   if wk_end is not None else "Payroll_report.xlsx"),
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                except Exception as e:
+                    st.error(f"Couldn't build the Excel report: {e}")
+
+                if iso:
+                    st.caption(f"Save sets labour for **{iso}** — gross **${total_gross:,.0f}**, "
+                               f"{total_hours:g} hrs → feeds Labour % / Prime cost %.")
+                    if st.button(f"✅ Save labour to {iso}", type="primary", key="savelab"):
+                        storage.set_labour("week", iso, total_gross, total_hours,
+                                           foh_hours, boh_hours)
+                        bust_caches()
+                        st.session_state.pop("pay", None)
+                        st.session_state["lab_flash"] = iso
+                        st.rerun()
+                else:
+                    st.error("Couldn't read the week-ending date from this CSV, so the week "
+                             "can't be saved. Re-upload the Tanda shift report.")
+
+                # Headline metrics — wrapped so an odd value can't stop the page rendering.
+                try:
+                    mc = st.columns(4)
+                    mc[0].metric("Week ending",
+                                 wk_end.strftime("%d %b %Y") if wk_end is not None else "—")
+                    mc[1].metric("Total gross wages", f"${total_gross:,.0f}")
+                    mc[2].metric("Total hours", f"{total_hours:,.1f}")
+                    mc[3].metric("Top-ups", f"${float(out.get('total_topup') or 0):,.0f}")
+                    if out.get("total_leave"):
+                        st.caption(f"Gross includes **${out['total_leave']:,.0f}** annual/sick leave.")
+                    if out.get("unmatched"):
+                        st.warning("Not found in setup (paid on defaults — add them to the setup "
+                                   "sheet): " + ", ".join(out["unmatched"]))
+                except Exception as e:
+                    st.warning(f"Couldn't render the labour summary: {e}")
 
                 # Detailed breakdown LAST, collapsed, so the tall tables never bury the
                 # download/save buttons above them on a phone.
