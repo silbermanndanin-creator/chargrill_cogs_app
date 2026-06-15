@@ -788,10 +788,26 @@ def _period_gross_sales():
 # they hold steady while toggling between weeks of that month. Shown as % of
 # month revenue (POS slips first, manual entry fallback — same as chef logic).
 _hdr_month_key = ref.strftime("%Y-%m")
-_hdr_month_cogs = metrics.food_cogs_for_period(df, "month", _hdr_month_key)
-_hdr_lab_cost, _hdr_lab_hours, _hdr_foh, _hdr_boh = c_labour_for_period("Month", _hdr_month_key)
-_hdr_month_rev = (float(metrics.pos_revenue_map(pos_df, "month").get(_hdr_month_key, 0.0))
-                  or float(c_revenue_map("month").get(_hdr_month_key, 0.0)))
+# Match like with like: only count COGS & labour for the WEEKS that actually have
+# takings this month, else a full month of cost is divided by a partial month of
+# revenue and the % reads far too high. Weeks → month by the same ISO-Thursday rule
+# as labour; revenue is delivery-adjusted (same basis as the dashboard).
+_hdr_wk_rev = metrics.pos_revenue_map(pos_df, "iso_week", keep_map=_deliv_keep)
+_hdr_lab_wk = c_labour_map("week")
+_hdr_weeks = sorted(w for w, rv in _hdr_wk_rev.items()
+                    if rv > 0 and storage._iso_week_month(w) == _hdr_month_key)
+if _hdr_weeks:
+    _hdr_month_rev = sum(_hdr_wk_rev[w] for w in _hdr_weeks)
+    _hdr_month_cogs = sum(metrics.food_cogs_for_period(df, "iso_week", w) for w in _hdr_weeks)
+    _hdr_lab_cost = sum(_hdr_lab_wk.get(w, {}).get("cost", 0.0) for w in _hdr_weeks)
+    _hdr_lab_hours = sum(_hdr_lab_wk.get(w, {}).get("hours", 0.0) for w in _hdr_weeks)
+else:
+    # No weekly takings yet — fall back to whole-month figures (manual-revenue path).
+    _hdr_month_rev = float(c_revenue_map("month").get(_hdr_month_key, 0.0))
+    _hdr_month_cogs = metrics.food_cogs_for_period(df, "month", _hdr_month_key)
+    _hdr_lab_cost, _hdr_lab_hours, _, _ = c_labour_for_period("Month", _hdr_month_key)
+_hdr_basis = (f"{ref:%b}: {len(_hdr_weeks)} week(s) with takings — cost & revenue matched"
+              if _hdr_weeks else f"{ref:%b}: whole month (no weekly takings yet)")
 _hdr_cogs_val = f"{_hdr_month_cogs/_hdr_month_rev*100:.1f}%" if _hdr_month_rev > 0 else "—"
 if owner:  # wages are owner-only; chef sees hours (matches sidebar/dashboard gating)
     _hdr_lab_val = f"{_hdr_lab_cost/_hdr_month_rev*100:.1f}%" if _hdr_month_rev > 0 and _hdr_lab_cost else "—"
@@ -812,9 +828,9 @@ st.markdown(f"""<div class="appbar">
     <div class="brand-sub">Cost &amp; labour intelligence</div></div>
   </div>
   <div class="appbar-stats">
-    <div class="hstat"><span class="hl">{ref:%b} COGS</span>
+    <div class="hstat" title="{_hdr_basis}"><span class="hl">{ref:%b} COGS</span>
       <span class="hv">{_hdr_cogs_val}</span></div>
-    <div class="hstat"><span class="hl">{ref:%b} labour</span>
+    <div class="hstat" title="{_hdr_basis}"><span class="hl">{ref:%b} labour</span>
       <span class="hv">{_hdr_lab_val}</span></div>
     <div class="appbar-period">{period_label}</div>
   </div>
