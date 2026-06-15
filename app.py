@@ -3236,235 +3236,236 @@ if tab_cater is not None:
                                     file_name=f"{(r.get('platform') or 'order')}_{_ref}{_ext}",
                                     mime=_mime, key=f"catdl_{src_file}")
 
-        # ---- Payments & outstanding: remittances matched to orders by order number ----
-        st.divider()
-        st.markdown("#### 💰 Platform payments & outstanding")
-        st.caption("Hampr remittance advices, Yordar RGIs and Eat First RCTIs are pulled "
-                   "from your inbox and matched to the orders above by order number — or "
-                   "by amount + date when the document carries none. A delivered order "
-                   "that isn't on any payment document yet is outstanding; **Invoiced** "
-                   "shows whether one of your invoices exists for it (mirrored from the "
-                   "Drive Catering folder), so '— raise invoice' means money you can't "
-                   "be paid yet.")
+        if owner:  # payments & outstanding = owner-only financials
+            # ---- Payments & outstanding: remittances matched to orders by order number ----
+            st.divider()
+            st.markdown("#### 💰 Platform payments & outstanding")
+            st.caption("Hampr remittance advices, Yordar RGIs and Eat First RCTIs are pulled "
+                       "from your inbox and matched to the orders above by order number — or "
+                       "by amount + date when the document carries none. A delivered order "
+                       "that isn't on any payment document yet is outstanding; **Invoiced** "
+                       "shows whether one of your invoices exists for it (mirrored from the "
+                       "Drive Catering folder), so '— raise invoice' means money you can't "
+                       "be paid yet.")
 
-        rdf = c_load_platform_remittances()
-        RECON_PLATFORMS = ("Hampr", "Eat First", "Yordar")
+            rdf = c_load_platform_remittances()
+            RECON_PLATFORMS = ("Hampr", "Eat First", "Yordar")
 
-        def _norm_ref(v):
-            """Order numbers as comparable keys: '#97241', 'Order 97241', 'ORD-378600',
-            '378600' all reduce to the bare number ('97241' / '378600') so the order email
-            and the payment document match however each side prints the prefix."""
-            s = "".join(ch for ch in str(v or "").upper() if ch.isalnum())
-            bare = s.lstrip("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
-            return bare if bare else s
+            def _norm_ref(v):
+                """Order numbers as comparable keys: '#97241', 'Order 97241', 'ORD-378600',
+                '378600' all reduce to the bare number ('97241' / '378600') so the order email
+                and the payment document match however each side prints the prefix."""
+                s = "".join(ch for ch in str(v or "").upper() if ch.isalnum())
+                bare = s.lstrip("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+                return bare if bare else s
 
-        # Explode every payment line out of the docs; build the paid-order key set.
-        # Lines whose order number matches no captured order are kept as `spare` —
-        # they can still tick off an order by platform + amount + date below (the
-        # backfilled Drive invoices: Yordar / Eat First docs carry no order number).
-        order_keys = set()
-        if not cdf.empty:
-            order_keys = {(str(p or ""), _norm_ref(ref))
-                          for p, ref in zip(cdf["platform"], cdf["order_ref"])
-                          if _norm_ref(ref)}
-        paid_keys, docs, spare = set(), [], []
-        for _, rr in rdf.iterrows():
-            try:
-                _lines = (json.loads(rr["lines"]) if isinstance(rr["lines"], str)
-                          else (rr["lines"] or []))
-            except Exception:
-                _lines = []
-            for li in _lines:
-                ref = _norm_ref(li.get("order_ref"))
-                plat = str(rr.get("platform") or "")
-                if ref:
-                    paid_keys.add((plat, ref))
-                if not ref or (plat, ref) not in order_keys:
-                    try:
-                        _amt = float(li.get("amount") or 0)
-                    except (TypeError, ValueError):
-                        _amt = 0.0
-                    if _amt > 0:
-                        spare.append({"platform": plat, "amount": _amt,
-                                      "date": str(li.get("order_date") or "").strip(),
-                                      "li": li, "used": False})
-            docs.append((rr, _lines))
-
-        def _fallback_match(plat, total, day_iso):
-            """Consume one unused spare payment line that fits this order: same
-            platform, same date (a line without a date matches any), and the same
-            money — to the cent, or for Eat First the order total net of GST (RCTI
-            lines are ex-GST sales) within 5c. Each line pays at most one order."""
-            for sp in spare:
-                if sp["used"] or sp["platform"] != plat:
-                    continue
-                if sp["date"] and sp["date"] != day_iso:
-                    continue
-                ok = abs(total - sp["amount"]) <= 0.02
-                if not ok and plat == "Eat First":
-                    ok = abs(total / 1.1 - sp["amount"]) <= 0.05
-                if ok:
-                    sp["used"] = True
-                    return True
-            return False
-
-        if cdf.empty and rdf.empty:
-            st.info("No payments yet. Once the remittance Power Automate flows are live, "
-                    "Hampr/Yordar/Eat First payment documents land here automatically and "
-                    "tick orders off as paid.")
-        else:
-            # Delivered platform orders not on any payment document = outstanding.
-            odf = cdf.copy()
-            if not odf.empty:
-                if "_dd" not in odf.columns:
-                    odf["_dd"] = odf["deliver_date"].map(_d)
-                odf = odf[odf["platform"].isin(RECON_PLATFORMS)
-                          & odf["_dd"].notna() & (odf["_dd"] <= dt.date.today())]
-                odf["_paid"] = [
-                    (str(p or ""), _norm_ref(ref)) in paid_keys and bool(_norm_ref(ref))
-                    for p, ref in zip(odf["platform"], odf["order_ref"])]
-                # Second pass, oldest order first: amount+date matching for orders
-                # the order-number pass left unpaid.
-                if spare:
-                    for _i in odf[~odf["_paid"]].sort_values("_dd").index:
-                        _r = odf.loc[_i]
+            # Explode every payment line out of the docs; build the paid-order key set.
+            # Lines whose order number matches no captured order are kept as `spare` —
+            # they can still tick off an order by platform + amount + date below (the
+            # backfilled Drive invoices: Yordar / Eat First docs carry no order number).
+            order_keys = set()
+            if not cdf.empty:
+                order_keys = {(str(p or ""), _norm_ref(ref))
+                              for p, ref in zip(cdf["platform"], cdf["order_ref"])
+                              if _norm_ref(ref)}
+            paid_keys, docs, spare = set(), [], []
+            for _, rr in rdf.iterrows():
+                try:
+                    _lines = (json.loads(rr["lines"]) if isinstance(rr["lines"], str)
+                              else (rr["lines"] or []))
+                except Exception:
+                    _lines = []
+                for li in _lines:
+                    ref = _norm_ref(li.get("order_ref"))
+                    plat = str(rr.get("platform") or "")
+                    if ref:
+                        paid_keys.add((plat, ref))
+                    if not ref or (plat, ref) not in order_keys:
                         try:
-                            _tot = float(_r["items_total"] or 0)
+                            _amt = float(li.get("amount") or 0)
                         except (TypeError, ValueError):
-                            _tot = 0.0
-                        if _tot > 0 and _fallback_match(str(_r["platform"] or ""), _tot,
-                                                        f"{_r['_dd']:%Y-%m-%d}"):
-                            odf.at[_i, "_paid"] = True
-            unpaid = odf[~odf["_paid"]] if not odf.empty else odf
+                            _amt = 0.0
+                        if _amt > 0:
+                            spare.append({"platform": plat, "amount": _amt,
+                                          "date": str(li.get("order_date") or "").strip(),
+                                          "li": li, "used": False})
+                docs.append((rr, _lines))
 
-            def _owed(platform):
-                if unpaid.empty:
-                    return 0.0
-                m = unpaid[unpaid["platform"] == platform]
-                return float(pd.to_numeric(m["items_total"], errors="coerce").fillna(0).sum())
-
-            cols = st.columns(4)
-            owed_total = 0.0
-            for col, plat in zip(cols[:3], RECON_PLATFORMS):
-                owed = _owed(plat)
-                owed_total += owed
-                n = 0 if unpaid.empty else int((unpaid["platform"] == plat).sum())
-                col.metric(f"{plat} owes", f"${owed:,.0f}", f"{n} order(s)",
-                           delta_color="off")
-            cols[3].metric("Total outstanding", f"${owed_total:,.0f}")
-            st.caption("⚠️ Eat First deposits arrive NET of commission (~14.5%), so the "
-                       "money received will be less than the order totals shown here.")
-
-            if not unpaid.empty:
-                # Newest delivery first — the fresh orders are the ones being acted
-                # on; the old stragglers sink to the bottom of the table.
-                show = unpaid.sort_values("_dd", ascending=False)
-                # Which unpaid orders have one of OUR invoices raised? Rows that were
-                # created from an invoice (source driveback/INV…) trivially have; rows
-                # from the order feed are matched against the Drive Catering-folder
-                # mirror (drive_invoices) by platform + inc-GST total (±2c) + date
-                # (±7 days), each invoice vouching for at most one order.
-                _inv_sp = []
-                _ddf = c_load_drive_invoices()
-                if not _ddf.empty:
-                    for _, _ir in _ddf.iterrows():
-                        try:
-                            _ia = float(_ir.get("total_inc_gst") or 0)
-                        except (TypeError, ValueError):
-                            _ia = 0.0
-                        _inv_sp.append({"platform": str(_ir.get("platform") or ""),
-                                        "amount": _ia,
-                                        "date": _d(_ir.get("invoice_date")),
-                                        "used": False})
-
-                def _invoiced(r):
-                    if str(r.get("source_file") or "").startswith("driveback/INV"):
+            def _fallback_match(plat, total, day_iso):
+                """Consume one unused spare payment line that fits this order: same
+                platform, same date (a line without a date matches any), and the same
+                money — to the cent, or for Eat First the order total net of GST (RCTI
+                lines are ex-GST sales) within 5c. Each line pays at most one order."""
+                for sp in spare:
+                    if sp["used"] or sp["platform"] != plat:
+                        continue
+                    if sp["date"] and sp["date"] != day_iso:
+                        continue
+                    ok = abs(total - sp["amount"]) <= 0.02
+                    if not ok and plat == "Eat First":
+                        ok = abs(total / 1.1 - sp["amount"]) <= 0.05
+                    if ok:
+                        sp["used"] = True
                         return True
-                    try:
-                        _tot = float(r.get("items_total") or 0)
-                    except (TypeError, ValueError):
+                return False
+
+            if cdf.empty and rdf.empty:
+                st.info("No payments yet. Once the remittance Power Automate flows are live, "
+                        "Hampr/Yordar/Eat First payment documents land here automatically and "
+                        "tick orders off as paid.")
+            else:
+                # Delivered platform orders not on any payment document = outstanding.
+                odf = cdf.copy()
+                if not odf.empty:
+                    if "_dd" not in odf.columns:
+                        odf["_dd"] = odf["deliver_date"].map(_d)
+                    odf = odf[odf["platform"].isin(RECON_PLATFORMS)
+                              & odf["_dd"].notna() & (odf["_dd"] <= dt.date.today())]
+                    odf["_paid"] = [
+                        (str(p or ""), _norm_ref(ref)) in paid_keys and bool(_norm_ref(ref))
+                        for p, ref in zip(odf["platform"], odf["order_ref"])]
+                    # Second pass, oldest order first: amount+date matching for orders
+                    # the order-number pass left unpaid.
+                    if spare:
+                        for _i in odf[~odf["_paid"]].sort_values("_dd").index:
+                            _r = odf.loc[_i]
+                            try:
+                                _tot = float(_r["items_total"] or 0)
+                            except (TypeError, ValueError):
+                                _tot = 0.0
+                            if _tot > 0 and _fallback_match(str(_r["platform"] or ""), _tot,
+                                                            f"{_r['_dd']:%Y-%m-%d}"):
+                                odf.at[_i, "_paid"] = True
+                unpaid = odf[~odf["_paid"]] if not odf.empty else odf
+
+                def _owed(platform):
+                    if unpaid.empty:
+                        return 0.0
+                    m = unpaid[unpaid["platform"] == platform]
+                    return float(pd.to_numeric(m["items_total"], errors="coerce").fillna(0).sum())
+
+                cols = st.columns(4)
+                owed_total = 0.0
+                for col, plat in zip(cols[:3], RECON_PLATFORMS):
+                    owed = _owed(plat)
+                    owed_total += owed
+                    n = 0 if unpaid.empty else int((unpaid["platform"] == plat).sum())
+                    col.metric(f"{plat} owes", f"${owed:,.0f}", f"{n} order(s)",
+                               delta_color="off")
+                cols[3].metric("Total outstanding", f"${owed_total:,.0f}")
+                st.caption("⚠️ Eat First deposits arrive NET of commission (~14.5%), so the "
+                           "money received will be less than the order totals shown here.")
+
+                if not unpaid.empty:
+                    # Newest delivery first — the fresh orders are the ones being acted
+                    # on; the old stragglers sink to the bottom of the table.
+                    show = unpaid.sort_values("_dd", ascending=False)
+                    # Which unpaid orders have one of OUR invoices raised? Rows that were
+                    # created from an invoice (source driveback/INV…) trivially have; rows
+                    # from the order feed are matched against the Drive Catering-folder
+                    # mirror (drive_invoices) by platform + inc-GST total (±2c) + date
+                    # (±7 days), each invoice vouching for at most one order.
+                    _inv_sp = []
+                    _ddf = c_load_drive_invoices()
+                    if not _ddf.empty:
+                        for _, _ir in _ddf.iterrows():
+                            try:
+                                _ia = float(_ir.get("total_inc_gst") or 0)
+                            except (TypeError, ValueError):
+                                _ia = 0.0
+                            _inv_sp.append({"platform": str(_ir.get("platform") or ""),
+                                            "amount": _ia,
+                                            "date": _d(_ir.get("invoice_date")),
+                                            "used": False})
+
+                    def _invoiced(r):
+                        if str(r.get("source_file") or "").startswith("driveback/INV"):
+                            return True
+                        try:
+                            _tot = float(r.get("items_total") or 0)
+                        except (TypeError, ValueError):
+                            return False
+                        for _sp in _inv_sp:
+                            if _sp["used"] or _sp["platform"] != str(r.get("platform") or ""):
+                                continue
+                            if abs(_sp["amount"] - _tot) > 0.02:
+                                continue
+                            if _sp["date"] and abs((_sp["date"] - r["_dd"]).days) > 7:
+                                continue
+                            _sp["used"] = True
+                            return True
                         return False
-                    for _sp in _inv_sp:
-                        if _sp["used"] or _sp["platform"] != str(r.get("platform") or ""):
-                            continue
-                        if abs(_sp["amount"] - _tot) > 0.02:
-                            continue
-                        if _sp["date"] and abs((_sp["date"] - r["_dd"]).days) > 7:
-                            continue
-                        _sp["used"] = True
-                        return True
-                    return False
 
-                st.dataframe(
-                    pd.DataFrame({
-                        "Delivered": show["_dd"].map(lambda d_: f"{d_:%a %d %b}"),
-                        "Platform": show["platform"],
-                        "Company": show["company"],
-                        "Order #": show["order_ref"],
-                        "Total $": pd.to_numeric(show["items_total"], errors="coerce")
-                                     .fillna(0).map(lambda v: f"{v:,.2f}"),
-                        "Invoiced": ["✓" if _invoiced(r) else "— raise invoice"
-                                     for _, r in show.iterrows()],
-                    }),
-                    hide_index=True, width="stretch")
-            elif not odf.empty:
-                st.success("✅ Every captured order is on a payment document — nothing outstanding.")
+                    st.dataframe(
+                        pd.DataFrame({
+                            "Delivered": show["_dd"].map(lambda d_: f"{d_:%a %d %b}"),
+                            "Platform": show["platform"],
+                            "Company": show["company"],
+                            "Order #": show["order_ref"],
+                            "Total $": pd.to_numeric(show["items_total"], errors="coerce")
+                                         .fillna(0).map(lambda v: f"{v:,.2f}"),
+                            "Invoiced": ["✓" if _invoiced(r) else "— raise invoice"
+                                         for _, r in show.iterrows()],
+                        }),
+                        hide_index=True, width="stretch")
+                elif not odf.empty:
+                    st.success("✅ Every captured order is on a payment document — nothing outstanding.")
 
-            # The payment documents themselves, newest first, lines ticked off against orders.
-            if docs:
-                st.markdown("**Payments received**")
-                _fb_paid = {id(sp["li"]) for sp in spare if sp["used"]}
-                docs.sort(key=lambda t: str(t[0].get("doc_date") or ""), reverse=True)
-                for rr, _lines in docs:
-                    ref_bit = f" · {rr['doc_ref']}" if rr.get("doc_ref") else ""
-                    try:
-                        paid_bit = f"${float(rr.get('total_paid') or 0):,.2f}"
-                    except (TypeError, ValueError):
-                        paid_bit = ""
-                    with st.expander(f"{rr.get('doc_date') or '?'} — {rr.get('platform')}"
-                                     f"{ref_bit} · {paid_bit} · {len(_lines)} order(s)"):
-                        if _lines:
-                            # Eat First RCTI lines are ex-GST sales with a commission
-                            # column; Hampr/Yordar lines are simply the $ paid.
-                            _has_comm = any(float(li.get("commission") or 0)
-                                            for li in _lines)
-                            _amt_col = "Sales $ ex GST" if _has_comm else "Paid $"
-                            st.dataframe(
-                                pd.DataFrame([{
-                                    "Order #": li.get("order_ref"),
-                                    "Order date": li.get("order_date") or "",
-                                    "Company": li.get("company") or "",
-                                    _amt_col: f"{float(li.get('amount') or 0):,.2f}",
-                                    **({"Commission $":
-                                        f"{float(li.get('commission') or 0):,.2f}"}
-                                       if _has_comm else {}),
-                                    "Matched": ("✓" if (str(rr.get("platform") or ""),
-                                                        _norm_ref(li.get("order_ref")))
-                                                in order_keys
-                                                else "✓ by amount + date"
-                                                if id(li) in _fb_paid
-                                                else "— no captured order")
-                                } for li in _lines]),
-                                hide_index=True, width="stretch")
-                            if _has_comm:
-                                _sales = sum(float(li.get("amount") or 0)
-                                             for li in _lines)
-                                _comm = sum(float(li.get("commission") or 0)
-                                            for li in _lines)
-                                st.caption(
-                                    f"${_sales:,.2f} ex-GST sales − ${_comm:,.2f} "
-                                    f"commission (± GST) ≈ {paid_bit} deposited. Each "
-                                    "line is matched to an order by its ORD number, or "
-                                    "— for orders without one — by the order's inc-GST "
-                                    "total ÷ 1.1 equalling the line's ex-GST sales.")
-                        _rsrc = rr.get("source_file")
-                        if _rsrc:
-                            _rorig = c_remittance_file(str(_rsrc))
-                            if _rorig:
-                                st.download_button(
-                                    "📄 Download original", _rorig,
-                                    file_name=os.path.basename(str(_rsrc)),
-                                    mime="application/pdf", key=f"remdl_{_rsrc}")
+                # The payment documents themselves, newest first, lines ticked off against orders.
+                if docs:
+                    st.markdown("**Payments received**")
+                    _fb_paid = {id(sp["li"]) for sp in spare if sp["used"]}
+                    docs.sort(key=lambda t: str(t[0].get("doc_date") or ""), reverse=True)
+                    for rr, _lines in docs:
+                        ref_bit = f" · {rr['doc_ref']}" if rr.get("doc_ref") else ""
+                        try:
+                            paid_bit = f"${float(rr.get('total_paid') or 0):,.2f}"
+                        except (TypeError, ValueError):
+                            paid_bit = ""
+                        with st.expander(f"{rr.get('doc_date') or '?'} — {rr.get('platform')}"
+                                         f"{ref_bit} · {paid_bit} · {len(_lines)} order(s)"):
+                            if _lines:
+                                # Eat First RCTI lines are ex-GST sales with a commission
+                                # column; Hampr/Yordar lines are simply the $ paid.
+                                _has_comm = any(float(li.get("commission") or 0)
+                                                for li in _lines)
+                                _amt_col = "Sales $ ex GST" if _has_comm else "Paid $"
+                                st.dataframe(
+                                    pd.DataFrame([{
+                                        "Order #": li.get("order_ref"),
+                                        "Order date": li.get("order_date") or "",
+                                        "Company": li.get("company") or "",
+                                        _amt_col: f"{float(li.get('amount') or 0):,.2f}",
+                                        **({"Commission $":
+                                            f"{float(li.get('commission') or 0):,.2f}"}
+                                           if _has_comm else {}),
+                                        "Matched": ("✓" if (str(rr.get("platform") or ""),
+                                                            _norm_ref(li.get("order_ref")))
+                                                    in order_keys
+                                                    else "✓ by amount + date"
+                                                    if id(li) in _fb_paid
+                                                    else "— no captured order")
+                                    } for li in _lines]),
+                                    hide_index=True, width="stretch")
+                                if _has_comm:
+                                    _sales = sum(float(li.get("amount") or 0)
+                                                 for li in _lines)
+                                    _comm = sum(float(li.get("commission") or 0)
+                                                for li in _lines)
+                                    st.caption(
+                                        f"${_sales:,.2f} ex-GST sales − ${_comm:,.2f} "
+                                        f"commission (± GST) ≈ {paid_bit} deposited. Each "
+                                        "line is matched to an order by its ORD number, or "
+                                        "— for orders without one — by the order's inc-GST "
+                                        "total ÷ 1.1 equalling the line's ex-GST sales.")
+                            _rsrc = rr.get("source_file")
+                            if _rsrc:
+                                _rorig = c_remittance_file(str(_rsrc))
+                                if _rorig:
+                                    st.download_button(
+                                        "📄 Download original", _rorig,
+                                        file_name=os.path.basename(str(_rsrc)),
+                                        mime="application/pdf", key=f"remdl_{_rsrc}")
 
 
 # ============ Variations tab (owner): part-time variation letters ============
