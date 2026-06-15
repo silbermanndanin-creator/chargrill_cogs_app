@@ -323,6 +323,8 @@ def _owner_pin():
 
 if "is_owner" not in st.session_state:
     st.session_state["is_owner"] = False
+if "is_manager" not in st.session_state:
+    st.session_state["is_manager"] = False
 if "role_chosen" not in st.session_state:
     st.session_state["role_chosen"] = False
 
@@ -344,6 +346,13 @@ if not st.session_state["role_chosen"]:
     with _g:
         if st.button("👨‍🍳  Chef / Team", width="stretch", key="gate_chef"):
             st.session_state["is_owner"] = False
+            st.session_state["is_manager"] = False
+            st.session_state["role_chosen"] = True
+            st.rerun()
+        st.write("")
+        if st.button("👔  Manager", width="stretch", key="gate_manager"):
+            st.session_state["is_owner"] = False
+            st.session_state["is_manager"] = True
             st.session_state["role_chosen"] = True
             st.rerun()
         st.write("")
@@ -354,6 +363,7 @@ if not st.session_state["role_chosen"]:
             if st.button("Enter as owner", type="primary", width="stretch", key="gate_enter"):
                 if _pin == _owner_pin():
                     st.session_state["is_owner"] = True
+                    st.session_state["is_manager"] = False
                     st.session_state["role_chosen"] = True
                     st.session_state.pop("gate_pin_open", None)
                     st.rerun()
@@ -362,6 +372,10 @@ if not st.session_state["role_chosen"]:
     st.stop()
 
 owner = st.session_state["is_owner"]
+# Manager: a middle role between Chef and Owner. Sees only the data-entry tabs
+# (add invoice, add finalised takings, catering, ordering, temp records) — no
+# revenue/wages/analytics. Treated as non-owner everywhere revenue is gated.
+manager = st.session_state.get("is_manager", False) and not owner
 
 
 def prev_period_key(mode, ref):
@@ -647,6 +661,11 @@ with st.sidebar:
     _deliv_payouts = c_load_delivery_payouts()
     _deliv_keep = metrics.delivery_keep_map(_deliv_payouts, pos_df)
     pos_map = metrics.pos_revenue_map(pos_df, p_col, keep_map=_deliv_keep)
+    # {date -> actual-adjusted net ex-GST} for per-day displays/exports, so the daily net
+    # column matches the actuals-based weekly revenue. Empty unless a payout has landed
+    # (then per-day falls back to the stored 40% estimate, which is identical anyway).
+    _day_net_actual = (metrics.pos_revenue_map(pos_df, "date", keep_map=_deliv_keep)
+                       if _deliv_keep else {})
     manual_map = c_revenue_map(p_type)
     # Let the owner know when this period's delivery revenue is REAL (a payout has landed)
     # rather than the flat 40% estimate.
@@ -671,9 +690,10 @@ with st.sidebar:
             revenue = float(pos_map.get(period_key, 0.0))
             bd = metrics.pos_breakdown(pos_df, p_col, period_key)
             if bd["days"]:
-                st.caption(f"{bd['days']} day(s) · **${revenue:,.0f}** ex-GST — "
-                           f"net after −{config.DELIVERY_COMMISSION*100:.0f}% on "
-                           f"${bd['delivery_gross']:,.0f} delivery")
+                st.caption(f"{bd['days']} day(s) · **${revenue:,.0f}** ex-GST — net of "
+                           f"delivery commission on ${bd['delivery_gross']:,.0f} delivery "
+                           "(actual payouts where available, else −"
+                           f"{config.DELIVERY_COMMISSION*100:.0f}% estimate)")
             else:
                 st.caption("No POS slips this period — add one in **💰 Daily takings**.")
         elif rev_mode == "Manual entry":
@@ -734,9 +754,10 @@ with st.sidebar:
 
     # ---- Current role / switch user ----
     st.divider()
-    st.caption("👑 Owner view — full access" if owner else "👨‍🍳 Chef / Team view")
+    st.caption("👑 Owner view — full access" if owner
+               else "👔 Manager view" if manager else "👨‍🍳 Chef / Team view")
     if st.button("↩️ Switch user", width="stretch", key="switchuser"):
-        for _k in ("role_chosen", "is_owner", "gate_pin_open"):
+        for _k in ("role_chosen", "is_owner", "is_manager", "gate_pin_open"):
             st.session_state.pop(_k, None)
         st.rerun()
 
@@ -805,13 +826,20 @@ if st.button(_toggle_label, key="theme_toggle", help="Toggle light / dark mode")
     st.session_state["theme"] = "dark" if THEME == "light" else "light"
     st.rerun()
 
-# Owner sees all tabs; chef sees only the cost/operations tabs.
+# Owner sees all tabs; manager sees only the data-entry tabs; chef sees the
+# cost/operations tabs. Any tab a role doesn't get stays None and its (guarded) body skips.
 if owner:
     (tab_dash, tab_adv, tab_inv, tab_pos, tab_list, tab_track, tab_cater, tab_lab, tab_veg,
      tab_pack, tab_recon, tab_temp, tab_rep, tab_var) = st.tabs(
         ["📊 Dashboard", "🤖 Advisor", "📸 Add invoice", "💰 Daily takings", "📋 Invoices",
          "✅ Invoice tracker", "🥗 Catering", "🧮 Labour", "🥬 Veggie prices", "📦 Ordering",
          "🧾 Reconciliation", "🌡️ Temp records", "📈 Reports", "📝 Variations"])
+elif manager:
+    # Manager: add invoice, add finalised takings, catering, ordering, temp records only.
+    (tab_inv, tab_pos, tab_cater, tab_pack, tab_temp) = st.tabs(
+        ["📸 Add invoice", "💰 Daily takings", "🥗 Catering", "📦 Ordering", "🌡️ Temp records"])
+    tab_dash = tab_adv = tab_list = tab_track = tab_veg = tab_lab = tab_recon = \
+        tab_rep = tab_var = None
 else:
     (tab_dash, tab_inv, tab_list, tab_cater, tab_veg, tab_pack,
      tab_temp) = st.tabs(
@@ -842,51 +870,52 @@ if tab_adv is not None:
             st.info("No invoices yet — add invoices and daily takings first, then come back "
                     "for recommendations.")
         else:
-            # Build the compact facts pack from data already loaded this run (no extra reads).
-            _adv_cogs = metrics.food_cogs_for_period(df, p_col, period_key)
-            _adv_labmap = c_labour_cost_map_for(mode)
-            _adv_weekly_sales = None
-            if mode == "Week":
-                try:
-                    _adv_weekly_sales = (metrics.pos_breakdown(pos_df, "iso_week", period_key)
-                                         .get("gross_incl") or None)
-                except Exception:
-                    _adv_weekly_sales = None
-            # Actual Uber/DoorDash payouts that fall in this period (week = exact iso_week;
-            # month = any pay-week starting in the month) — gives the advisor real delivery
-            # economics (net vs gross, ad spend) instead of the 40% assumption.
-            _adv_delivery = []
-            if _deliv_payouts is not None and not _deliv_payouts.empty:
-                for _r in _deliv_payouts.to_dict("records"):
-                    _inper = (str(_r.get("iso_week")) == period_key if mode == "Week"
-                              else str(_r.get("period_start") or "").startswith(period_key))
-                    if _inper:
-                        _adv_delivery.append({
-                            "platform": _r.get("platform"), "week": _r.get("iso_week"),
-                            "gross_incl_gst": _r.get("gross_incl_gst"),
-                            "net_payout": _r.get("net_payout"),
-                            "ad_spend": _r.get("ad_spend")})
-            # Over-ordering: items bought above the aimed qty for this period's sales.
-            _adv_gross, _ = _period_gross_sales()
-            _adv_over = []
-            for _onm, _ocl, _osup in [("Baida", config.baida_cut, config.BAIDA_SUPPLIER),
-                                      ("Blueseas", config.blueseas_main, config.BLUESEAS_SUPPLIER)]:
-                _ogdf, _ = metrics.order_guide(lines, pos_df, _ocl, _osup,
-                                               p_col, period_key, _adv_gross)
-                for _orow in _ogdf.to_dict("records"):
-                    if _orow["Diff"] > 0 and _orow["~$ over"] > 0:
-                        _adv_over.append({"supplier": _onm, "item": _orow["Item"],
+            def _build_adv_facts():
+                """Assemble the compact facts pack ON DEMAND. Called only when the user clicks
+                Analyse or sends a chat — never on a plain rerun — so the metric aggregations
+                (trends, price anomalies, order-guide over-ordering) don't run every interaction.
+                Returns (facts dict, facts_json)."""
+                _cogs = metrics.food_cogs_for_period(df, p_col, period_key)
+                _labmap = c_labour_cost_map_for(mode)
+                _wsales = None
+                if mode == "Week":
+                    try:
+                        _wsales = (metrics.pos_breakdown(pos_df, "iso_week", period_key)
+                                   .get("gross_incl") or None)
+                    except Exception:
+                        _wsales = None
+                # Actual Uber/DoorDash payouts that fall in this period (week = exact iso_week;
+                # month = any pay-week starting in the month) — real delivery economics.
+                _deliv = []
+                if _deliv_payouts is not None and not _deliv_payouts.empty:
+                    for _r in _deliv_payouts.to_dict("records"):
+                        _inper = (str(_r.get("iso_week")) == period_key if mode == "Week"
+                                  else str(_r.get("period_start") or "").startswith(period_key))
+                        if _inper:
+                            _deliv.append({"platform": _r.get("platform"), "week": _r.get("iso_week"),
+                                           "gross_incl_gst": _r.get("gross_incl_gst"),
+                                           "net_payout": _r.get("net_payout"),
+                                           "ad_spend": _r.get("ad_spend")})
+                # Over-ordering: items bought above the aimed qty for this period's sales.
+                _gross, _ = _period_gross_sales()
+                _over = []
+                for _onm, _ocl, _osup in [("Baida", config.baida_cut, config.BAIDA_SUPPLIER),
+                                          ("Blueseas", config.blueseas_main, config.BLUESEAS_SUPPLIER)]:
+                    _ogdf, _ = metrics.order_guide(lines, pos_df, _ocl, _osup,
+                                                   p_col, period_key, _gross)
+                    for _orow in _ogdf.to_dict("records"):
+                        if _orow["Diff"] > 0 and _orow["~$ over"] > 0:
+                            _over.append({"supplier": _onm, "item": _orow["Item"],
                                           "aimed": _orow["Aimed"], "actual": _orow["Actual"],
                                           "est_$_over": _orow["~$ over"]})
-            _adv_over.sort(key=lambda x: -x["est_$_over"])
-            _adv_facts = advisor.build_facts(
-                df=df, lines=lines, rev_map=trend_rev_map, labour_cost_map=_adv_labmap,
-                period_col=p_col, period_key=period_key, revenue=revenue,
-                total_cogs=_adv_cogs, labour_cost=labour_cost, mode=mode,
-                weekly_sales=_adv_weekly_sales,
-                catering=c_load_catering_orders(), remittances=c_load_platform_remittances(),
-                delivery=_adv_delivery or None, over_ordering=_adv_over or None)
-            _adv_facts_json = json.dumps(_adv_facts, default=str, sort_keys=True)
+                _over.sort(key=lambda x: -x["est_$_over"])
+                _facts = advisor.build_facts(
+                    df=df, lines=lines, rev_map=trend_rev_map, labour_cost_map=_labmap,
+                    period_col=p_col, period_key=period_key, revenue=revenue,
+                    total_cogs=_cogs, labour_cost=labour_cost, mode=mode, weekly_sales=_wsales,
+                    catering=c_load_catering_orders(), remittances=c_load_platform_remittances(),
+                    delivery=_deliv or None, over_ordering=_over or None)
+                return _facts, json.dumps(_facts, default=str, sort_keys=True)
 
             if revenue <= 0:
                 st.info("Tip: add this period's revenue (sidebar) so the advisor can work in "
@@ -896,7 +925,8 @@ if tab_adv is not None:
             if _cols[0].button("🩺 Analyse my COGS", key="adv_run", type="primary"):
                 with st.spinner("Analysing your cost data…"):
                     try:
-                        st.session_state["adv_report"] = c_cogs_report(_adv_facts_json)
+                        _, _fjson = _build_adv_facts()
+                        st.session_state["adv_report"] = c_cogs_report(_fjson)
                         st.session_state["adv_report_key"] = period_key
                     except Exception as e:
                         st.session_state["adv_report"] = None
@@ -927,7 +957,8 @@ if tab_adv is not None:
                 _adv_hist.append({"role": "user", "content": _q.strip()})
                 with st.spinner("Thinking…"):
                     try:
-                        _ans = advisor.cogs_chat(_adv_facts, _adv_hist[:-1], _q.strip())
+                        _facts, _ = _build_adv_facts()
+                        _ans = advisor.cogs_chat(_facts, _adv_hist[:-1], _q.strip())
                     except Exception as e:
                         _ans = f"Sorry — I couldn't answer that just now ({e})."
                 _adv_hist.append({"role": "assistant", "content": _ans})
@@ -1110,39 +1141,42 @@ if tab_pos is not None:
                 st.session_state.pop("pos", None)
                 st.rerun()
 
-        # ---- This week's takings, day by day ----
-        st.divider()
-        monday = ref - dt.timedelta(days=ref.weekday())
-        week_iso = storage.iso_week_of(ref)
-        st.markdown(f"#### 📅 Takings — week of {monday:%d %b %Y}")
-        wk = pos_df[pos_df["iso_week"] == week_iso] if not pos_df.empty else pos_df
-        rows = []
-        for i in range(7):
-            dday = monday + dt.timedelta(days=i)
-            match = wk[wk["date"].astype(str) == dday.isoformat()] if (wk is not None and not wk.empty) \
-                else None
-            if match is not None and not match.empty:
-                r = match.iloc[0]
-                num = lambda c: float(pd.to_numeric(r[c], errors="coerce") or 0)
-                incl, deliv, net = num("total_incl_gst"), num("doordash") + num("ubereats"), num("adjusted_ex_gst")
+        if not manager:
+            # ---- This week's takings, day by day ----
+            st.divider()
+            monday = ref - dt.timedelta(days=ref.weekday())
+            week_iso = storage.iso_week_of(ref)
+            st.markdown(f"#### 📅 Takings — week of {monday:%d %b %Y}")
+            wk = pos_df[pos_df["iso_week"] == week_iso] if not pos_df.empty else pos_df
+            rows = []
+            for i in range(7):
+                dday = monday + dt.timedelta(days=i)
+                match = wk[wk["date"].astype(str) == dday.isoformat()] if (wk is not None and not wk.empty) \
+                    else None
+                if match is not None and not match.empty:
+                    r = match.iloc[0]
+                    num = lambda c: float(pd.to_numeric(r[c], errors="coerce") or 0)
+                    incl, deliv = num("total_incl_gst"), num("doordash") + num("ubereats")
+                    # Prefer the actual-payout-adjusted net for the day where a payout has landed.
+                    net = _day_net_actual.get(str(r["date"]), num("adjusted_ex_gst"))
+                else:
+                    incl = deliv = net = 0.0
+                rows.append({"Day": dday.strftime("%a %d %b"), "Takings (incl GST)": round(incl, 2),
+                             "Delivery (incl GST)": round(deliv, 2), "Net (ex-GST)": round(net, 2)})
+            wkdf = pd.DataFrame(rows)
+            if wkdf["Net (ex-GST)"].sum() > 0:
+                fig = px.bar(wkdf, x="Day", y="Net (ex-GST)", text_auto=".0f")
+                fig = dark(fig, h=270)
+                fig.update_traces(marker_color=C["accent"], marker_line_width=0,
+                                  textposition="outside", textfont=dict(color=C["font"]))
+                fig.update_yaxes(title="Net $ ex-GST")
+                fig.update_xaxes(title="")
+                st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
+                st.dataframe(wkdf, hide_index=True, width="stretch")
+                n_days = int((wkdf["Net (ex-GST)"] > 0).sum())
+                st.caption(f"Week net ex-GST: **${wkdf['Net (ex-GST)'].sum():,.0f}** · {n_days} day(s) logged")
             else:
-                incl = deliv = net = 0.0
-            rows.append({"Day": dday.strftime("%a %d %b"), "Takings (incl GST)": round(incl, 2),
-                         "Delivery (incl GST)": round(deliv, 2), "Net (ex-GST)": round(net, 2)})
-        wkdf = pd.DataFrame(rows)
-        if wkdf["Net (ex-GST)"].sum() > 0:
-            fig = px.bar(wkdf, x="Day", y="Net (ex-GST)", text_auto=".0f")
-            fig = dark(fig, h=270)
-            fig.update_traces(marker_color=C["accent"], marker_line_width=0,
-                              textposition="outside", textfont=dict(color=C["font"]))
-            fig.update_yaxes(title="Net $ ex-GST")
-            fig.update_xaxes(title="")
-            st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
-            st.dataframe(wkdf, hide_index=True, width="stretch")
-            n_days = int((wkdf["Net (ex-GST)"] > 0).sum())
-            st.caption(f"Week net ex-GST: **${wkdf['Net (ex-GST)'].sum():,.0f}** · {n_days} day(s) logged")
-        else:
-            st.caption(f"No takings logged for the week of {monday:%d %b} yet — add a day above.")
+                st.caption(f"No takings logged for the week of {monday:%d %b} yet — add a day above.")
 
 # ============ Labour tab (owner only) ============
 if tab_lab is not None:
@@ -1727,759 +1761,762 @@ if tab_temp is not None:
 
 
 # ============ Dashboard tab ============
-with tab_dash:
-    st.markdown(f"<div class='hdr'>🍗 {period_label}</div>", unsafe_allow_html=True)
+if tab_dash is not None:
+    with tab_dash:
+        st.markdown(f"<div class='hdr'>🍗 {period_label}</div>", unsafe_allow_html=True)
 
-    # ---- Missing-invoice nudge (owner, week view) ----
-    # Surfaces suppliers that normally deliver by now but have no invoice this week, so
-    # COGS isn't understated by a forgotten upload. Full checklist lives in ✅ Invoice tracker.
-    if owner and mode == "Week" and not df.empty:
-        _checks = c_invoice_checks(period_key)
-        _trk = metrics.weekly_invoice_status(df, period_key, cadence=c_supplier_cadence())
-        _miss = [r["supplier"] for r in _trk
-                 if r["status"] == "missing"
-                 and _checks.get(r["supplier"], {}).get("state", "") not in ("confirmed", "skipped")]
-        if _miss:
-            st.warning(f"🔴 Possibly missing this week: **{', '.join(_miss)}** — "
-                       "check **✅ Invoice tracker** to upload or mark them not coming.")
+        # ---- Missing-invoice nudge (owner, week view) ----
+        # Surfaces suppliers that normally deliver by now but have no invoice this week, so
+        # COGS isn't understated by a forgotten upload. Full checklist lives in ✅ Invoice tracker.
+        if owner and mode == "Week" and not df.empty:
+            _checks = c_invoice_checks(period_key)
+            _trk = metrics.weekly_invoice_status(df, period_key, cadence=c_supplier_cadence())
+            _miss = [r["supplier"] for r in _trk
+                     if r["status"] == "missing"
+                     and _checks.get(r["supplier"], {}).get("state", "") not in ("confirmed", "skipped")]
+            if _miss:
+                st.warning(f"🔴 Possibly missing this week: **{', '.join(_miss)}** — "
+                           "check **✅ Invoice tracker** to upload or mark them not coming.")
 
-    spend_by, deliveries = (metrics.spend_and_deliveries(df, p_col, period_key)
-                            if not df.empty else (pd.Series(dtype=float), pd.Series(dtype=int)))
-    qty = metrics.qty_by_supplier_unit(lines, p_col, period_key)
-    # Food-COGS total excludes non-COGS categories (packaging, cleaning)
-    total_cogs = float(sum(v for s, v in spend_by.items() if config.is_cogs(s))) if len(spend_by) else 0.0
-    prev_key = prev_period_key(mode, ref)
-    prev_spend, _ = (metrics.spend_and_deliveries(df, p_col, prev_key)
-                     if not df.empty else (pd.Series(dtype=float), None))
-    prev_total = float(sum(v for s, v in prev_spend.items() if config.is_cogs(s))) if len(prev_spend) else 0.0
-    gp, rp = config.TOTAL_COGS_GREEN, config.TOTAL_COGS_RED
-    cogs_pct = (total_cogs / revenue) if revenue > 0 else None
-    tstat = config.total_status(cogs_pct) if cogs_pct is not None else "amber"
-    target_cogs = revenue * gp if revenue > 0 else 0.0
-    var = total_cogs - target_cogs
-    n_del = int(deliveries.sum()) if len(deliveries) else 0
+        spend_by, deliveries = (metrics.spend_and_deliveries(df, p_col, period_key)
+                                if not df.empty else (pd.Series(dtype=float), pd.Series(dtype=int)))
+        qty = metrics.qty_by_supplier_unit(lines, p_col, period_key)
+        # Food-COGS total excludes non-COGS categories (packaging, cleaning)
+        total_cogs = float(sum(v for s, v in spend_by.items() if config.is_cogs(s))) if len(spend_by) else 0.0
+        prev_key = prev_period_key(mode, ref)
+        prev_spend, _ = (metrics.spend_and_deliveries(df, p_col, prev_key)
+                         if not df.empty else (pd.Series(dtype=float), None))
+        prev_total = float(sum(v for s, v in prev_spend.items() if config.is_cogs(s))) if len(prev_spend) else 0.0
+        gp, rp = config.TOTAL_COGS_GREEN, config.TOTAL_COGS_RED
+        cogs_pct = (total_cogs / revenue) if revenue > 0 else None
+        tstat = config.total_status(cogs_pct) if cogs_pct is not None else "amber"
+        target_cogs = revenue * gp if revenue > 0 else 0.0
+        var = total_cogs - target_cogs
+        n_del = int(deliveries.sum()) if len(deliveries) else 0
 
-    # Labour + prime cost (labour_cost / labour_hours come from the sidebar input)
-    labour_pct = (labour_cost / revenue) if revenue > 0 else None
-    lstat = config.labour_status(labour_pct) if labour_pct is not None else "amber"
-    prime_cost = total_cogs + labour_cost
-    prime_pct = (prime_cost / revenue) if revenue > 0 else None
-    pstat = config.prime_status(prime_pct) if prime_pct is not None else "amber"
-    # Week-over-week & month-over-month labour change (independent of the view mode)
-    _wkmap = c_labour_map("week")
-    def _wk_cost(d):
-        return _wkmap.get(storage.iso_week_of(d), {}).get("cost", 0.0)
-    def _mo_cost(d):
-        m = d.strftime("%Y-%m")
-        return sum(v["cost"] for kk, v in _wkmap.items() if storage._iso_week_month(kk) == m)
-    _lw_prev = _wk_cost(ref - dt.timedelta(days=7))
-    _lm_prev = _mo_cost(ref.replace(day=1) - dt.timedelta(days=1))
-    wow = ((_wk_cost(ref) - _lw_prev) / _lw_prev * 100) if _lw_prev else None
-    mom = ((_mo_cost(ref) - _lm_prev) / _lm_prev * 100) if _lm_prev else None
+        # Labour + prime cost (labour_cost / labour_hours come from the sidebar input)
+        labour_pct = (labour_cost / revenue) if revenue > 0 else None
+        lstat = config.labour_status(labour_pct) if labour_pct is not None else "amber"
+        prime_cost = total_cogs + labour_cost
+        prime_pct = (prime_cost / revenue) if revenue > 0 else None
+        pstat = config.prime_status(prime_pct) if prime_pct is not None else "amber"
+        # Week-over-week & month-over-month labour change (independent of the view mode)
+        _wkmap = c_labour_map("week")
+        def _wk_cost(d):
+            return _wkmap.get(storage.iso_week_of(d), {}).get("cost", 0.0)
+        def _mo_cost(d):
+            m = d.strftime("%Y-%m")
+            return sum(v["cost"] for kk, v in _wkmap.items() if storage._iso_week_month(kk) == m)
+        _lw_prev = _wk_cost(ref - dt.timedelta(days=7))
+        _lm_prev = _mo_cost(ref.replace(day=1) - dt.timedelta(days=1))
+        wow = ((_wk_cost(ref) - _lw_prev) / _lw_prev * 100) if _lw_prev else None
+        mom = ((_mo_cost(ref) - _lm_prev) / _lm_prev * 100) if _lm_prev else None
 
-    # ---- KPI cards ----
-    if owner:
-        k = st.columns(5)
-        kpi(k[0], "Revenue (ex-GST)", f"${revenue:,.0f}" if revenue > 0 else "—", "net of delivery cut")
-        kpi(k[1], "Total COGS", f"${total_cogs:,.0f}",
-            f"{var:+,.0f} vs target" if revenue > 0 else "", COLORS[tstat] if revenue > 0 else "#8b95a7")
-        kpi(k[2], "COGS %", f"{cogs_pct*100:.1f}%" if cogs_pct is not None else "—",
-            ((("▼ " if tstat == "green" else "▲ ") + f"{(cogs_pct-gp)*100:+.1f} pts vs {gp*100:.0f}%")
-             if cogs_pct is not None else f"target ≤{gp*100:.0f}%"),
-            COLORS[tstat] if cogs_pct is not None else "#8b95a7")
-        kpi(k[3], f"Target COGS ({gp*100:.0f}%)", f"${target_cogs:,.0f}" if revenue > 0 else "—", "the 40% line")
-        kpi(k[4], "Deliveries", f"{n_del}", "supplier drops")
-    else:
-        # Chef view: spend $ + percentages + BOH hours, but no revenue / target $.
-        k = st.columns(4)
-        kpi(k[0], "Total supplier spend", f"${total_cogs:,.0f}", "food COGS this period")
-        kpi(k[1], "COGS %", f"{cogs_pct*100:.1f}%" if cogs_pct is not None else "—",
-            ((("▼ " if tstat == "green" else "▲ ") + f"{(cogs_pct-gp)*100:+.1f} pts vs {gp*100:.0f}%")
-             if cogs_pct is not None else f"target ≤{gp*100:.0f}%"),
-            COLORS[tstat] if cogs_pct is not None else "#8b95a7")
-        kpi(k[2], "BOH hours", f"{labour_boh:g}" if labour_boh else "—", "kitchen")
-        kpi(k[3], "Deliveries", f"{n_del}", "supplier drops")
-    st.write("")
-
-    # ---- Gauge + Baida tubs ----
-    g1, g2 = st.columns([1, 1.3])
-    with g1:
-        st.markdown("**Total COGS vs target**")
-        if cogs_pct is not None:
-            st.plotly_chart(cogs_gauge(cogs_pct, gp, rp), use_container_width=True,
-                            config={"displayModeBar": False})
-        else:
-            st.caption("COGS % unavailable for this period." if not owner
-                       else "Add revenue (sidebar) to see COGS %.")
-        st.caption(f"🟢 ≤{gp*100:.0f}% · 🟠 {gp*100:.0f}–{rp*100:.0f}% · 🔴 >{rp*100:.0f}%")
-        # ---- End-of-period pacing/forecast (#3) ----
+        # ---- KPI cards ----
         if owner:
-            _proj = metrics.pace_projection(p_start, p_end, dt.date.today(), total_cogs, revenue, gp)
-            if _proj:
-                _ps = config.total_status(_proj["proj_pct"])
-                st.caption(
-                    f"📈 Day {_proj['elapsed']}/{_proj['total']}: at this pace ≈ "
-                    f"**${_proj['proj_cogs']:,.0f}** food spend by {mode.lower()}-end vs "
-                    f"**${_proj['target_cogs']:,.0f}** target "
-                    f"({LIGHT[_ps]} {_proj['delta']:+,.0f} → {_proj['proj_pct']*100:.1f}%).")
-    with g2:
-        tubs = metrics.baida_tubs(lines, p_col, period_key)
-        st.markdown(f"**🐔 Baida chicken — tubs this {p_type}**")
-        tc = st.columns(3)
-        cards = [("RSPCA tubs", tubs["RSPCA"]["tubs"]), ("Split tubs", tubs["Split"]["tubs"]),
-                 ("Total tubs", tubs["total_tubs"])]
-        for col, (lbl, val) in zip(tc, cards):
-            col.markdown(f"<div class='tub'><div class='t'>{lbl}</div><div class='v'>{val:g}</div></div>",
-                         unsafe_allow_html=True)
-        dep = tubs.get("tub_deposit", 0)
-        st.caption(f"{int(tubs['total_chickens'])} chickens "
-                   f"(RSPCA {int(tubs['RSPCA']['chickens'])}÷8 · Split {int(tubs['Split']['chickens'])}÷12)"
-                   + (f" · TUB DEPOSIT {dep:g}" if dep else ""))
-        # Order-vs-turnover guide references weekly sales $, so owner-only.
-        if owner and mode == "Week" and not pos_df.empty:
-            gross_wk = float(pd.to_numeric(
-                pos_df[pos_df["iso_week"] == period_key]["total_incl_gst"],
-                errors="coerce").fillna(0).sum())
-            rec = config.baida_recommended(gross_wk)
-            if rec and gross_wk > 0:
-                rec_bird, rec_split = rec
-                wpt = config.TUB_TYPES["RSPCA"]["per_tub"]   # birds per whole tub (8)
-                spt = config.TUB_TYPES["Split"]["per_tub"]   # birds per split tub (12)
-                act_bird, act_split = tubs["RSPCA"]["chickens"], tubs["Split"]["chickens"]
-                act_wt, act_st = tubs["RSPCA"]["tubs"], tubs["Split"]["tubs"]
-                rec_wt, rec_st = rec_bird / wpt, rec_split / spt
-                over = []
-                if rec_bird and act_bird > rec_bird * (1 + config.BAIDA_OVER_PCT):
-                    over.append(f"whole **{act_bird:.0f} birds = {act_wt:.0f} tubs** "
-                                f"vs guide ~{rec_bird:.0f} ({rec_wt:.0f} tubs)")
-                if rec_split and act_split > rec_split * (1 + config.BAIDA_OVER_PCT):
-                    over.append(f"split **{act_split:.0f} = {act_st:.0f} tubs** "
-                                f"vs guide ~{rec_split:.0f} ({rec_st:.0f} tubs)")
-                if over:
-                    st.warning(f"🐔 Baida order high for ${gross_wk:,.0f} sales — " + " · ".join(over))
-                else:
-                    st.caption(f"✅ Order in line with ${gross_wk:,.0f} sales — guide "
-                               f"~{rec_bird:.0f} whole ({rec_wt:.0f} tubs) · "
-                               f"{rec_split:.0f} split ({rec_st:.0f} tubs).")
-    st.write("")
-
-    # ---- Weekly stocktake → TRUE COGS (count-based, by supplier, Week mode) (#4) ----
-    STOCK_SUPPLIERS = ["Chicken", "Veggies", "Blueseas (Broadline)"]
-    STOCK_SUP_LABEL = {"Chicken": "🐔 Baida (Chicken)", "Veggies": "🥬 Veggies",
-                       "Blueseas (Broadline)": "🌊 Blueseas"}
-    if mode == "Week":
-        st.markdown("**📦 Weekly stocktake → true COGS**")
-        _items = [i for i in c_load_stock_items() if i.get("supplier") in STOCK_SUPPLIERS]
-
-        # 1) Manage the products counted (Baida / Veggies / Blueseas only)
-        with st.expander(f"🧾 Stock items & prices ({len(_items)})", expanded=not _items):
-            st.caption("Only **Baida, Veggies and Blueseas** products are counted. Pick the "
-                       "**supplier**, set the **unit** (kg, ea, carton…) and **price per unit** — "
-                       "e.g. salmon as unit `kg`, price `37.25` shows **$37.25/kg**. "
-                       "*Suggest from invoices* pre-fills from what you buy; then adjust.")
-            _seed = st.session_state.pop("_stock_seed", None)
-            _src = _seed if _seed is not None else (_items or [{"item": "", "supplier": "Veggies",
-                                                                "unit": "", "unit_price": 0.0}])
-            _idf = pd.DataFrame(_src)
-            for _c, _dv in [("item", ""), ("supplier", "Veggies"), ("unit", ""), ("unit_price", 0.0)]:
-                if _c not in _idf.columns:
-                    _idf[_c] = _dv
-            _ie = st.data_editor(
-                _idf[["item", "supplier", "unit", "unit_price"]], num_rows="dynamic",
-                hide_index=True, width="stretch", key="stockitems_ed",
-                column_config={
-                    "item": st.column_config.TextColumn("Item"),
-                    "supplier": st.column_config.SelectboxColumn("Supplier", options=STOCK_SUPPLIERS,
-                                                                 required=True),
-                    "unit": st.column_config.TextColumn("Unit (kg/ea/…)"),
-                    "unit_price": st.column_config.NumberColumn("Price per unit", format="$%.2f",
-                                                                min_value=0.0)})
-            _b = st.columns(2)
-            if _b[0].button("💡 Suggest from invoices", key="stock_suggest"):
-                st.session_state["_stock_seed"] = metrics.suggest_stock_items(lines, STOCK_SUPPLIERS, 60)
-                st.rerun()
-            if _b[1].button("💾 Save stock items", key="stockitems_save"):
-                _keep = [r for r in _ie.to_dict("records") if r.get("supplier") in STOCK_SUPPLIERS]
-                storage.save_stock_items(_keep)
-                bust_caches()
-                st.session_state["stk_flash"] = True
-                st.rerun()
-        if st.session_state.pop("stk_flash", None):
-            st.success("Stock items saved.")
-
-        # 2) This week's count sheet, grouped by supplier -> closing value -> true COGS
-        if not _items:
-            st.info("Add Baida / Veggies / Blueseas items above (or **Suggest from invoices**) "
-                    "to start counting.")
+            k = st.columns(5)
+            kpi(k[0], "Revenue (ex-GST)", f"${revenue:,.0f}" if revenue > 0 else "—", "net of delivery cut")
+            kpi(k[1], "Total COGS", f"${total_cogs:,.0f}",
+                f"{var:+,.0f} vs target" if revenue > 0 else "", COLORS[tstat] if revenue > 0 else "#8b95a7")
+            kpi(k[2], "COGS %", f"{cogs_pct*100:.1f}%" if cogs_pct is not None else "—",
+                ((("▼ " if tstat == "green" else "▲ ") + f"{(cogs_pct-gp)*100:+.1f} pts vs {gp*100:.0f}%")
+                 if cogs_pct is not None else f"target ≤{gp*100:.0f}%"),
+                COLORS[tstat] if cogs_pct is not None else "#8b95a7")
+            kpi(k[3], f"Target COGS ({gp*100:.0f}%)", f"${target_cogs:,.0f}" if revenue > 0 else "—", "the 40% line")
+            kpi(k[4], "Deliveries", f"{n_del}", "supplier drops")
         else:
-            st.caption("Enter the **count on hand** at the end of this week:")
-            _total = 0.0
-            for _sup in STOCK_SUPPLIERS:
-                _sit = [i for i in _items if i.get("supplier") == _sup]
-                if not _sit:
-                    continue
-                st.markdown(f"**{STOCK_SUP_LABEL[_sup]}**")
-                _csheet = pd.DataFrame([
-                    {"Item": i["item"], "Price": f"${i['unit_price']:.2f}/{i['unit'] or 'unit'}",
-                     "Count": 0.0, "_p": i["unit_price"]} for i in _sit])
-                _ce = st.data_editor(
-                    _csheet[["Item", "Price", "Count"]], hide_index=True, width="stretch",
-                    key=f"stockcount_{_sup.replace(' ', '_').replace('(', '').replace(')', '')}",
+            # Chef view: spend $ + percentages + BOH hours, but no revenue / target $.
+            k = st.columns(4)
+            kpi(k[0], "Total supplier spend", f"${total_cogs:,.0f}", "food COGS this period")
+            kpi(k[1], "COGS %", f"{cogs_pct*100:.1f}%" if cogs_pct is not None else "—",
+                ((("▼ " if tstat == "green" else "▲ ") + f"{(cogs_pct-gp)*100:+.1f} pts vs {gp*100:.0f}%")
+                 if cogs_pct is not None else f"target ≤{gp*100:.0f}%"),
+                COLORS[tstat] if cogs_pct is not None else "#8b95a7")
+            kpi(k[2], "BOH hours", f"{labour_boh:g}" if labour_boh else "—", "kitchen")
+            kpi(k[3], "Deliveries", f"{n_del}", "supplier drops")
+        st.write("")
+
+        # ---- Gauge + Baida tubs ----
+        g1, g2 = st.columns([1, 1.3])
+        with g1:
+            st.markdown("**Total COGS vs target**")
+            if cogs_pct is not None:
+                st.plotly_chart(cogs_gauge(cogs_pct, gp, rp), use_container_width=True,
+                                config={"displayModeBar": False})
+            else:
+                st.caption("COGS % unavailable for this period." if not owner
+                           else "Add revenue (sidebar) to see COGS %.")
+            st.caption(f"🟢 ≤{gp*100:.0f}% · 🟠 {gp*100:.0f}–{rp*100:.0f}% · 🔴 >{rp*100:.0f}%")
+            # ---- End-of-period pacing/forecast (#3) ----
+            if owner:
+                _proj = metrics.pace_projection(p_start, p_end, dt.date.today(), total_cogs, revenue, gp)
+                if _proj:
+                    _ps = config.total_status(_proj["proj_pct"])
+                    st.caption(
+                        f"📈 Day {_proj['elapsed']}/{_proj['total']}: at this pace ≈ "
+                        f"**${_proj['proj_cogs']:,.0f}** food spend by {mode.lower()}-end vs "
+                        f"**${_proj['target_cogs']:,.0f}** target "
+                        f"({LIGHT[_ps]} {_proj['delta']:+,.0f} → {_proj['proj_pct']*100:.1f}%).")
+        with g2:
+            tubs = metrics.baida_tubs(lines, p_col, period_key)
+            st.markdown(f"**🐔 Baida chicken — tubs this {p_type}**")
+            tc = st.columns(3)
+            cards = [("RSPCA tubs", tubs["RSPCA"]["tubs"]), ("Split tubs", tubs["Split"]["tubs"]),
+                     ("Total tubs", tubs["total_tubs"])]
+            for col, (lbl, val) in zip(tc, cards):
+                col.markdown(f"<div class='tub'><div class='t'>{lbl}</div><div class='v'>{val:g}</div></div>",
+                             unsafe_allow_html=True)
+            dep = tubs.get("tub_deposit", 0)
+            st.caption(f"{int(tubs['total_chickens'])} chickens "
+                       f"(RSPCA {int(tubs['RSPCA']['chickens'])}÷8 · Split {int(tubs['Split']['chickens'])}÷12)"
+                       + (f" · TUB DEPOSIT {dep:g}" if dep else ""))
+            # Order-vs-turnover guide references weekly sales $, so owner-only.
+            if owner and mode == "Week" and not pos_df.empty:
+                gross_wk = float(pd.to_numeric(
+                    pos_df[pos_df["iso_week"] == period_key]["total_incl_gst"],
+                    errors="coerce").fillna(0).sum())
+                rec = config.baida_recommended(gross_wk)
+                if rec and gross_wk > 0:
+                    rec_bird, rec_split = rec
+                    wpt = config.TUB_TYPES["RSPCA"]["per_tub"]   # birds per whole tub (8)
+                    spt = config.TUB_TYPES["Split"]["per_tub"]   # birds per split tub (12)
+                    act_bird, act_split = tubs["RSPCA"]["chickens"], tubs["Split"]["chickens"]
+                    act_wt, act_st = tubs["RSPCA"]["tubs"], tubs["Split"]["tubs"]
+                    rec_wt, rec_st = rec_bird / wpt, rec_split / spt
+                    over = []
+                    if rec_bird and act_bird > rec_bird * (1 + config.BAIDA_OVER_PCT):
+                        over.append(f"whole **{act_bird:.0f} birds = {act_wt:.0f} tubs** "
+                                    f"vs guide ~{rec_bird:.0f} ({rec_wt:.0f} tubs)")
+                    if rec_split and act_split > rec_split * (1 + config.BAIDA_OVER_PCT):
+                        over.append(f"split **{act_split:.0f} = {act_st:.0f} tubs** "
+                                    f"vs guide ~{rec_split:.0f} ({rec_st:.0f} tubs)")
+                    if over:
+                        st.warning(f"🐔 Baida order high for ${gross_wk:,.0f} sales — " + " · ".join(over))
+                    else:
+                        st.caption(f"✅ Order in line with ${gross_wk:,.0f} sales — guide "
+                                   f"~{rec_bird:.0f} whole ({rec_wt:.0f} tubs) · "
+                                   f"{rec_split:.0f} split ({rec_st:.0f} tubs).")
+        st.write("")
+
+        # ---- Weekly stocktake → TRUE COGS (count-based, by supplier, Week mode) (#4) ----
+        STOCK_SUPPLIERS = ["Chicken", "Veggies", "Blueseas (Broadline)"]
+        STOCK_SUP_LABEL = {"Chicken": "🐔 Baida (Chicken)", "Veggies": "🥬 Veggies",
+                           "Blueseas (Broadline)": "🌊 Blueseas"}
+        if mode == "Week":
+            st.markdown("**📦 Weekly stocktake → true COGS**")
+            _items = [i for i in c_load_stock_items() if i.get("supplier") in STOCK_SUPPLIERS]
+
+            # 1) Manage the products counted (Baida / Veggies / Blueseas only)
+            with st.expander(f"🧾 Stock items & prices ({len(_items)})", expanded=not _items):
+                st.caption("Only **Baida, Veggies and Blueseas** products are counted. Pick the "
+                           "**supplier**, set the **unit** (kg, ea, carton…) and **price per unit** — "
+                           "e.g. salmon as unit `kg`, price `37.25` shows **$37.25/kg**. "
+                           "*Suggest from invoices* pre-fills from what you buy; then adjust.")
+                _seed = st.session_state.pop("_stock_seed", None)
+                _src = _seed if _seed is not None else (_items or [{"item": "", "supplier": "Veggies",
+                                                                    "unit": "", "unit_price": 0.0}])
+                _idf = pd.DataFrame(_src)
+                for _c, _dv in [("item", ""), ("supplier", "Veggies"), ("unit", ""), ("unit_price", 0.0)]:
+                    if _c not in _idf.columns:
+                        _idf[_c] = _dv
+                _ie = st.data_editor(
+                    _idf[["item", "supplier", "unit", "unit_price"]], num_rows="dynamic",
+                    hide_index=True, width="stretch", key="stockitems_ed",
                     column_config={
-                        "Item": st.column_config.TextColumn(disabled=True),
-                        "Price": st.column_config.TextColumn("Price", disabled=True),
-                        "Count": st.column_config.NumberColumn(min_value=0.0, step=1.0)})
-                _cnt = pd.to_numeric(_ce["Count"], errors="coerce").fillna(0).values
-                _sub = float((_cnt * _csheet["_p"].values).sum())
-                _total += _sub
-                st.caption(f"{STOCK_SUP_LABEL[_sup]} subtotal: **${_sub:,.0f}**")
-            st.markdown(f"**Closing stock value this week: ${_total:,.0f}**")
-            if st.button("💾 Save this week's stocktake", type="primary", key="stock_save_wk"):
-                storage.set_stock_value(period_key, _total)
-                bust_caches()
-                st.session_state["stk_flash2"] = f"Saved ${_total:,.0f} closing stock for {period_key}."
-                st.rerun()
-            if st.session_state.pop("stk_flash2", None):
-                st.success("Stocktake saved.")
+                        "item": st.column_config.TextColumn("Item"),
+                        "supplier": st.column_config.SelectboxColumn("Supplier", options=STOCK_SUPPLIERS,
+                                                                     required=True),
+                        "unit": st.column_config.TextColumn("Unit (kg/ea/…)"),
+                        "unit_price": st.column_config.NumberColumn("Price per unit", format="$%.2f",
+                                                                    min_value=0.0)})
+                _b = st.columns(2)
+                if _b[0].button("💡 Suggest from invoices", key="stock_suggest"):
+                    st.session_state["_stock_seed"] = metrics.suggest_stock_items(lines, STOCK_SUPPLIERS, 60)
+                    st.rerun()
+                if _b[1].button("💾 Save stock items", key="stockitems_save"):
+                    _keep = [r for r in _ie.to_dict("records") if r.get("supplier") in STOCK_SUPPLIERS]
+                    storage.save_stock_items(_keep)
+                    bust_caches()
+                    st.session_state["stk_flash"] = True
+                    st.rerun()
+            if st.session_state.pop("stk_flash", None):
+                st.success("Stock items saved.")
 
-            _smap = c_stock_value_map()
-            _prev_wk = storage.iso_week_of(ref - dt.timedelta(days=7))
-            _opening = _smap.get(_prev_wk)
-            _close = _smap.get(period_key, _total)
-            if _opening is not None and _close > 0:
-                _actual = metrics.true_cogs(total_cogs, _opening, _close)
-                _act_pct = (_actual / revenue) if revenue > 0 else None
-                cc = st.columns(3)
-                kpi(cc[0], "Opening stock", f"${_opening:,.0f}", f"end of {_prev_wk}")
-                kpi(cc[1], "True COGS (used)", f"${_actual:,.0f}", f"vs ${total_cogs:,.0f} purchased")
-                if _act_pct is not None:
-                    kpi(cc[2], "True COGS %", f"{_act_pct*100:.1f}%",
-                        f"purchases read {cogs_pct*100:.1f}%" if cogs_pct is not None else "",
-                        COLORS[config.total_status(_act_pct)])
-            elif _close > 0:
-                st.caption(f"Save last week's ({_prev_wk}) stocktake too — it becomes this week's "
-                           "opening — to unlock true COGS.")
-    if mode == "Month":
-        st.info("📦 **Weekly stocktake** is weekly — switch **Track by → Week** in the sidebar "
-                "to record closing stock and see true COGS.")
-
-    # ---- Labour & Prime Cost (owner) / Kitchen hours (chef) ----
-    if owner:
-        st.markdown("**💼 Labour & Prime Cost**")
-
-        def _chg(p):
-            if p is None:
-                return "—"
-            return ("▲ " if p > 0 else "▼ ") + f"{abs(p):.0f}%"
-
-        lc_cols = st.columns(5)
-        kpi(lc_cols[0], "Labour (gross wages)", f"${labour_cost:,.0f}" if labour_cost > 0 else "—",
-            (f"wk {_chg(wow)} · mth {_chg(mom)}" if (wow is not None or mom is not None) else "this period"))
-        kpi(lc_cols[1], "Labour %", f"{labour_pct*100:.1f}%" if labour_pct is not None else "—",
-            ((("▼ " if lstat == "green" else "▲ ") + f"{(labour_pct-config.LABOUR_GREEN)*100:+.1f} pts vs {config.LABOUR_GREEN*100:.0f}%")
-             if labour_pct is not None else f"target ≤{config.LABOUR_GREEN*100:.0f}%"),
-            COLORS[lstat] if labour_pct is not None else "#8b95a7")
-        kpi(lc_cols[2], "Prime cost %", f"{prime_pct*100:.1f}%" if prime_pct is not None else "—",
-            ((("▼ " if pstat == "green" else "▲ ") + f"{(prime_pct-config.PRIME_GREEN)*100:+.1f} pts vs {config.PRIME_GREEN*100:.0f}%")
-             if prime_pct is not None else f"target ≤{config.PRIME_GREEN*100:.0f}%"),
-            COLORS[pstat] if prime_pct is not None else "#8b95a7")
-        kpi(lc_cols[3], "FOH hours", f"{labour_foh:g}" if labour_foh else "—", "front of house")
-        kpi(lc_cols[4], "BOH hours", f"{labour_boh:g}" if labour_boh else "—", "kitchen")
-        st.write("")
-
-        pg1, pg2 = st.columns([1, 1.3])
-        with pg1:
-            st.markdown("**Prime cost vs target** (COGS + labour)")
-            if prime_pct is not None:
-                st.plotly_chart(cogs_gauge(prime_pct, config.PRIME_GREEN, config.PRIME_RED, axis_max=90),
-                                use_container_width=True, config={"displayModeBar": False})
+            # 2) This week's count sheet, grouped by supplier -> closing value -> true COGS
+            if not _items:
+                st.info("Add Baida / Veggies / Blueseas items above (or **Suggest from invoices**) "
+                        "to start counting.")
             else:
-                st.caption("Add revenue + labour (sidebar) to see prime cost %.")
-            st.caption(f"🟢 ≤{config.PRIME_GREEN*100:.0f}% · 🟠 {config.PRIME_GREEN*100:.0f}–{config.PRIME_RED*100:.0f}% · "
-                       f"🔴 >{config.PRIME_RED*100:.0f}%  ·  ${total_cogs:,.0f} COGS + ${labour_cost:,.0f} labour")
-        with pg2:
-            st.markdown("**Labour % / Prime % trend**")
-            ltrend = (metrics.labour_prime_trend(df, trend_rev_map, labour_cost_map, p_col,
-                                                 metrics.recent_periods(df, p_col, n=8))
-                      if not df.empty else pd.DataFrame())
-            if not ltrend.empty:
-                fig = px.line(ltrend, x="Period", y=["Labour %", "Prime %"], markers=True,
-                              color_discrete_sequence=[C["navy"], C["slate"]])
-                fig.update_yaxes(title="%")
-                st.plotly_chart(dark(fig), width="stretch", config={"displayModeBar": False})
-            else:
-                st.caption("Log labour across a few periods to see the trend.")
-        if prime_pct is not None and pstat == "red":
-            st.error(f"🔴 Prime cost {prime_pct*100:.1f}% is over the {config.PRIME_RED*100:.0f}% ceiling "
-                     f"(target ≤{config.PRIME_GREEN*100:.0f}%).")
-        st.write("")
-    else:
-        st.markdown("**👨‍🍳 Kitchen labour hours**")
-        hc = st.columns(3)
-        kpi(hc[0], "BOH hours", f"{labour_boh:g}" if labour_boh else "—", "kitchen")
-        kpi(hc[1], "FOH hours", f"{labour_foh:g}" if labour_foh else "—", "front of house")
-        kpi(hc[2], "Total hours", f"{labour_hours:g}" if labour_hours else "—", "all staff")
-        st.write("")
+                st.caption("Enter the **count on hand** at the end of this week:")
+                _total = 0.0
+                for _sup in STOCK_SUPPLIERS:
+                    _sit = [i for i in _items if i.get("supplier") == _sup]
+                    if not _sit:
+                        continue
+                    st.markdown(f"**{STOCK_SUP_LABEL[_sup]}**")
+                    _csheet = pd.DataFrame([
+                        {"Item": i["item"], "Price": f"${i['unit_price']:.2f}/{i['unit'] or 'unit'}",
+                         "Count": 0.0, "_p": i["unit_price"]} for i in _sit])
+                    _ce = st.data_editor(
+                        _csheet[["Item", "Price", "Count"]], hide_index=True, width="stretch",
+                        key=f"stockcount_{_sup.replace(' ', '_').replace('(', '').replace(')', '')}",
+                        column_config={
+                            "Item": st.column_config.TextColumn(disabled=True),
+                            "Price": st.column_config.TextColumn("Price", disabled=True),
+                            "Count": st.column_config.NumberColumn(min_value=0.0, step=1.0)})
+                    _cnt = pd.to_numeric(_ce["Count"], errors="coerce").fillna(0).values
+                    _sub = float((_cnt * _csheet["_p"].values).sum())
+                    _total += _sub
+                    st.caption(f"{STOCK_SUP_LABEL[_sup]} subtotal: **${_sub:,.0f}**")
+                st.markdown(f"**Closing stock value this week: ${_total:,.0f}**")
+                if st.button("💾 Save this week's stocktake", type="primary", key="stock_save_wk"):
+                    storage.set_stock_value(period_key, _total)
+                    bust_caches()
+                    st.session_state["stk_flash2"] = f"Saved ${_total:,.0f} closing stock for {period_key}."
+                    st.rerun()
+                if st.session_state.pop("stk_flash2", None):
+                    st.success("Stocktake saved.")
 
-    # ---- Supplier price-rise alerts (every item, #1) ----
-    if not lines.empty:
-        _anom = metrics.price_anomalies(lines, min_pct=8.0)
-        if not _anom.empty:
-            st.markdown("**💸 Supplier price rises** — items costing more than the last delivery")
-            _top = _anom.head(6)
-            st.warning("🔺 " + "  ·  ".join(
-                f"**{r.Item}** ({r.Supplier}) {r.Change} → ${r.Now:,.2f}/unit"
-                for r in _top.itertuples()))
-            with st.expander(f"See all {len(_anom)} price rise(s) since last buy"):
-                st.dataframe(_anom.drop(columns=["_pct"]), hide_index=True, width="stretch")
+                _smap = c_stock_value_map()
+                _prev_wk = storage.iso_week_of(ref - dt.timedelta(days=7))
+                _opening = _smap.get(_prev_wk)
+                _close = _smap.get(period_key, _total)
+                if _opening is not None and _close > 0:
+                    _actual = metrics.true_cogs(total_cogs, _opening, _close)
+                    _act_pct = (_actual / revenue) if revenue > 0 else None
+                    cc = st.columns(3)
+                    kpi(cc[0], "Opening stock", f"${_opening:,.0f}", f"end of {_prev_wk}")
+                    kpi(cc[1], "True COGS (used)", f"${_actual:,.0f}", f"vs ${total_cogs:,.0f} purchased")
+                    if _act_pct is not None:
+                        kpi(cc[2], "True COGS %", f"{_act_pct*100:.1f}%",
+                            f"purchases read {cogs_pct*100:.1f}%" if cogs_pct is not None else "",
+                            COLORS[config.total_status(_act_pct)])
+                elif _close > 0:
+                    st.caption(f"Save last week's ({_prev_wk}) stocktake too — it becomes this week's "
+                               "opening — to unlock true COGS.")
+        if mode == "Month":
+            st.info("📦 **Weekly stocktake** is weekly — switch **Track by → Week** in the sidebar "
+                    "to record closing stock and see true COGS.")
+
+        # ---- Labour & Prime Cost (owner) / Kitchen hours (chef) ----
+        if owner:
+            st.markdown("**💼 Labour & Prime Cost**")
+
+            def _chg(p):
+                if p is None:
+                    return "—"
+                return ("▲ " if p > 0 else "▼ ") + f"{abs(p):.0f}%"
+
+            lc_cols = st.columns(5)
+            kpi(lc_cols[0], "Labour (gross wages)", f"${labour_cost:,.0f}" if labour_cost > 0 else "—",
+                (f"wk {_chg(wow)} · mth {_chg(mom)}" if (wow is not None or mom is not None) else "this period"))
+            kpi(lc_cols[1], "Labour %", f"{labour_pct*100:.1f}%" if labour_pct is not None else "—",
+                ((("▼ " if lstat == "green" else "▲ ") + f"{(labour_pct-config.LABOUR_GREEN)*100:+.1f} pts vs {config.LABOUR_GREEN*100:.0f}%")
+                 if labour_pct is not None else f"target ≤{config.LABOUR_GREEN*100:.0f}%"),
+                COLORS[lstat] if labour_pct is not None else "#8b95a7")
+            kpi(lc_cols[2], "Prime cost %", f"{prime_pct*100:.1f}%" if prime_pct is not None else "—",
+                ((("▼ " if pstat == "green" else "▲ ") + f"{(prime_pct-config.PRIME_GREEN)*100:+.1f} pts vs {config.PRIME_GREEN*100:.0f}%")
+                 if prime_pct is not None else f"target ≤{config.PRIME_GREEN*100:.0f}%"),
+                COLORS[pstat] if prime_pct is not None else "#8b95a7")
+            kpi(lc_cols[3], "FOH hours", f"{labour_foh:g}" if labour_foh else "—", "front of house")
+            kpi(lc_cols[4], "BOH hours", f"{labour_boh:g}" if labour_boh else "—", "kitchen")
             st.write("")
 
-    # ---- Veggie price alerts ----
-    if not lines.empty:
-        d_ups, w_ups = metrics.veggie_increases(lines)
-        if w_ups or d_ups:
-            st.markdown("**🥬 Veggie price alerts** — St George produce going up")
-            if w_ups:
-                st.warning("🔺 Up this week: "
-                           + "  ·  ".join(f"**{n}** +{p:.0f}%" for n, p in w_ups))
-            if d_ups:
-                st.info("🔺 Up since last delivery: "
-                        + "  ·  ".join(f"**{n}** +{p:.0f}%" for n, p in d_ups))
+            pg1, pg2 = st.columns([1, 1.3])
+            with pg1:
+                st.markdown("**Prime cost vs target** (COGS + labour)")
+                if prime_pct is not None:
+                    st.plotly_chart(cogs_gauge(prime_pct, config.PRIME_GREEN, config.PRIME_RED, axis_max=90),
+                                    use_container_width=True, config={"displayModeBar": False})
+                else:
+                    st.caption("Add revenue + labour (sidebar) to see prime cost %.")
+                st.caption(f"🟢 ≤{config.PRIME_GREEN*100:.0f}% · 🟠 {config.PRIME_GREEN*100:.0f}–{config.PRIME_RED*100:.0f}% · "
+                           f"🔴 >{config.PRIME_RED*100:.0f}%  ·  ${total_cogs:,.0f} COGS + ${labour_cost:,.0f} labour")
+            with pg2:
+                st.markdown("**Labour % / Prime % trend**")
+                ltrend = (metrics.labour_prime_trend(df, trend_rev_map, labour_cost_map, p_col,
+                                                     metrics.recent_periods(df, p_col, n=8))
+                          if not df.empty else pd.DataFrame())
+                if not ltrend.empty:
+                    fig = px.line(ltrend, x="Period", y=["Labour %", "Prime %"], markers=True,
+                                  color_discrete_sequence=[C["navy"], C["slate"]])
+                    fig.update_yaxes(title="%")
+                    st.plotly_chart(dark(fig), width="stretch", config={"displayModeBar": False})
+                else:
+                    st.caption("Log labour across a few periods to see the trend.")
+            if prime_pct is not None and pstat == "red":
+                st.error(f"🔴 Prime cost {prime_pct*100:.1f}% is over the {config.PRIME_RED*100:.0f}% ceiling "
+                         f"(target ≤{config.PRIME_GREEN*100:.0f}%).")
+            st.write("")
+        else:
+            st.markdown("**👨‍🍳 Kitchen labour hours**")
+            hc = st.columns(3)
+            kpi(hc[0], "BOH hours", f"{labour_boh:g}" if labour_boh else "—", "kitchen")
+            kpi(hc[1], "FOH hours", f"{labour_foh:g}" if labour_foh else "—", "front of house")
+            kpi(hc[2], "Total hours", f"{labour_hours:g}" if labour_hours else "—", "all staff")
             st.write("")
 
-    # ---- Charts ----
-    if not df.empty:
-        periods = metrics.recent_periods(df, p_col, n=8)
-        spend_long = metrics.weekly_supplier_spend(df, p_col, periods)
-        c1, c2 = st.columns(2)
-        with c1:
-            st.markdown(f"**Spend by supplier — last {len(periods)} {p_type}s**")
-            if not spend_long.empty:
-                fig = px.bar(spend_long, x="Period", y="Spend", color="Supplier", barmode="stack",
-                             color_discrete_sequence=C["seq"])
-                fig.update_traces(marker_line_width=0)
-                st.plotly_chart(dark(fig), width="stretch", config={"displayModeBar": False})
-        with c2:
-            st.markdown("**COGS % trend**")
-            trend = metrics.cogs_pct_trend(df, trend_rev_map, p_col, periods)
-            if not trend.empty:
-                fig = px.line(trend, x="Period", y=["COGS %", "Target 40%", "Red 42%"], markers=True,
-                              color_discrete_sequence=[C["navy"], C["slate"], C["red"]])
-                fig = dark(fig)
-                # reference lines stay thin & dashed so the COGS % line reads as primary
-                fig.update_traces(selector=dict(name="Target 40%"),
-                                  line=dict(dash="dash", width=1.5), marker=dict(size=0))
-                fig.update_traces(selector=dict(name="Red 42%"),
-                                  line=dict(dash="dot", width=1.5), marker=dict(size=0))
-                fig.update_yaxes(title="%")
-                st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
-            else:
-                st.caption("Log revenue across a few periods to see the % trend.")
+        # ---- Supplier price-rise alerts (every item, #1) ----
+        if not lines.empty:
+            _anom = metrics.price_anomalies(lines, min_pct=8.0)
+            if not _anom.empty:
+                st.markdown("**💸 Supplier price rises** — items costing more than the last delivery")
+                _top = _anom.head(6)
+                st.warning("🔺 " + "  ·  ".join(
+                    f"**{r.Item}** ({r.Supplier}) {r.Change} → ${r.Now:,.2f}/unit"
+                    for r in _top.itertuples()))
+                with st.expander(f"See all {len(_anom)} price rise(s) since last buy"):
+                    st.dataframe(_anom.drop(columns=["_pct"]), hide_index=True, width="stretch")
+                st.write("")
 
-    # ---- Category scorecards ----
-    st.markdown("**Spend by category**")
-    cols = st.columns(2)
-    reds = []
-    for i, (sup, cfg) in enumerate(config.SUPPLIERS.items()):
-        spend = float(spend_by.get(sup, 0.0))
-        prev = float(prev_spend.get(sup, 0.0)) if len(prev_spend) else 0.0
-        pct = (spend / revenue) if revenue > 0 else None
-        stat = config.status_for(pct, sup) if pct is not None else None
-        if stat == "red":
-            reds.append(sup)
-        tgt = cfg.get("green_pct")
-        nd = int(deliveries.get(sup, 0)) if len(deliveries) else 0
-        with cols[i % 2].container(border=True):
-            top = st.columns([3, 1])
-            note = "" if config.is_cogs(sup) else " · not in COGS"
-            top[0].markdown(f"**{sup}**{note}")
-            top[1].markdown(f"<div style='text-align:right;font-size:1.2em'>"
-                            f"{LIGHT.get(stat, '⚪')}</div>", unsafe_allow_html=True)
-            m = st.columns(2)
-            m[0].metric("Spend", f"${spend:,.0f}",
-                        delta=f"{spend-prev:+,.0f}" if prev else None, delta_color="inverse")
-            m[1].metric("% of rev", f"{pct*100:.1f}%" if pct is not None else "—",
-                        delta=(f"≤{tgt*100:.1f}% target" if tgt else None), delta_color="off")
-            st.caption(f"📦 {nd} deliver{'y' if nd == 1 else 'ies'} · ⚖️ {fmt_qty(qty.get(sup, {}))}")
-    if reds:
-        st.error("🔴 High Variance Alert — over target this period: " + ", ".join(reds))
+        # ---- Veggie price alerts ----
+        if not lines.empty:
+            d_ups, w_ups = metrics.veggie_increases(lines)
+            if w_ups or d_ups:
+                st.markdown("**🥬 Veggie price alerts** — St George produce going up")
+                if w_ups:
+                    st.warning("🔺 Up this week: "
+                               + "  ·  ".join(f"**{n}** +{p:.0f}%" for n, p in w_ups))
+                if d_ups:
+                    st.info("🔺 Up since last delivery: "
+                            + "  ·  ".join(f"**{n}** +{p:.0f}%" for n, p in d_ups))
+                st.write("")
 
-    # ---- Price watch ----
-    if not lines.empty:
-        qprev = metrics.qty_by_supplier_unit(lines, p_col, prev_key)
-        pw = []
-        for sup, units in qty.items():
-            for unit, d in units.items():
-                if not d["per_unit"]:
-                    continue
-                pp = (qprev.get(sup, {}).get(unit, {}) or {}).get("per_unit")
-                chg = ((d["per_unit"] - pp) / pp * 100) if pp else None
-                pw.append({"Supplier": sup, "Unit": unit, "$/unit now": round(d["per_unit"], 2),
-                           "$/unit prev": round(pp, 2) if pp else None,
-                           "Change": f"{chg:+.1f}%" if chg is not None else "—"})
-        if pw:
-            with st.expander("💲 Price watch — $/unit vs last period"):
-                st.dataframe(pd.DataFrame(pw), hide_index=True, width="stretch")
+        # ---- Charts ----
+        if not df.empty:
+            periods = metrics.recent_periods(df, p_col, n=8)
+            spend_long = metrics.weekly_supplier_spend(df, p_col, periods)
+            c1, c2 = st.columns(2)
+            with c1:
+                st.markdown(f"**Spend by supplier — last {len(periods)} {p_type}s**")
+                if not spend_long.empty:
+                    fig = px.bar(spend_long, x="Period", y="Spend", color="Supplier", barmode="stack",
+                                 color_discrete_sequence=C["seq"])
+                    fig.update_traces(marker_line_width=0)
+                    st.plotly_chart(dark(fig), width="stretch", config={"displayModeBar": False})
+            with c2:
+                st.markdown("**COGS % trend**")
+                trend = metrics.cogs_pct_trend(df, trend_rev_map, p_col, periods)
+                if not trend.empty:
+                    fig = px.line(trend, x="Period", y=["COGS %", "Target 40%", "Red 42%"], markers=True,
+                                  color_discrete_sequence=[C["navy"], C["slate"], C["red"]])
+                    fig = dark(fig)
+                    # reference lines stay thin & dashed so the COGS % line reads as primary
+                    fig.update_traces(selector=dict(name="Target 40%"),
+                                      line=dict(dash="dash", width=1.5), marker=dict(size=0))
+                    fig.update_traces(selector=dict(name="Red 42%"),
+                                      line=dict(dash="dot", width=1.5), marker=dict(size=0))
+                    fig.update_yaxes(title="%")
+                    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
+                else:
+                    st.caption("Log revenue across a few periods to see the % trend.")
+
+        # ---- Category scorecards ----
+        st.markdown("**Spend by category**")
+        cols = st.columns(2)
+        reds = []
+        for i, (sup, cfg) in enumerate(config.SUPPLIERS.items()):
+            spend = float(spend_by.get(sup, 0.0))
+            prev = float(prev_spend.get(sup, 0.0)) if len(prev_spend) else 0.0
+            pct = (spend / revenue) if revenue > 0 else None
+            stat = config.status_for(pct, sup) if pct is not None else None
+            if stat == "red":
+                reds.append(sup)
+            tgt = cfg.get("green_pct")
+            nd = int(deliveries.get(sup, 0)) if len(deliveries) else 0
+            with cols[i % 2].container(border=True):
+                top = st.columns([3, 1])
+                note = "" if config.is_cogs(sup) else " · not in COGS"
+                top[0].markdown(f"**{sup}**{note}")
+                top[1].markdown(f"<div style='text-align:right;font-size:1.2em'>"
+                                f"{LIGHT.get(stat, '⚪')}</div>", unsafe_allow_html=True)
+                m = st.columns(2)
+                m[0].metric("Spend", f"${spend:,.0f}",
+                            delta=f"{spend-prev:+,.0f}" if prev else None, delta_color="inverse")
+                m[1].metric("% of rev", f"{pct*100:.1f}%" if pct is not None else "—",
+                            delta=(f"≤{tgt*100:.1f}% target" if tgt else None), delta_color="off")
+                st.caption(f"📦 {nd} deliver{'y' if nd == 1 else 'ies'} · ⚖️ {fmt_qty(qty.get(sup, {}))}")
+        if reds:
+            st.error("🔴 High Variance Alert — over target this period: " + ", ".join(reds))
+
+        # ---- Price watch ----
+        if not lines.empty:
+            qprev = metrics.qty_by_supplier_unit(lines, p_col, prev_key)
+            pw = []
+            for sup, units in qty.items():
+                for unit, d in units.items():
+                    if not d["per_unit"]:
+                        continue
+                    pp = (qprev.get(sup, {}).get(unit, {}) or {}).get("per_unit")
+                    chg = ((d["per_unit"] - pp) / pp * 100) if pp else None
+                    pw.append({"Supplier": sup, "Unit": unit, "$/unit now": round(d["per_unit"], 2),
+                               "$/unit prev": round(pp, 2) if pp else None,
+                               "Change": f"{chg:+.1f}%" if chg is not None else "—"})
+            if pw:
+                with st.expander("💲 Price watch — $/unit vs last period"):
+                    st.dataframe(pd.DataFrame(pw), hide_index=True, width="stretch")
 
 # ============ Veggie prices tab ============
-with tab_veg:
-    st.markdown("#### 🥬 Veggie price tracker — St George Food")
-    st.caption(f"Tracking {len(config.TRACKED_VEGGIE_ITEMS)} key produce lines. "
-               "Unit price = $ ÷ quantity per line; updates automatically as veggie "
-               "invoices are uploaded.")
-    vprices = metrics.veggie_prices(lines)
-    flux = metrics.veggie_flux_table(lines)
-    st.dataframe(flux, hide_index=True, width="stretch")
-    if vprices.empty:
-        st.info("No St George Food (Veggies) invoices logged yet — add one in **📸 Add invoice** "
-                "and the latest prices, daily change and weekly change will fill in here.")
-    else:
-        items = sorted(vprices["item"].unique())
-        pick = st.multiselect("Plot price history for:", items, default=items[:5])
-        plot = vprices[vprices["item"].isin(pick)].assign(date=lambda d: pd.to_datetime(d["date"]))
-        if not plot.empty:
-            fig = px.line(plot, x="date", y="unit_price", color="item", markers=True,
-                          color_discrete_sequence=C["seq"])
-            fig.update_yaxes(title="$ / unit")
-            fig.update_xaxes(title="")
-            st.plotly_chart(dark(fig), width="stretch", config={"displayModeBar": False})
+if tab_veg is not None:
+    with tab_veg:
+        st.markdown("#### 🥬 Veggie price tracker — St George Food")
+        st.caption(f"Tracking {len(config.TRACKED_VEGGIE_ITEMS)} key produce lines. "
+                   "Unit price = $ ÷ quantity per line; updates automatically as veggie "
+                   "invoices are uploaded.")
+        vprices = metrics.veggie_prices(lines)
+        flux = metrics.veggie_flux_table(lines)
+        st.dataframe(flux, hide_index=True, width="stretch")
+        if vprices.empty:
+            st.info("No St George Food (Veggies) invoices logged yet — add one in **📸 Add invoice** "
+                    "and the latest prices, daily change and weekly change will fill in here.")
+        else:
+            items = sorted(vprices["item"].unique())
+            pick = st.multiselect("Plot price history for:", items, default=items[:5])
+            plot = vprices[vprices["item"].isin(pick)].assign(date=lambda d: pd.to_datetime(d["date"]))
+            if not plot.empty:
+                fig = px.line(plot, x="date", y="unit_price", color="item", markers=True,
+                              color_discrete_sequence=C["seq"])
+                fig.update_yaxes(title="$ / unit")
+                fig.update_xaxes(title="")
+                st.plotly_chart(dark(fig), width="stretch", config={"displayModeBar": False})
 
 # ============ Invoices list tab ============
-with tab_list:
-    st.markdown("#### 📋 Submitted invoices")
-    deleted = st.session_state.pop("del_flash", None)
-    if deleted:
-        st.success(f"Deleted: {deleted}")
-    edited_f = st.session_state.pop("edit_flash", None)
-    if edited_f:
-        st.success(edited_f)
+if tab_list is not None:
+    with tab_list:
+        st.markdown("#### 📋 Submitted invoices")
+        deleted = st.session_state.pop("del_flash", None)
+        if deleted:
+            st.success(f"Deleted: {deleted}")
+        edited_f = st.session_state.pop("edit_flash", None)
+        if edited_f:
+            st.success(edited_f)
 
-    # ---- Review queue: emailed PDFs the auto-ingest didn't save (review/ folder) ----
-    # inbox_ingest routes anything that isn't a clean COGS supplier invoice (statements,
-    # credit notes, unrecognised suppliers) into review/ in the inbox bucket. Surface that
-    # queue here: ✅ Accept reads the PDF with the same Claude Vision pipeline as Add
-    # invoice, saves it (with the PDF attached) and archives the file to processed/;
-    # 🗑 Dismiss parks it in ignored/ without counting it.
-    rev_flash = st.session_state.pop("review_flash", None)
-    if rev_flash:
-        st.success(rev_flash)
-    _review = c_review_list()
-    if _review:
-        with st.expander(f"📥 Emailed invoices needing review ({len(_review)})", expanded=True):
-            st.caption("These arrived by email but weren't auto-saved — usually a statement, "
-                       "credit note, or a supplier the app doesn't recognise. **Accept** reads "
-                       "and saves one as a normal invoice (the PDF moves to processed/); "
-                       "**Dismiss** sets it aside without counting it.")
-            _rnames = [n for n, _ in _review]
-            _rwhen = dict(_review)
-            rsel = st.selectbox(
-                "File to review", _rnames, key="review_sel",
-                format_func=lambda n: storage.display_name(n)
-                + (f"  ·  received {_rwhen[n]}" if _rwhen.get(n) else ""))
-            try:
-                _rbytes = c_review_download(rsel)
-            except Exception as e:
-                _rbytes = None
-                st.error(f"Couldn't load this file from storage: {e}")
-            rb = st.columns([1.4, 1.6, 1.4])
-            if _rbytes:
-                rb[0].download_button("⬇️ View / download PDF", _rbytes,
-                                      file_name=storage.display_name(rsel),
-                                      mime="application/pdf", key="review_dl")
-                if not get_api_key():
-                    st.error(_api_key_help())
-                elif rb[1].button("✅ Accept — read & save as invoice", type="primary",
-                                  key="review_accept"):
-                    with st.spinner("Reading invoice with Claude Vision…"):
-                        try:
-                            _rinv = extract_invoice(_rbytes, "application/pdf").model_dump()
-                            if hasattr(extract, "correct_mispriced_lines"):
-                                _rinv = extract.correct_mispriced_lines(
-                                    _rbytes, _rinv, media_type="application/pdf")
-                            _rsup = _rinv["supplier_name"]
-                            _rtot = float(_rinv["total_ex_gst"])
-                            _rdup = storage.find_duplicate(
-                                config.canonicalize(_rsup), _rinv["invoice_date"], _rtot)
-                            if _rdup is not None:
-                                storage.review_accept(rsel)
-                                st.session_state["review_flash"] = (
-                                    f"Already saved ({_rdup['invoice_date']} · "
-                                    f"{_rdup['supplier_raw']} · ${float(_rdup['total_ex_gst']):,.2f}) "
-                                    "— file moved to processed/ without double-counting.")
-                            else:
-                                _rrow = storage.save_invoice(
-                                    _rsup, _rinv["invoice_date"], _rtot, _rinv["line_items"],
-                                    source_file=f"review/{rsel}")
-                                storage.save_invoice_image(
-                                    _rrow["saved_at"], _rbytes, "application/pdf")
-                                storage.review_accept(rsel)
-                                st.session_state["review_flash"] = (
-                                    f"Saved {_rsup} → {config.canonicalize(_rsup)} · "
-                                    f"${_rtot:,.2f} ex-GST — file moved to processed/. "
-                                    "Wrong numbers? Fix it in ✏️ Edit / fix an invoice below.")
+        # ---- Review queue: emailed PDFs the auto-ingest didn't save (review/ folder) ----
+        # inbox_ingest routes anything that isn't a clean COGS supplier invoice (statements,
+        # credit notes, unrecognised suppliers) into review/ in the inbox bucket. Surface that
+        # queue here: ✅ Accept reads the PDF with the same Claude Vision pipeline as Add
+        # invoice, saves it (with the PDF attached) and archives the file to processed/;
+        # 🗑 Dismiss parks it in ignored/ without counting it.
+        rev_flash = st.session_state.pop("review_flash", None)
+        if rev_flash:
+            st.success(rev_flash)
+        _review = c_review_list()
+        if _review:
+            with st.expander(f"📥 Emailed invoices needing review ({len(_review)})", expanded=True):
+                st.caption("These arrived by email but weren't auto-saved — usually a statement, "
+                           "credit note, or a supplier the app doesn't recognise. **Accept** reads "
+                           "and saves one as a normal invoice (the PDF moves to processed/); "
+                           "**Dismiss** sets it aside without counting it.")
+                _rnames = [n for n, _ in _review]
+                _rwhen = dict(_review)
+                rsel = st.selectbox(
+                    "File to review", _rnames, key="review_sel",
+                    format_func=lambda n: storage.display_name(n)
+                    + (f"  ·  received {_rwhen[n]}" if _rwhen.get(n) else ""))
+                try:
+                    _rbytes = c_review_download(rsel)
+                except Exception as e:
+                    _rbytes = None
+                    st.error(f"Couldn't load this file from storage: {e}")
+                rb = st.columns([1.4, 1.6, 1.4])
+                if _rbytes:
+                    rb[0].download_button("⬇️ View / download PDF", _rbytes,
+                                          file_name=storage.display_name(rsel),
+                                          mime="application/pdf", key="review_dl")
+                    if not get_api_key():
+                        st.error(_api_key_help())
+                    elif rb[1].button("✅ Accept — read & save as invoice", type="primary",
+                                      key="review_accept"):
+                        with st.spinner("Reading invoice with Claude Vision…"):
+                            try:
+                                _rinv = extract_invoice(_rbytes, "application/pdf").model_dump()
+                                if hasattr(extract, "correct_mispriced_lines"):
+                                    _rinv = extract.correct_mispriced_lines(
+                                        _rbytes, _rinv, media_type="application/pdf")
+                                _rsup = _rinv["supplier_name"]
+                                _rtot = float(_rinv["total_ex_gst"])
+                                _rdup = storage.find_duplicate(
+                                    config.canonicalize(_rsup), _rinv["invoice_date"], _rtot)
+                                if _rdup is not None:
+                                    storage.review_accept(rsel)
+                                    st.session_state["review_flash"] = (
+                                        f"Already saved ({_rdup['invoice_date']} · "
+                                        f"{_rdup['supplier_raw']} · ${float(_rdup['total_ex_gst']):,.2f}) "
+                                        "— file moved to processed/ without double-counting.")
+                                else:
+                                    _rrow = storage.save_invoice(
+                                        _rsup, _rinv["invoice_date"], _rtot, _rinv["line_items"],
+                                        source_file=f"review/{rsel}")
+                                    storage.save_invoice_image(
+                                        _rrow["saved_at"], _rbytes, "application/pdf")
+                                    storage.review_accept(rsel)
+                                    st.session_state["review_flash"] = (
+                                        f"Saved {_rsup} → {config.canonicalize(_rsup)} · "
+                                        f"${_rtot:,.2f} ex-GST — file moved to processed/. "
+                                        "Wrong numbers? Fix it in ✏️ Edit / fix an invoice below.")
+                                bust_caches()
+                                # the accepted file is gone from the options -> drop the stale pick
+                                st.session_state.pop("review_sel", None)
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Couldn't read this invoice: {e} — it stays in review.")
+                # Dismiss works even when the file couldn't be downloaded, so a corrupt
+                # upload can still be cleared from the queue.
+                if rb[2].button("🗑 Dismiss — don't count it", key="review_dismiss"):
+                    storage.review_dismiss(rsel)
+                    bust_caches()
+                    st.session_state["review_flash"] = (
+                        f"Dismissed {storage.display_name(rsel)} — moved to ignored/.")
+                    st.session_state.pop("review_sel", None)
+                    st.rerun()
+
+                # ---- Bulk delete: tick several files, clear them in one click. A form so
+                # ticking boxes doesn't rerun the app until the button is pressed. Deleted
+                # files go to ignored/ like a Dismiss (never counted, recoverable from the
+                # bucket), so a mis-tick is never data loss.
+                st.markdown("---")
+                with st.form("review_bulk_form", clear_on_submit=True):
+                    st.markdown("**Delete several at once** — tick files, then press the "
+                                "button. They're set aside without being counted (moved to "
+                                "ignored/ in storage, so nothing is ever lost).")
+                    _rticks = []
+                    for _ri, _rn in enumerate(_rnames):
+                        _rlbl = storage.display_name(_rn) + (
+                            f"  ·  received {_rwhen[_rn]}" if _rwhen.get(_rn) else "")
+                        if st.checkbox(_rlbl, key=f"review_bulk_{_ri}"):
+                            _rticks.append(_rn)
+                    if st.form_submit_button("🗑 Delete selected"):
+                        if _rticks:
+                            for _rn in _rticks:
+                                storage.review_dismiss(_rn)
                             bust_caches()
-                            # the accepted file is gone from the options -> drop the stale pick
+                            st.session_state["review_flash"] = (
+                                f"Deleted {len(_rticks)} file(s) — moved to ignored/, "
+                                "not counted.")
                             st.session_state.pop("review_sel", None)
                             st.rerun()
-                        except Exception as e:
-                            st.error(f"Couldn't read this invoice: {e} — it stays in review.")
-            # Dismiss works even when the file couldn't be downloaded, so a corrupt
-            # upload can still be cleared from the queue.
-            if rb[2].button("🗑 Dismiss — don't count it", key="review_dismiss"):
-                storage.review_dismiss(rsel)
-                bust_caches()
-                st.session_state["review_flash"] = (
-                    f"Dismissed {storage.display_name(rsel)} — moved to ignored/.")
-                st.session_state.pop("review_sel", None)
-                st.rerun()
-
-            # ---- Bulk delete: tick several files, clear them in one click. A form so
-            # ticking boxes doesn't rerun the app until the button is pressed. Deleted
-            # files go to ignored/ like a Dismiss (never counted, recoverable from the
-            # bucket), so a mis-tick is never data loss.
-            st.markdown("---")
-            with st.form("review_bulk_form", clear_on_submit=True):
-                st.markdown("**Delete several at once** — tick files, then press the "
-                            "button. They're set aside without being counted (moved to "
-                            "ignored/ in storage, so nothing is ever lost).")
-                _rticks = []
-                for _ri, _rn in enumerate(_rnames):
-                    _rlbl = storage.display_name(_rn) + (
-                        f"  ·  received {_rwhen[_rn]}" if _rwhen.get(_rn) else "")
-                    if st.checkbox(_rlbl, key=f"review_bulk_{_ri}"):
-                        _rticks.append(_rn)
-                if st.form_submit_button("🗑 Delete selected"):
-                    if _rticks:
-                        for _rn in _rticks:
-                            storage.review_dismiss(_rn)
-                        bust_caches()
-                        st.session_state["review_flash"] = (
-                            f"Deleted {len(_rticks)} file(s) — moved to ignored/, "
-                            "not counted.")
-                        st.session_state.pop("review_sel", None)
-                        st.rerun()
-                    else:
-                        st.warning("Nothing ticked — tick at least one file first.")
-
-    if df.empty:
-        st.info("No invoices submitted yet — add one in **📸 Add invoice**.")
-    else:
-        fc = st.columns([1.2, 1.8, 1, 1])
-        cats = ["All categories"] + list(config.SUPPLIERS.keys())
-        pick = fc[0].selectbox("Category", cats, key="invlist_cat")
-        q = fc[1].text_input("Search supplier or item", key="invlist_q",
-                             placeholder="e.g. chicken, st george…").strip().lower()
-        _alld = pd.to_datetime(df["invoice_date"], errors="coerce")
-        _dmin = _alld.min()
-        _dmax = _alld.max()
-        _lo = _dmin.date() if pd.notna(_dmin) else dt.date.today()
-        _hi = _dmax.date() if pd.notna(_dmax) else dt.date.today()
-        # A keyed date_input ignores `value=` after its first render, so the To bound
-        # would otherwise stay frozen at the latest date that existed when the filter was
-        # first drawn — hiding any invoices added since. Initialise the range once, then
-        # keep To following newer invoices, but only when the user hadn't manually pulled
-        # the top bound in (so deliberate narrowing is still respected).
-        _prev_hi = st.session_state.get("_invlist_prev_hi")
-        if "invlist_from" not in st.session_state:
-            st.session_state["invlist_from"] = _lo
-        if "invlist_to" not in st.session_state:
-            st.session_state["invlist_to"] = _hi
-        elif _prev_hi is not None and _hi > _prev_hi and st.session_state["invlist_to"] == _prev_hi:
-            st.session_state["invlist_to"] = _hi
-        st.session_state["_invlist_prev_hi"] = _hi
-        d_from = fc[2].date_input("From", key="invlist_from")
-        d_to = fc[3].date_input("To", key="invlist_to")
-
-        view = df if pick == "All categories" else df[df["supplier"] == pick]
-        _vd = pd.to_datetime(view["invoice_date"], errors="coerce").dt.date
-        view = view[(_vd >= d_from) & (_vd <= d_to)]
-        if q:
-            view = view[view["supplier_raw"].astype(str).str.lower().str.contains(q, na=False)
-                        | view["line_items"].astype(str).str.lower().str.contains(q, na=False)]
-        view = view.assign(_sortd=pd.to_datetime(view["invoice_date"], errors="coerce"))
-        view = view.sort_values(["_sortd", "saved_at"], ascending=False)
-        total = pd.to_numeric(view["total_ex_gst"], errors="coerce").sum()
-        st.caption(f"{len(view)} invoice(s) · ${total:,.0f} ex-GST")
-
-        # Monday-start week (matches the sidebar's Mon–Sun trading week) so invoices can
-        # be grouped by the week they landed in — "what came in this week" at a glance.
-        _wkstart = view["_sortd"].dt.normalize() - pd.to_timedelta(view["_sortd"].dt.weekday, unit="D")
-        view = view.assign(_wkstart=_wkstart).drop(columns="_sortd")
-
-        def _show_invoice_table(_df):
-            t = _df[["invoice_date", "supplier_raw", "supplier", "total_ex_gst"]].rename(
-                columns={"invoice_date": "Date", "supplier_raw": "Supplier (as invoiced)",
-                         "supplier": "Category", "total_ex_gst": "Total ex-GST $"})
-            # Real date dtype so tapping the Date header sorts chronologically (not as
-            # text), shown in Australian DD/MM/YYYY; money right-aligned with a $ format.
-            t["Date"] = pd.to_datetime(t["Date"], errors="coerce")
-            t["Total ex-GST $"] = pd.to_numeric(t["Total ex-GST $"], errors="coerce")
-            st.dataframe(t, hide_index=True, width="stretch", column_config={
-                "Date": st.column_config.DateColumn("Date", format="DD/MM/YYYY"),
-                "Total ex-GST $": st.column_config.NumberColumn("Total ex-GST $", format="$%.2f"),
-            })
-
-        by_week = st.toggle("📅 Group by week", value=True, key="invlist_byweek",
-                            help="See which invoices landed in each Mon–Sun trading week.")
-        if by_week:
-            def _week_expander(w, expanded):
-                wk = view[view["_wkstart"] == w]
-                ws = pd.Timestamp(w).date()
-                we = ws + dt.timedelta(days=6)
-                wt = pd.to_numeric(wk["total_ex_gst"], errors="coerce").sum()
-                with st.expander(f"Week of {ws:%d %b} – {we:%d %b %Y}  ·  "
-                                 f"{len(wk)} invoice(s)  ·  ${wt:,.0f} ex-GST",
-                                 expanded=expanded):
-                    _show_invoice_table(wk)
-
-            weeks = sorted(view["_wkstart"].dropna().unique(), reverse=True)
-            RECENT = 3  # this week + the previous two; older weeks hidden behind a toggle
-            for _i, w in enumerate(weeks[:RECENT]):
-                _week_expander(w, expanded=(_i == 0))
-            if len(weeks) > RECENT:
-                if st.toggle(f"📂 Show older weeks ({len(weeks) - RECENT} more)",
-                             value=False, key="invlist_more"):
-                    for w in weeks[RECENT:]:
-                        _week_expander(w, expanded=False)
-            # Invoices whose date couldn't be parsed have no week — surface them in their
-            # own group so they're never silently dropped from the list.
-            stray = view[view["_wkstart"].isna()]
-            if not stray.empty:
-                with st.expander(f"⚠️ Undated  ·  {len(stray)} invoice(s)"):
-                    _show_invoice_table(stray)
-        else:
-            _show_invoice_table(view)
-        with st.expander("🔍 View line items"):
-            for _, r in view.iterrows():
-                st.markdown(f"**{r['invoice_date']} · {r['supplier_raw']}** → "
-                            f"{r['supplier']} · ${float(r['total_ex_gst']):,.2f} ex-GST")
-                raw = r.get("line_items")
-                if isinstance(raw, str) and raw.strip():
-                    try:
-                        items = json.loads(raw)
-                        if items:
-                            st.table(pd.DataFrame(items))
-                    except Exception:
-                        pass
-
-        # ---- Duplicate check ----
-        st.divider()
-        with st.expander("🔍 Duplicate check — same supplier, date & total"):
-            groups = storage.duplicate_groups(df)
-            if not groups:
-                st.success("No duplicates detected.")
-            else:
-                st.warning(f"{len(groups)} possible duplicate group(s) found.")
-                for i, grp in enumerate(groups):
-                    r0 = grp.iloc[0]
-                    st.markdown(f"**{r0['supplier']}** · {r0['invoice_date']} · "
-                                f"${float(r0['total_ex_gst']):,.2f} — {len(grp)} copies")
-                    st.dataframe(grp[["invoice_date", "supplier_raw", "total_ex_gst", "saved_at"]],
-                                 hide_index=True, width="stretch")
-                    if st.button(f"Remove {len(grp)-1} duplicate(s), keep earliest", key=f"dedup{i}"):
-                        for sa in grp["saved_at"].astype(str).tolist()[1:]:
-                            storage.delete_invoice(sa)
-                        bust_caches()
-                        st.session_state["del_flash"] = f"Removed {len(grp) - 1} duplicate(s)"
-                        st.rerun()
-
-        # ---- Original invoice photo (#7) ----
-        st.divider()
-        with st.expander("📷 View original invoice photo"):
-            pv = view.sort_values("invoice_date", ascending=False)
-            if pv.empty:
-                st.caption("No invoices match the current filter.")
-            else:
-                plabels = {str(r["saved_at"]): f"{r['invoice_date']} · {r['supplier_raw']} · "
-                                              f"${float(r['total_ex_gst']):,.2f}"
-                           for _, r in pv.iterrows()}
-                psel = st.selectbox("Invoice", list(plabels),
-                                    format_func=lambda s: plabels[s], key="photo_sel")
-                _imgs = c_load_invoice_images(psel)
-                if not _imgs:
-                    st.caption("No photo stored for this invoice "
-                               "(only invoices added after this update keep their image).")
-                else:
-                    n = len(_imgs)
-                    for _i, (_b, _mt) in enumerate(_imgs, 1):
-                        _lbl = plabels[psel] if n == 1 else f"{plabels[psel]} — page {_i}/{n}"
-                        if (_mt or "").startswith("image/"):
-                            st.image(_b, caption=_lbl, width="stretch")
                         else:
-                            st.download_button(
-                                f"⬇️ Download original (PDF){'' if n == 1 else f' — page {_i}'}",
-                                _b, key=f"photo_dl_{_i}",
-                                file_name=f"invoice_{psel[:16].replace(':','-')}_{_i}.pdf",
-                                mime=_mt or "application/pdf")
+                            st.warning("Nothing ticked — tick at least one file first.")
 
-        # ---- Edit / fix a mis-scanned invoice (owner only) ----
-        if owner:
+        if df.empty:
+            st.info("No invoices submitted yet — add one in **📸 Add invoice**.")
+        else:
+            fc = st.columns([1.2, 1.8, 1, 1])
+            cats = ["All categories"] + list(config.SUPPLIERS.keys())
+            pick = fc[0].selectbox("Category", cats, key="invlist_cat")
+            q = fc[1].text_input("Search supplier or item", key="invlist_q",
+                                 placeholder="e.g. chicken, st george…").strip().lower()
+            _alld = pd.to_datetime(df["invoice_date"], errors="coerce")
+            _dmin = _alld.min()
+            _dmax = _alld.max()
+            _lo = _dmin.date() if pd.notna(_dmin) else dt.date.today()
+            _hi = _dmax.date() if pd.notna(_dmax) else dt.date.today()
+            # A keyed date_input ignores `value=` after its first render, so the To bound
+            # would otherwise stay frozen at the latest date that existed when the filter was
+            # first drawn — hiding any invoices added since. Initialise the range once, then
+            # keep To following newer invoices, but only when the user hadn't manually pulled
+            # the top bound in (so deliberate narrowing is still respected).
+            _prev_hi = st.session_state.get("_invlist_prev_hi")
+            if "invlist_from" not in st.session_state:
+                st.session_state["invlist_from"] = _lo
+            if "invlist_to" not in st.session_state:
+                st.session_state["invlist_to"] = _hi
+            elif _prev_hi is not None and _hi > _prev_hi and st.session_state["invlist_to"] == _prev_hi:
+                st.session_state["invlist_to"] = _hi
+            st.session_state["_invlist_prev_hi"] = _hi
+            d_from = fc[2].date_input("From", key="invlist_from")
+            d_to = fc[3].date_input("To", key="invlist_to")
+
+            view = df if pick == "All categories" else df[df["supplier"] == pick]
+            _vd = pd.to_datetime(view["invoice_date"], errors="coerce").dt.date
+            view = view[(_vd >= d_from) & (_vd <= d_to)]
+            if q:
+                view = view[view["supplier_raw"].astype(str).str.lower().str.contains(q, na=False)
+                            | view["line_items"].astype(str).str.lower().str.contains(q, na=False)]
+            view = view.assign(_sortd=pd.to_datetime(view["invoice_date"], errors="coerce"))
+            view = view.sort_values(["_sortd", "saved_at"], ascending=False)
+            total = pd.to_numeric(view["total_ex_gst"], errors="coerce").sum()
+            st.caption(f"{len(view)} invoice(s) · ${total:,.0f} ex-GST")
+
+            # Monday-start week (matches the sidebar's Mon–Sun trading week) so invoices can
+            # be grouped by the week they landed in — "what came in this week" at a glance.
+            _wkstart = view["_sortd"].dt.normalize() - pd.to_timedelta(view["_sortd"].dt.weekday, unit="D")
+            view = view.assign(_wkstart=_wkstart).drop(columns="_sortd")
+
+            def _show_invoice_table(_df):
+                t = _df[["invoice_date", "supplier_raw", "supplier", "total_ex_gst"]].rename(
+                    columns={"invoice_date": "Date", "supplier_raw": "Supplier (as invoiced)",
+                             "supplier": "Category", "total_ex_gst": "Total ex-GST $"})
+                # Real date dtype so tapping the Date header sorts chronologically (not as
+                # text), shown in Australian DD/MM/YYYY; money right-aligned with a $ format.
+                t["Date"] = pd.to_datetime(t["Date"], errors="coerce")
+                t["Total ex-GST $"] = pd.to_numeric(t["Total ex-GST $"], errors="coerce")
+                st.dataframe(t, hide_index=True, width="stretch", column_config={
+                    "Date": st.column_config.DateColumn("Date", format="DD/MM/YYYY"),
+                    "Total ex-GST $": st.column_config.NumberColumn("Total ex-GST $", format="$%.2f"),
+                })
+
+            by_week = st.toggle("📅 Group by week", value=True, key="invlist_byweek",
+                                help="See which invoices landed in each Mon–Sun trading week.")
+            if by_week:
+                def _week_expander(w, expanded):
+                    wk = view[view["_wkstart"] == w]
+                    ws = pd.Timestamp(w).date()
+                    we = ws + dt.timedelta(days=6)
+                    wt = pd.to_numeric(wk["total_ex_gst"], errors="coerce").sum()
+                    with st.expander(f"Week of {ws:%d %b} – {we:%d %b %Y}  ·  "
+                                     f"{len(wk)} invoice(s)  ·  ${wt:,.0f} ex-GST",
+                                     expanded=expanded):
+                        _show_invoice_table(wk)
+
+                weeks = sorted(view["_wkstart"].dropna().unique(), reverse=True)
+                RECENT = 3  # this week + the previous two; older weeks hidden behind a toggle
+                for _i, w in enumerate(weeks[:RECENT]):
+                    _week_expander(w, expanded=(_i == 0))
+                if len(weeks) > RECENT:
+                    if st.toggle(f"📂 Show older weeks ({len(weeks) - RECENT} more)",
+                                 value=False, key="invlist_more"):
+                        for w in weeks[RECENT:]:
+                            _week_expander(w, expanded=False)
+                # Invoices whose date couldn't be parsed have no week — surface them in their
+                # own group so they're never silently dropped from the list.
+                stray = view[view["_wkstart"].isna()]
+                if not stray.empty:
+                    with st.expander(f"⚠️ Undated  ·  {len(stray)} invoice(s)"):
+                        _show_invoice_table(stray)
+            else:
+                _show_invoice_table(view)
+            with st.expander("🔍 View line items"):
+                for _, r in view.iterrows():
+                    st.markdown(f"**{r['invoice_date']} · {r['supplier_raw']}** → "
+                                f"{r['supplier']} · ${float(r['total_ex_gst']):,.2f} ex-GST")
+                    raw = r.get("line_items")
+                    if isinstance(raw, str) and raw.strip():
+                        try:
+                            items = json.loads(raw)
+                            if items:
+                                st.table(pd.DataFrame(items))
+                        except Exception:
+                            pass
+
+            # ---- Duplicate check ----
             st.divider()
-            with st.expander("✏️ Edit / fix an invoice"):
-                if view.empty:
+            with st.expander("🔍 Duplicate check — same supplier, date & total"):
+                groups = storage.duplicate_groups(df)
+                if not groups:
+                    st.success("No duplicates detected.")
+                else:
+                    st.warning(f"{len(groups)} possible duplicate group(s) found.")
+                    for i, grp in enumerate(groups):
+                        r0 = grp.iloc[0]
+                        st.markdown(f"**{r0['supplier']}** · {r0['invoice_date']} · "
+                                    f"${float(r0['total_ex_gst']):,.2f} — {len(grp)} copies")
+                        st.dataframe(grp[["invoice_date", "supplier_raw", "total_ex_gst", "saved_at"]],
+                                     hide_index=True, width="stretch")
+                        if st.button(f"Remove {len(grp)-1} duplicate(s), keep earliest", key=f"dedup{i}"):
+                            for sa in grp["saved_at"].astype(str).tolist()[1:]:
+                                storage.delete_invoice(sa)
+                            bust_caches()
+                            st.session_state["del_flash"] = f"Removed {len(grp) - 1} duplicate(s)"
+                            st.rerun()
+
+            # ---- Original invoice photo (#7) ----
+            st.divider()
+            with st.expander("📷 View original invoice photo"):
+                pv = view.sort_values("invoice_date", ascending=False)
+                if pv.empty:
                     st.caption("No invoices match the current filter.")
                 else:
-                    ev = view.sort_values("invoice_date", ascending=False)
-                    elabels = {str(r["saved_at"]): f"{r['invoice_date']} · {r['supplier_raw']} · "
-                                                   f"${float(r['total_ex_gst']):,.2f}"
-                               for _, r in ev.iterrows()}
-                    esel = st.selectbox("Pick an invoice to correct", list(elabels),
-                                        format_func=lambda s: elabels[s], key="edit_sel")
-                    erow = df[df["saved_at"].astype(str) == esel].iloc[0]
-                    ec = st.columns(3)
-                    e_sup = ec[0].text_input("Supplier (as invoiced)",
-                                             value=str(erow["supplier_raw"]), key="edit_sup")
-                    try:
-                        _ed = pd.to_datetime(erow["invoice_date"]).date()
-                    except Exception:
-                        _ed = dt.date.today()
-                    e_date = ec[1].date_input("Invoice date", value=_ed, key="edit_date")
-                    e_total = ec[2].number_input("Total ex-GST $", min_value=0.0, step=1.0,
-                                                 value=float(erow["total_ex_gst"]), key="edit_total")
-                    st.caption(f"Category re-derives from the supplier name → "
-                               f"**{config.canonicalize(e_sup)}**")
-                    try:
-                        _items = (json.loads(erow["line_items"])
-                                  if isinstance(erow["line_items"], str) and erow["line_items"].strip()
-                                  else [])
-                    except Exception:
-                        _items = []
-                    _idf = pd.DataFrame(_items)
-                    for _c in ["description", "quantity", "unit", "amount"]:
-                        if _c not in _idf.columns:
-                            _idf[_c] = None
-                    _idf = _idf[["description", "quantity", "unit", "amount"]]
-                    edf = st.data_editor(_idf, num_rows="dynamic", hide_index=True,
-                                         width="stretch", key="edit_items")
-                    if st.button("💾 Save corrections", type="primary", key="edit_save"):
-                        new_items = [{"description": r["description"], "quantity": r["quantity"],
-                                      "unit": r["unit"], "amount": r["amount"]}
-                                     for _, r in edf.iterrows()
-                                     if str(r.get("description") or "").strip()
-                                     or pd.notna(r.get("amount"))]
-                        storage.update_invoice(esel, e_sup, e_date.isoformat(),
-                                               float(e_total), new_items)
-                        bust_caches()
-                        st.session_state["edit_flash"] = f"Updated: {e_date} · {e_sup}"
-                        st.rerun()
+                    plabels = {str(r["saved_at"]): f"{r['invoice_date']} · {r['supplier_raw']} · "
+                                                  f"${float(r['total_ex_gst']):,.2f}"
+                               for _, r in pv.iterrows()}
+                    psel = st.selectbox("Invoice", list(plabels),
+                                        format_func=lambda s: plabels[s], key="photo_sel")
+                    _imgs = c_load_invoice_images(psel)
+                    if not _imgs:
+                        st.caption("No photo stored for this invoice "
+                                   "(only invoices added after this update keep their image).")
+                    else:
+                        n = len(_imgs)
+                        for _i, (_b, _mt) in enumerate(_imgs, 1):
+                            _lbl = plabels[psel] if n == 1 else f"{plabels[psel]} — page {_i}/{n}"
+                            if (_mt or "").startswith("image/"):
+                                st.image(_b, caption=_lbl, width="stretch")
+                            else:
+                                st.download_button(
+                                    f"⬇️ Download original (PDF){'' if n == 1 else f' — page {_i}'}",
+                                    _b, key=f"photo_dl_{_i}",
+                                    file_name=f"invoice_{psel[:16].replace(':','-')}_{_i}.pdf",
+                                    mime=_mt or "application/pdf")
 
-        # ---- Delete an invoice (owner only) ----
-        if owner:
-            st.divider()
-            st.markdown("**🗑️ Delete an invoice** (permanent)")
-            vs = view.sort_values("invoice_date", ascending=False)
-            sa_list = vs["saved_at"].astype(str).tolist()
-            labels = {str(r["saved_at"]): f"{r['invoice_date']} · {r['supplier_raw']} · "
-                                          f"${float(r['total_ex_gst']):,.2f}"
-                      for _, r in vs.iterrows()}
-            chosen = st.selectbox("Invoice to delete", sa_list,
-                                  format_func=lambda s: labels.get(s, s), key="del_sel")
-            confirm = st.checkbox("Yes, permanently delete this invoice", key="del_confirm")
-            if st.button("Delete invoice", key="del_btn", disabled=not confirm):
-                storage.delete_invoice(chosen)
-                bust_caches()
-                st.session_state["del_flash"] = labels.get(chosen, "invoice")
-                st.rerun()
+            # ---- Edit / fix a mis-scanned invoice (owner only) ----
+            if owner:
+                st.divider()
+                with st.expander("✏️ Edit / fix an invoice"):
+                    if view.empty:
+                        st.caption("No invoices match the current filter.")
+                    else:
+                        ev = view.sort_values("invoice_date", ascending=False)
+                        elabels = {str(r["saved_at"]): f"{r['invoice_date']} · {r['supplier_raw']} · "
+                                                       f"${float(r['total_ex_gst']):,.2f}"
+                                   for _, r in ev.iterrows()}
+                        esel = st.selectbox("Pick an invoice to correct", list(elabels),
+                                            format_func=lambda s: elabels[s], key="edit_sel")
+                        erow = df[df["saved_at"].astype(str) == esel].iloc[0]
+                        ec = st.columns(3)
+                        e_sup = ec[0].text_input("Supplier (as invoiced)",
+                                                 value=str(erow["supplier_raw"]), key="edit_sup")
+                        try:
+                            _ed = pd.to_datetime(erow["invoice_date"]).date()
+                        except Exception:
+                            _ed = dt.date.today()
+                        e_date = ec[1].date_input("Invoice date", value=_ed, key="edit_date")
+                        e_total = ec[2].number_input("Total ex-GST $", min_value=0.0, step=1.0,
+                                                     value=float(erow["total_ex_gst"]), key="edit_total")
+                        st.caption(f"Category re-derives from the supplier name → "
+                                   f"**{config.canonicalize(e_sup)}**")
+                        try:
+                            _items = (json.loads(erow["line_items"])
+                                      if isinstance(erow["line_items"], str) and erow["line_items"].strip()
+                                      else [])
+                        except Exception:
+                            _items = []
+                        _idf = pd.DataFrame(_items)
+                        for _c in ["description", "quantity", "unit", "amount"]:
+                            if _c not in _idf.columns:
+                                _idf[_c] = None
+                        _idf = _idf[["description", "quantity", "unit", "amount"]]
+                        edf = st.data_editor(_idf, num_rows="dynamic", hide_index=True,
+                                             width="stretch", key="edit_items")
+                        if st.button("💾 Save corrections", type="primary", key="edit_save"):
+                            new_items = [{"description": r["description"], "quantity": r["quantity"],
+                                          "unit": r["unit"], "amount": r["amount"]}
+                                         for _, r in edf.iterrows()
+                                         if str(r.get("description") or "").strip()
+                                         or pd.notna(r.get("amount"))]
+                            storage.update_invoice(esel, e_sup, e_date.isoformat(),
+                                                   float(e_total), new_items)
+                            bust_caches()
+                            st.session_state["edit_flash"] = f"Updated: {e_date} · {e_sup}"
+                            st.rerun()
+
+            # ---- Delete an invoice (owner only) ----
+            if owner:
+                st.divider()
+                st.markdown("**🗑️ Delete an invoice** (permanent)")
+                vs = view.sort_values("invoice_date", ascending=False)
+                sa_list = vs["saved_at"].astype(str).tolist()
+                labels = {str(r["saved_at"]): f"{r['invoice_date']} · {r['supplier_raw']} · "
+                                              f"${float(r['total_ex_gst']):,.2f}"
+                          for _, r in vs.iterrows()}
+                chosen = st.selectbox("Invoice to delete", sa_list,
+                                      format_func=lambda s: labels.get(s, s), key="del_sel")
+                confirm = st.checkbox("Yes, permanently delete this invoice", key="del_confirm")
+                if st.button("Delete invoice", key="del_btn", disabled=not confirm):
+                    storage.delete_invoice(chosen)
+                    bust_caches()
+                    st.session_state["del_flash"] = labels.get(chosen, "invoice")
+                    st.rerun()
 
 
 # ============ Invoice tracker tab (owner): weekly upload completeness ============
@@ -2693,7 +2730,13 @@ def _accountant_pack_xlsx(month_key, inv_df, pos_df):
         if lab_rows:
             pd.DataFrame(lab_rows).to_excel(xw, sheet_name="Labour", index=False)
         if not pos.empty:
-            pos[["date", "total_incl_gst", "doordash", "ubereats", "adjusted_ex_gst"]].rename(
+            _pexp = pos[["date", "total_incl_gst", "doordash", "ubereats", "adjusted_ex_gst"]].copy()
+            # Use the actual-payout-adjusted net where a delivery statement has landed, so the
+            # accountant pack matches the dashboard rather than the flat 40% estimate.
+            if _day_net_actual:
+                _pexp["adjusted_ex_gst"] = (_pexp["date"].astype(str).map(_day_net_actual)
+                                            .fillna(_pexp["adjusted_ex_gst"]))
+            _pexp.rename(
                 columns={"date": "Date", "total_incl_gst": "Takings incl GST",
                          "doordash": "DoorDash", "ubereats": "UberEats",
                          "adjusted_ex_gst": "Net ex-GST"}
@@ -2990,12 +3033,21 @@ if tab_pack is not None:
                 v = pd.to_numeric(r["QTY on hand"], errors="coerce")
                 dcounts[r["Item"]] = 0.0 if pd.isna(v) else float(v)
 
-            dsave, dinfo = st.columns([1, 3])
+            dsave, dreset, dinfo = st.columns([1, 1, 2])
             if dsave.button("💾 Save counts", key="drink_save"):
                 storage.save_drinks_counts(dcounts)
                 bust_caches()
                 st.success("Counts saved.")
-            dinfo.caption("Saved to the app so a reload on your phone won't wipe your count.")
+            if dreset.button("🔄 Reset to 0", key="drink_reset"):
+                # Clear the saved stocktake AND the editor's in-memory edits so the grid
+                # re-seeds to zero — start each count fresh instead of carrying numbers through.
+                storage.save_drinks_counts({})
+                bust_caches()
+                st.session_state.pop("drink_edit", None)
+                st.success("Counts reset to 0.")
+                st.rerun()
+            dinfo.caption("Saved so a reload on your phone won't wipe your count. "
+                          "**Reset to 0** clears it for a fresh stocktake.")
 
             dorder = drinks.build_order(dcounts, weeks=weeks)
             n_drink = len(dorder)
