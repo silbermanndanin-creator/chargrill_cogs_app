@@ -502,18 +502,15 @@ def process_shifts(shift_df, emp_df, all_rates, public_holidays):
             topup = 0.0
             gross = award_pay
         else:
-            # Public-holiday hours are ALWAYS paid at the award PH rate, kept separate
-            # from the flat rate: the flat rate only covers ordinary/penalty days, so the
-            # PH premium is added on top instead of being absorbed by a high flat rate.
-            # Non-PH hours still get the better-off-overall top-up (flat vs award), and
-            # the flat rate remains an overall floor.
-            ph_pay = pay['ph'] + pay['ph_ot']
+            # CHARGRILL PAY MODEL: normal (non-PH) hours at the flat rate, public-holiday
+            # hours at the award PH-worked rate (~$59.74, taken from the AWARD RATES sheet).
+            # The flat rate covers all non-PH hours — there is no weekday/weekend top-up.
+            #   gross = normal_hrs * flat_rate + ph_hrs * ph_rate
+            ph_rate = all_rates['permanent'].get('ph_worked', 59.74)
             ph_hours = hrs['ph'] + hrs['ph_daily_ot']
-            non_ph_flat = (hrs['total'] - ph_hours) * flat_rate
-            non_ph_award = award_pay - ph_pay
-            gross = max(non_ph_flat, non_ph_award) + ph_pay
-            gross = max(gross, flat_pay)
-            topup = max(0.0, gross - flat_pay)
+            gross = (hrs['total'] - ph_hours) * flat_rate + ph_hours * ph_rate
+            gross = max(gross, flat_pay)        # never below flat for the hours worked
+            topup = max(0.0, gross - flat_pay)  # = the public-holiday premium
 
         display_name = (_get_col(emp_row_dict, 'Employee Name (Display)', 'Employee Name')
                         or emp_shifts['Name'].iloc[0])
