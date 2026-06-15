@@ -499,18 +499,20 @@ def process_shifts(shift_df, emp_df, all_rates, public_holidays):
         flat_pay = hrs['total'] * flat_rate
         award_pay = pay['total']
         if emp_type == 'Casual':
+            chargrill_pay = award_pay  # casuals are paid the full award (incl PH at 66.38)
             topup = 0.0
             gross = award_pay
         else:
-            # CHARGRILL PAY MODEL: normal (non-PH) hours at the flat rate, public-holiday
-            # hours at the award PH-worked rate (~$59.74, taken from the AWARD RATES sheet).
-            # The flat rate covers all non-PH hours — there is no weekday/weekend top-up.
-            #   gross = normal_hrs * flat_rate + ph_hrs * ph_rate
+            # CHARGRILL PAY: normal (non-PH) hours at the flat rate, public-holiday hours
+            # at the award PH-worked rate (~$59.74 from the AWARD RATES sheet). The flat
+            # rate covers all non-PH hours (no weekday/weekend penalty in Chargrill pay).
             ph_rate = all_rates['permanent'].get('ph_worked', 59.74)
             ph_hours = hrs['ph'] + hrs['ph_daily_ot']
-            gross = (hrs['total'] - ph_hours) * flat_rate + ph_hours * ph_rate
-            gross = max(gross, flat_pay)        # never below flat for the hours worked
-            topup = max(0.0, gross - flat_pay)  # = the public-holiday premium
+            chargrill_pay = (hrs['total'] - ph_hours) * flat_rate + ph_hours * ph_rate
+            # Award-compliance top-up: ONLY if the full award beats Chargrill pay (weekend
+            # penalties / overtime on a low flat rate) — normally $0. Gross = the higher.
+            topup = max(0.0, award_pay - chargrill_pay)
+            gross = chargrill_pay + topup
 
         display_name = (_get_col(emp_row_dict, 'Employee Name (Display)', 'Employee Name')
                         or emp_shifts['Name'].iloc[0])
@@ -519,6 +521,7 @@ def process_shifts(shift_df, emp_df, all_rates, public_holidays):
             'name': display_name, 'emp_type': emp_type, 'section': str(section).strip(),
             'flat_rate': flat_rate, 'hrs': hrs, 'pay': pay, 'rates': rates,
             'award_pay': round(award_pay, 2), 'flat_pay': round(flat_pay, 2),
+            'chargrill_pay': round(chargrill_pay, 2),
             'topup': round(topup, 2), 'gross': round(gross, 2), 'day_rows': day_rows,
         })
 
@@ -626,7 +629,8 @@ def apply_leave(out, leave, roster=None):
                                 late_night=0.0, daily_ot1=0.0, daily_ot2=0.0,
                                 ph_daily_ot=0.0, weekly_ot1=0.0, weekly_ot2=0.0, total=0.0),
                     "pay": {"total": 0.0}, "rates": {},
-                    "award_pay": 0.0, "flat_pay": 0.0, "topup": 0.0, "gross": 0.0,
+                    "award_pay": 0.0, "flat_pay": 0.0, "chargrill_pay": 0.0,
+                    "topup": 0.0, "gross": 0.0,
                     "day_rows": [], "absent": True,
                 }
                 results.append(row)
@@ -640,7 +644,8 @@ def apply_leave(out, leave, roster=None):
         sl = float(lv.get("sl", 0) or 0)
         r["al_hrs"], r["sl_hrs"] = al, sl
         r["leave_pay"] = round((al + sl) * r["flat_rate"], 2)
-        r["gross"] = round(r["flat_pay"] + r["topup"] + r["leave_pay"], 2)
+        base = r.get("chargrill_pay", r["flat_pay"])  # Chargrill base + award top-up + leave
+        r["gross"] = round(base + r["topup"] + r["leave_pay"], 2)
     # Drop synthesised absentee rows that ended up with no leave, then re-sort.
     out["results"] = [r for r in results
                       if not (r.get("absent") and not r.get("leave_pay"))]
@@ -704,10 +709,12 @@ def _payroll_summary(ws, results, week_str):
     cas_results = [r for r in results if r['emp_type'] == 'Casual']
     INPUT_BG = 'FFF2CC'
 
-    # PH Hrs added as column F (right after Worked Hrs). It's a SUBSET of worked hours —
-    # shown for visibility, NOT summed into Total Hrs (which stays Worked + SL + AL).
-    cols = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N']
-    col_widths = [24, 10, 8, 10, 10, 8, 8, 8, 10, 12, 10, 10, 10, 12]
+    # Columns A–O. Chargrill Pay (J) = normal hrs × flat + PH hrs × award PH rate — the
+    # actual pay. Award Pay (M) is a reference. Top Up (N) is the award-compliance gap
+    # (max(0, Award − Chargrill)); normally $0, non-zero only if the award beats Chargrill
+    # pay (weekend/OT penalties on a low flat rate). PH Hrs (F) is a subset of Worked Hrs.
+    cols = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O']
+    col_widths = [24, 10, 8, 10, 10, 8, 8, 8, 10, 12, 10, 10, 12, 10, 12]
     for col, w in zip(cols, col_widths):
         ws.column_dimensions[col].width = w
 
@@ -715,22 +722,23 @@ def _payroll_summary(ws, results, week_str):
         h = r_data.get('hrs') or {}
         return round((h.get('ph', 0) or 0) + (h.get('ph_daily_ot', 0) or 0), 2)
 
-    ws.merge_cells('A1:N1')
+    ws.merge_cells('A1:O1')
     ws.row_dimensions[1].height = 32
     sc(ws['A1'], f'PAYROLL SUMMARY  —  Week Ending {week_str}',
        bold=True, size=14, fg=HDR_FG, bg=HDR_BG, halign='center', valign='center')
 
     row = 3
     ws.row_dimensions[row].height = 14
-    ws.merge_cells(f'A{row}:N{row}')
-    sc(ws[f'A{row}'], 'FULL-TIME & PART-TIME EMPLOYEES  —  Flat Rate vs Award Comparison',
+    ws.merge_cells(f'A{row}:O{row}')
+    sc(ws[f'A{row}'], 'FULL-TIME & PART-TIME EMPLOYEES  —  Chargrill Pay vs Award (compliance check)',
        bold=True, size=10, fg=HDR_FG, bg=SUB_BG, halign='left')
 
     row += 1
     ws.row_dimensions[row].height = 30
     perm_hdrs = ['Employee', 'Type', 'Section', 'Flat Rate\n($)', 'Worked\nHrs', 'PH Hrs',
                  'SL Hrs\n(input)', 'AL Hrs\n(input)', 'Total\nHrs',
-                 'Flat Pay', 'SL Pay', 'AL Pay', 'Top Up', 'GROSS PAY']
+                 'Chargrill\nPay', 'SL Pay', 'AL Pay', 'Award Pay\n(ref)', 'Top Up\n(vs award)',
+                 'GROSS PAY']
     for i, hdr in enumerate(perm_hdrs):
         sc(ws[f'{cols[i]}{row}'], hdr, bold=True, size=9, fg=HDR_FG, bg='365F91',
            halign='center', wrap=True)
@@ -739,7 +747,7 @@ def _payroll_summary(ws, results, week_str):
     for r_data in perm_results:
         row += 1
         ws.row_dimensions[row].height = 16
-        has_topup = r_data['topup'] > 0.01
+        has_topup = r_data['topup'] > 0.01   # award beats Chargrill pay — under-award flag
         bg = TOPUP_BG if has_topup else ZERO_BG
         ph_h = _ph_hrs(r_data)
         sc(ws[f'A{row}'], r_data['name'], size=9, fg=BLUE_FG, halign='left')
@@ -752,12 +760,14 @@ def _payroll_summary(ws, results, week_str):
         sc(ws[f'G{row}'], r_data.get('sl_hrs', 0) or 0, size=9, bg=INPUT_BG, fmt=HRS_FMT, halign='center')
         sc(ws[f'H{row}'], r_data.get('al_hrs', 0) or 0, size=9, bg=INPUT_BG, fmt=HRS_FMT, halign='center')
         sc(ws[f'I{row}'], f'=E{row}+G{row}+H{row}', size=9, bg=bg, fmt=HRS_FMT, halign='center')
-        sc(ws[f'J{row}'], r_data['flat_pay'], size=9, bg=bg, fmt=CUR_FMT, halign='center')
+        sc(ws[f'J{row}'], r_data.get('chargrill_pay', r_data['flat_pay']), size=9, bg=bg,
+           fmt=CUR_FMT, halign='center', bold=True)
         sc(ws[f'K{row}'], f'=D{row}*G{row}', size=9, bg=bg, fmt=CUR_FMT, halign='center')
         sc(ws[f'L{row}'], f'=D{row}*H{row}', size=9, bg=bg, fmt=CUR_FMT, halign='center')
-        sc(ws[f'M{row}'], r_data['topup'], size=9, bg=bg, fmt=CUR_FMT, halign='center',
+        sc(ws[f'M{row}'], r_data['award_pay'], size=9, bg=bg, fmt=CUR_FMT, halign='center', fg=GREY_FG)
+        sc(ws[f'N{row}'], r_data['topup'], size=9, bg=bg, fmt=CUR_FMT, halign='center',
            fg=RED_FG if has_topup else BLACK_FG, bold=has_topup)
-        sc(ws[f'N{row}'], f'=J{row}+K{row}+L{row}+M{row}', size=9, bg=bg, fmt=CUR_FMT,
+        sc(ws[f'O{row}'], f'=J{row}+K{row}+L{row}+N{row}', size=9, bg=bg, fmt=CUR_FMT,
            halign='center', bold=True)
 
     perm_data_end = row
@@ -770,21 +780,21 @@ def _payroll_summary(ws, results, week_str):
     for c in 'EFGHI':
         sc(ws[f'{c}{row}'], f'=SUM({c}{perm_data_start}:{c}{perm_data_end})',
            bold=True, size=9, bg=TOTAL_BG, fmt=HRS_FMT, halign='center')
-    for c in 'JKLMN':
+    for c in 'JKLMNO':
         sc(ws[f'{c}{row}'], f'=SUM({c}{perm_data_start}:{c}{perm_data_end})',
            bold=True, size=9, bg=TOTAL_BG, fmt=CUR_FMT, halign='center',
-           fg=RED_FG if c == 'M' else BLACK_FG)
+           fg=RED_FG if c == 'N' else BLACK_FG)
 
     row += 2
     ws.row_dimensions[row].height = 14
-    ws.merge_cells(f'A{row}:N{row}')
+    ws.merge_cells(f'A{row}:O{row}')
     sc(ws[f'A{row}'], 'CASUAL EMPLOYEES  —  Award Pay (see CASUAL DETAIL sheet for full breakdown)',
        bold=True, size=10, fg=HDR_FG, bg=SUB_BG, halign='left')
 
     row += 1
     ws.row_dimensions[row].height = 22
     cas_hdrs = ['Employee', 'Type', 'Section', '', 'Hours', 'PH Hrs', '', '', '',
-                'Award Pay', '', '', '', 'GROSS PAY']
+                '', '', '', 'Award Pay', '', 'GROSS PAY']
     for i, hdr in enumerate(cas_hdrs):
         sc(ws[f'{cols[i]}{row}'], hdr, bold=True, size=9, fg=HDR_FG, bg='375623',
            halign='center', wrap=True)
@@ -802,8 +812,8 @@ def _payroll_summary(ws, results, week_str):
         sc(ws[f'E{row}'], r_data['hrs']['total'], size=9, bg=CAS_BG, fmt=HRS_FMT, halign='center')
         sc(ws[f'F{row}'], ph_h, size=9, bg=(PH_BG if ph_h > 0.001 else CAS_BG), fmt=HRS_FMT,
            halign='center', bold=ph_h > 0.001)
-        sc(ws[f'J{row}'], r_data['award_pay'], size=9, bg=CAS_BG, fmt=CUR_FMT, halign='center')
-        sc(ws[f'N{row}'], r_data['award_pay'], size=9, bg=CAS_BG, fmt=CUR_FMT, halign='center', bold=True)
+        sc(ws[f'M{row}'], r_data['award_pay'], size=9, bg=CAS_BG, fmt=CUR_FMT, halign='center')
+        sc(ws[f'O{row}'], r_data['award_pay'], size=9, bg=CAS_BG, fmt=CUR_FMT, halign='center', bold=True)
 
     cas_data_end = row
     row += 1
@@ -814,8 +824,8 @@ def _payroll_summary(ws, results, week_str):
         sc(ws[f'{c}{row}'], '', bold=True, size=9, bg=TOTAL_BG)
     sc(ws[f'E{row}'], f'=SUM(E{cas_data_start}:E{cas_data_end})', bold=True, size=9, bg=TOTAL_BG, fmt=HRS_FMT, halign='center')
     sc(ws[f'F{row}'], f'=SUM(F{cas_data_start}:F{cas_data_end})', bold=True, size=9, bg=TOTAL_BG, fmt=HRS_FMT, halign='center')
-    sc(ws[f'J{row}'], f'=SUM(J{cas_data_start}:J{cas_data_end})', bold=True, size=9, bg=TOTAL_BG, fmt=CUR_FMT, halign='center')
-    sc(ws[f'N{row}'], f'=SUM(N{cas_data_start}:N{cas_data_end})', bold=True, size=9, bg=TOTAL_BG, fmt=CUR_FMT, halign='center')
+    sc(ws[f'M{row}'], f'=SUM(M{cas_data_start}:M{cas_data_end})', bold=True, size=9, bg=TOTAL_BG, fmt=CUR_FMT, halign='center')
+    sc(ws[f'O{row}'], f'=SUM(O{cas_data_start}:O{cas_data_end})', bold=True, size=9, bg=TOTAL_BG, fmt=CUR_FMT, halign='center')
 
     row += 2
     ws.row_dimensions[row].height = 22
@@ -825,16 +835,19 @@ def _payroll_summary(ws, results, week_str):
         sc(ws[f'{c}{row}'], '', bold=True, size=11, bg=HDR_BG)
     sc(ws[f'E{row}'], f'=E{perm_sub_row}+E{cas_sub_row}', bold=True, size=11, fg=HDR_FG, bg=HDR_BG, fmt=HRS_FMT, halign='center')
     sc(ws[f'F{row}'], f'=F{perm_sub_row}+F{cas_sub_row}', bold=True, size=11, fg=HDR_FG, bg=HDR_BG, fmt=HRS_FMT, halign='center')
-    sc(ws[f'M{row}'], f'=M{perm_sub_row}', bold=True, size=11, fg=HDR_FG, bg=HDR_BG, fmt=CUR_FMT, halign='center')
-    sc(ws[f'N{row}'], f'=N{perm_sub_row}+N{cas_sub_row}', bold=True, size=11, fg=HDR_FG, bg=HDR_BG, fmt=CUR_FMT, halign='center')
+    sc(ws[f'M{row}'], f'=M{perm_sub_row}+M{cas_sub_row}', bold=True, size=11, fg=HDR_FG, bg=HDR_BG, fmt=CUR_FMT, halign='center')
+    sc(ws[f'N{row}'], f'=N{perm_sub_row}', bold=True, size=11, fg=HDR_FG, bg=HDR_BG, fmt=CUR_FMT, halign='center')
+    sc(ws[f'O{row}'], f'=O{perm_sub_row}+O{cas_sub_row}', bold=True, size=11, fg=HDR_FG, bg=HDR_BG, fmt=CUR_FMT, halign='center')
 
     row += 1
-    ws.row_dimensions[row].height = 30
-    ws.merge_cells(f'A{row}:N{row}')
+    ws.row_dimensions[row].height = 36
+    ws.merge_cells(f'A{row}:O{row}')
     sc(ws[f'A{row}'],
-       'TOP UP amounts (orange rows) must be added to the employee\'s regular flat-rate pay.  '
-       'PH Hrs = public-holiday hours worked (already included in Worked Hrs; paid at the award PH rate on top of flat).  '
-       'Yellow SL/AL Hrs cells: type hours manually — Total Hrs, SL Pay, AL Pay, and GROSS PAY update automatically.  '
+       'Chargrill Pay = normal hours × flat rate + public-holiday hours × award PH rate (≈$59.74).  '
+       'PH Hrs = public-holiday hours worked (already inside Worked Hrs & Chargrill Pay).  '
+       'Top Up (orange rows) = award compliance gap: $0 unless the full award beats Chargrill pay '
+       '(weekend/overtime penalties on a low flat rate) — those rows are underpaid vs award, fix the flat rate.  '
+       'Yellow SL/AL Hrs cells: type hours manually — Total Hrs, SL Pay, AL Pay, GROSS PAY update automatically.  '
        'Always verify award rates at fairwork.gov.au.',
        size=8, fg='7F0000', bg='FCE4D6', halign='left', wrap=True, bdr=False)
     ws.freeze_panes = 'A5'
@@ -974,13 +987,13 @@ def _labour_costs(ws, results, week_str):
     row += 2
     ws.row_dimensions[row].height = 18
     ws.merge_cells(f'A{row}:G{row}')
-    sc(ws[f'A{row}'], 'TOP-UP DETAIL  (amounts added to flat-rate employees to meet award minimum)',
+    sc(ws[f'A{row}'], 'AWARD COMPLIANCE  (employees where the full award exceeds Chargrill pay — fix flat rate)',
        bold=True, size=9, fg=HDR_FG, bg='C55A11', halign='left')
 
     row += 1
     ws.row_dimensions[row].height = 20
     for col, hdr in [('A', 'Employee'), ('B', 'Section'), ('C', 'Employment'),
-                     ('D', 'Flat Pay'), ('E', 'Award Pay'), ('F', 'TOP UP'), ('G', 'Gross Pay')]:
+                     ('D', 'Chargrill Pay'), ('E', 'Award Pay'), ('F', 'TOP UP'), ('G', 'Gross Pay')]:
         sc(ws[f'{col}{row}'], hdr, bold=True, size=9, fg=HDR_FG, bg='7F3F00', halign='center')
 
     topup_results = [r for r in results if r.get('topup', 0) > 0.01]
@@ -989,7 +1002,8 @@ def _labour_costs(ws, results, week_str):
         row += 1
         ws.row_dimensions[row].height = 16
         for col, val, fmt in [('A', r['name'], None), ('B', r['section'], None),
-                              ('C', r['emp_type'], None), ('D', r['flat_pay'], CUR_FMT),
+                              ('C', r['emp_type'], None),
+                              ('D', r.get('chargrill_pay', r['flat_pay']), CUR_FMT),
                               ('E', r['award_pay'], CUR_FMT), ('F', r['topup'], CUR_FMT),
                               ('G', r['gross'], CUR_FMT)]:
             sc(ws[f'{col}{row}'], val, size=9, bg=PH_BG, fmt=fmt,
@@ -1000,7 +1014,7 @@ def _labour_costs(ws, results, week_str):
     if not topup_results:
         row += 1
         ws.merge_cells(f'A{row}:G{row}')
-        sc(ws[f'A{row}'], 'No top-ups required this week — all flat rates meet or exceed award.',
+        sc(ws[f'A{row}'], 'No top-ups required this week — Chargrill pay meets or exceeds the award for everyone.',
            size=9, bg=ZERO_BG, fg='375623', bold=True)
     else:
         row += 1
