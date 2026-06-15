@@ -506,17 +506,13 @@ def process_shifts(shift_df, emp_df, all_rates, public_holidays):
             topup = 0.0
             gross = award_pay
         else:
-            # CHARGRILL PAY: normal (non-PH) hours at the flat rate; public-holiday hours at
-            # the award PH rates from the AWARD RATES sheet — ordinary PH at ph_worked
-            # (~$59.74) and PH OVERTIME (hours past 11 on the PH day) at the higher ph_ot
-            # rate (~$66.38). The flat rate covers all non-PH hours.
+            # CHARGRILL PAY: normal (non-PH) hours at the flat rate; ALL public-holiday hours
+            # (incl any worked past 11h) at the flat PH-worked rate (~$59.74 from the AWARD
+            # RATES sheet). The award/compliance reference DOES pay PH overtime at the higher
+            # ph_ot rate, so any resulting shortfall shows up as a Top Up.
             ph_rate = all_rates['permanent'].get('ph_worked', 59.74)
-            ph_ot_rate = all_rates['permanent'].get('ph_ot', 66.38)
-            ph_ord = hrs['ph']
-            ph_ot = hrs['ph_daily_ot']
-            ph_hours = ph_ord + ph_ot
-            chargrill_pay = ((hrs['total'] - ph_hours) * flat_rate
-                             + ph_ord * ph_rate + ph_ot * ph_ot_rate)
+            ph_hours = hrs['ph'] + hrs['ph_daily_ot']
+            chargrill_pay = (hrs['total'] - ph_hours) * flat_rate + ph_hours * ph_rate
             # Award-compliance top-up: ONLY if the full award beats Chargrill pay (weekend
             # penalties / overtime on a low flat rate) — normally $0. Gross = the higher.
             topup = max(0.0, award_pay - chargrill_pay)
