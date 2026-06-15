@@ -146,7 +146,7 @@ def main():
 
     print(f"[inbox] {len(files)} file(s) to process")
     client = anthropic.Anthropic()
-    saved = dups = reviewed = failed = ignored = nonsupplier = 0
+    saved = dups = reviewed = failed = ignored = nonsupplier = notpdf = 0
     # Exact byte-duplicates (the same attachment uploaded under several names —
     # the backlog from before the flows used deterministic filenames) are detected
     # by hash BEFORE the Claude read, so each unique document is paid for once.
@@ -158,6 +158,15 @@ def main():
         except Exception as e:
             failed += 1
             print(f"[inbox] FAILED {disp}: {e!r} — left in inbox for retry")
+            continue
+        # Content gate BEFORE any paid read: Power Automate names every attachment '.pdf',
+        # so non-PDF junk (inline images, email banners, calendar .ics) rides in as a fake
+        # PDF and slips past the extension sweep. A real PDF starts with the '%PDF' magic
+        # bytes — anything else is moved to ignored/ unread, so we never pay Claude for junk.
+        if b"%PDF" not in raw[:1024]:
+            storage.inbox_ignore(name)
+            notpdf += 1
+            print(f"[inbox] ignored {disp}: not a real PDF (no %PDF header) -> ignored/ (no read)")
             continue
         digest = hashlib.sha256(raw).hexdigest()
         first = seen_hashes.get(digest)
@@ -205,6 +214,7 @@ def main():
 
     print(f"[inbox] done: {saved} saved, {dups} duplicate(s), {reviewed} for review, "
           f"{nonsupplier} non-supplier sender(s) -> review (unread), "
+          f"{notpdf} non-PDF junk ignored (no read), "
           f"{ignored} exact cop(ies) ignored, {failed} failed")
 
 
