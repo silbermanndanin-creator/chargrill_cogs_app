@@ -1409,9 +1409,12 @@ if tab_lab is not None:
                 # download/save buttons above them on a phone.
                 with st.expander("📋 Detailed breakdown (Summary / Casual / By section / Daily)"):
                   try:
+                    # In a PH week show NORMAL (non-PH) hours so Normal + PH + leave = Total.
+                    _wk_ph = any((_hr(r, "ph") + _hr(r, "ph_daily_ot")) > 0.001 for r in results)
+                    _hrs_lbl = "Normal Hrs" if _wk_ph else "Worked Hrs"
                     summary_df = pd.DataFrame([{
                         "Employee": r["name"], "Type": r["emp_type"], "Section": r.get("section", ""),
-                        "Worked Hrs": round(_hr(r, "total"), 2),
+                        _hrs_lbl: round(_hr(r, "total") - (_hr(r, "ph") + _hr(r, "ph_daily_ot")), 2),
                         "PH Hrs": round(_hr(r, "ph") + _hr(r, "ph_daily_ot"), 2),
                         "AL hrs": round(r.get("al_hrs", 0), 2), "SL hrs": round(r.get("sl_hrs", 0), 2),
                         "Chargrill Pay": round(r.get("chargrill_pay", r.get("flat_pay", 0)), 2),

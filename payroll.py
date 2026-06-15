@@ -712,7 +712,7 @@ def _payroll_summary(ws, results, week_str):
     # Columns A–O. Chargrill Pay (J) = normal hrs × flat + PH hrs × award PH rate — the
     # actual pay. Award Pay (M) is a reference. Top Up (N) is the award-compliance gap
     # (max(0, Award − Chargrill)); normally $0, non-zero only if the award beats Chargrill
-    # pay (weekend/OT penalties on a low flat rate). PH Hrs (F) is a subset of Worked Hrs.
+    # pay (weekend/OT penalties on a low flat rate).
     cols = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O']
     col_widths = [24, 10, 8, 10, 10, 8, 8, 8, 10, 12, 10, 10, 12, 10, 12]
     for col, w in zip(cols, col_widths):
@@ -721,6 +721,12 @@ def _payroll_summary(ws, results, week_str):
     def _ph_hrs(r_data):
         h = r_data.get('hrs') or {}
         return round((h.get('ph', 0) or 0) + (h.get('ph_daily_ot', 0) or 0), 2)
+
+    # In a week WITH a public holiday, column E shows NORMAL (non-PH) hours so the rows
+    # add up cleanly: Normal + PH = worked, and Total Hrs = Normal + PH + SL + AL. In a
+    # normal week (no PH worked) it stays the familiar "Worked Hrs" = all hours.
+    week_has_ph = any(_ph_hrs(r) > 0.001 for r in results)
+    worked_hdr = 'Normal\nHrs' if week_has_ph else 'Worked\nHrs'
 
     ws.merge_cells('A1:O1')
     ws.row_dimensions[1].height = 32
@@ -735,7 +741,7 @@ def _payroll_summary(ws, results, week_str):
 
     row += 1
     ws.row_dimensions[row].height = 30
-    perm_hdrs = ['Employee', 'Type', 'Section', 'Flat Rate\n($)', 'Worked\nHrs', 'PH Hrs',
+    perm_hdrs = ['Employee', 'Type', 'Section', 'Flat Rate\n($)', worked_hdr, 'PH Hrs',
                  'SL Hrs\n(input)', 'AL Hrs\n(input)', 'Total\nHrs',
                  'Chargrill\nPay', 'SL Pay', 'AL Pay', 'Award Pay\n(ref)', 'Top Up\n(vs award)',
                  'GROSS PAY']
@@ -754,12 +760,12 @@ def _payroll_summary(ws, results, week_str):
         sc(ws[f'B{row}'], r_data['emp_type'], size=9, halign='center')
         sc(ws[f'C{row}'], r_data['section'], size=9, halign='center')
         sc(ws[f'D{row}'], r_data['flat_rate'], size=9, bg=bg, fmt=CUR_FMT, halign='center', fg=BLUE_FG)
-        sc(ws[f'E{row}'], r_data['hrs']['total'], size=9, bg=bg, fmt=HRS_FMT, halign='center')
+        sc(ws[f'E{row}'], round(r_data['hrs']['total'] - ph_h, 2), size=9, bg=bg, fmt=HRS_FMT, halign='center')
         sc(ws[f'F{row}'], ph_h, size=9, bg=(PH_BG if ph_h > 0.001 else bg), fmt=HRS_FMT,
            halign='center', bold=ph_h > 0.001)
         sc(ws[f'G{row}'], r_data.get('sl_hrs', 0) or 0, size=9, bg=INPUT_BG, fmt=HRS_FMT, halign='center')
         sc(ws[f'H{row}'], r_data.get('al_hrs', 0) or 0, size=9, bg=INPUT_BG, fmt=HRS_FMT, halign='center')
-        sc(ws[f'I{row}'], f'=E{row}+G{row}+H{row}', size=9, bg=bg, fmt=HRS_FMT, halign='center')
+        sc(ws[f'I{row}'], f'=E{row}+F{row}+G{row}+H{row}', size=9, bg=bg, fmt=HRS_FMT, halign='center')
         sc(ws[f'J{row}'], r_data.get('chargrill_pay', r_data['flat_pay']), size=9, bg=bg,
            fmt=CUR_FMT, halign='center', bold=True)
         sc(ws[f'K{row}'], f'=D{row}*G{row}', size=9, bg=bg, fmt=CUR_FMT, halign='center')
@@ -793,7 +799,7 @@ def _payroll_summary(ws, results, week_str):
 
     row += 1
     ws.row_dimensions[row].height = 22
-    cas_hdrs = ['Employee', 'Type', 'Section', '', 'Hours', 'PH Hrs', '', '', '',
+    cas_hdrs = ['Employee', 'Type', 'Section', '', worked_hdr, 'PH Hrs', '', '', '',
                 '', '', '', 'Award Pay', '', 'GROSS PAY']
     for i, hdr in enumerate(cas_hdrs):
         sc(ws[f'{cols[i]}{row}'], hdr, bold=True, size=9, fg=HDR_FG, bg='375623',
@@ -809,7 +815,7 @@ def _payroll_summary(ws, results, week_str):
         sc(ws[f'A{row}'], r_data['name'], size=9, bg=CAS_BG, halign='left')
         sc(ws[f'B{row}'], 'Casual', size=9, bg=CAS_BG, halign='center')
         sc(ws[f'C{row}'], r_data['section'], size=9, bg=CAS_BG, halign='center')
-        sc(ws[f'E{row}'], r_data['hrs']['total'], size=9, bg=CAS_BG, fmt=HRS_FMT, halign='center')
+        sc(ws[f'E{row}'], round(r_data['hrs']['total'] - ph_h, 2), size=9, bg=CAS_BG, fmt=HRS_FMT, halign='center')
         sc(ws[f'F{row}'], ph_h, size=9, bg=(PH_BG if ph_h > 0.001 else CAS_BG), fmt=HRS_FMT,
            halign='center', bold=ph_h > 0.001)
         sc(ws[f'M{row}'], r_data['award_pay'], size=9, bg=CAS_BG, fmt=CUR_FMT, halign='center')
@@ -844,7 +850,7 @@ def _payroll_summary(ws, results, week_str):
     ws.merge_cells(f'A{row}:O{row}')
     sc(ws[f'A{row}'],
        'Chargrill Pay = normal hours × flat rate + public-holiday hours × award PH rate (≈$59.74).  '
-       'PH Hrs = public-holiday hours worked (already inside Worked Hrs & Chargrill Pay).  '
+       'In a public-holiday week the hours column shows NORMAL (non-PH) hours: Normal + PH + SL + AL = Total Hrs.  '
        'Top Up (orange rows) = award compliance gap: $0 unless the full award beats Chargrill pay '
        '(weekend/overtime penalties on a low flat rate) — those rows are underpaid vs award, fix the flat rate.  '
        'Yellow SL/AL Hrs cells: type hours manually — Total Hrs, SL Pay, AL Pay, GROSS PAY update automatically.  '
